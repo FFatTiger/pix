@@ -68,8 +68,6 @@ export function createSessionsApi(http: HttpClient) {
     // D4: Host PATCH /v1/sessions/:id (rename) and DELETE /v1/sessions/:id both
     // settle with `{ success: true }` (Host route contract).
     rename: (id: string, name: string, signal?: AbortSignal) => http.patch(urls.sessions.byId(id), { name }, { schema: SuccessSchema, ...(signal === undefined ? {} : { signal }) }),
-    /** Server-side sidebar flags: PATCH the same metadata endpoint. */
-    setFlags: (id: string, flags: { pinned?: boolean; archived?: boolean }, signal?: AbortSignal) => http.patch(urls.sessions.byId(id), flags, { schema: SuccessSchema, ...(signal === undefined ? {} : { signal }) }),
     remove: (id: string, signal?: AbortSignal) => http.delete(urls.sessions.byId(id), undefined, { schema: SuccessSchema, ...(signal === undefined ? {} : { signal }) }),
     // Session-title generation has NO HTTP surface: it is the typed runtime
     // command `generate_session_title` (features/session-title/session-title.ts).

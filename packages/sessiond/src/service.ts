@@ -135,6 +135,14 @@ export interface SessiondDependencies {
    */
   sessionMutation?: SessionMutationPort | null;
   /**
+   * Sessiond-owned durable workspace state (round 5 redo): user organization
+   * preferences (session + project pin/archive). `undefined` lets the daemon
+   * composition build the file-backed store from its runtime directory;
+   * `null` explicitly disables it for fail-closed tests. Single writer: only
+   * this service mutates it.
+   */
+  workspaceState?: import("./workspace-state.js").WorkspaceStateStore | null;
+  /**
    * Optional persisted settings file (daemon-owned). When present the service
    * reads the idle-reclamation timeout at construction and writes it back on
    * every {@link SessiondService.setIdleTimeoutMs} so the setting survives
@@ -3460,89 +3468,58 @@ export class SessiondService {
   }
 
   /**
-   * Server-side sidebar flags (round 5). Same durable JSONL path family as
-   * rename, but flags are catalog metadata — no worker command, no live/offline
-   * lane split: ALWAYS the offline mutation port (append-only custom entry),
-   * working for live and stopped sessions alike. Returns the merged effective
-   * flags read back from the catalog AFTER the write (not the input guess).
+   * Server-side sidebar flags (round 5 redo). Organization preferences live in
+   * the sessiond-owned workspace state file — NEVER in the Pi session JSONL
+   * (chat-record truth with a live writer) and never in the disposable
+   * projection. Works for live and stopped sessions alike (pure catalog
+   * metadata; no worker command). Returns the merged effective flags.
    */
-  async setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ sessionId: string; pinned: boolean; archived: boolean }> {
-    if (flags.pinned === undefined && flags.archived === undefined) {
-      throw new SessiondError("invalid_input", "at least one flag must be provided", false);
+  private workspaceStateStore(): import("./workspace-state.js").WorkspaceStateStore {
+    if (this.deps.workspaceState === null) throw new SessiondError("unavailable", "workspace state is unavailable", false);
+    if (this.deps.workspaceState !== undefined) return this.deps.workspaceState;
+    throw new SessiondError("unavailable", "workspace state is unavailable", false);
+  }
+
+  async setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ sessionId: string; pinned: boolean; archived: boolean; revision: number }> {
+    if (sessionId.length === 0) throw new SessiondError("invalid_input", "session id is invalid", false);
+    let effective: { pinned: boolean; archived: boolean };
+    try {
+      effective = this.workspaceStateStore().setSessionFlags(sessionId, flags);
+    } catch (error) {
+      throw this.mapWorkspaceStateFailure(error, "session");
     }
-    let effective: { pinned: boolean; archived: boolean } | undefined;
-    await this.coordinator.admit(sessionId, "rename", async (ctx) => {
-      if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
-      if (ctx.isStale()) throw new SessiondError("conflict", "session identity changed during a flag update", false);
-      if (!this.deps.sessionMutation) throw new SessiondError("unavailable", "session mutation is unavailable", false);
-      try {
-        effective = await this.deps.sessionMutation.setSessionFlags(ctx.canonicalId, flags);
-      } catch (error) {
-        throw this.mapOfflineRenameFailure(error);
-      }
-    });
     this.pushSessionsChanged();
-    // Effective merged flags read back by the owning store AFTER its write.
-    return { sessionId, pinned: effective?.pinned === true, archived: effective?.archived === true };
+    return { sessionId, pinned: effective.pinned, archived: effective.archived, revision: this.workspaceStateStore().snapshot().revision };
   }
 
-  /** Map a live-command `{ok:false}` result onto a fixed sanitized SessiondError. */
-  private mapRenameCommandFailure(result: CorrelatedRuntimeCommandResult): SessiondError {
-    const error = result.result.ok ? undefined : result.result.error;
-    const code = error?.code ?? "unavailable";
-    return new SessiondError(code, RENAME_FAILURE_MESSAGES[code] ?? "session rename failed", error?.retryable ?? false);
-  }
-
-  /** Map an offline-mutation failure onto a fixed sanitized SessiondError. */
-  private mapOfflineRenameFailure(error: unknown): SessiondError {
-    if (error instanceof SessiondError) return error;
-    if (isRuntimeError(error)) {
-      const code = error.code as ProtocolErrorCode;
-      return new SessiondError(code, OFFLINE_RENAME_FAILURE_MESSAGES[code] ?? "session rename failed", error.retryable);
+  async setProjectFlags(projectRoot: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ projectRoot: string; pinned: boolean; archived: boolean; revision: number }> {
+    let effective: { pinned: boolean; archived: boolean };
+    try {
+      effective = this.workspaceStateStore().setProjectFlags(projectRoot, flags);
+    } catch (error) {
+      throw this.mapWorkspaceStateFailure(error, "project");
     }
-    return new SessiondError("unavailable", "session rename failed", true);
+    this.pushSessionsChanged();
+    return { projectRoot, pinned: effective.pinned, archived: effective.archived, revision: this.workspaceStateStore().snapshot().revision };
   }
 
-  /**
-   * D4 session-history delete (stopped/history only). A live/crashed record (any
-   * `records` entry — idle, prompt, bash, compact, crashed or stopping) or an
-   * earlier activation reservation (in-flight or queued ahead in the identity
-   * lane) fails closed PROMPTLY with a fixed `session_busy` — no wait/stop/
-   * delete, no `force`. The catalog I/O runs INSIDE the per-session lane (never
-   * under the global mutex), so a delete admitted first lets a later activation
-   * queue behind it and fail not_found with zero Workers, and a rename admitted
-   * first commits before the delete removes the file. Concurrent delete/delete
-   * serialize on the lane; the adapter is ENOENT-idempotent, so the second
-   * delete surfaces a fixed `not_found` (or an idempotent success) with no
-   * wrong-file risk.
-   */
-  async deleteSession(sessionId: string): Promise<void> {
-    if (!this.deps.sessionCatalog) throw new SessiondError("unavailable", "session catalog is unavailable", false);
-    const failClosedBusy = (): never => { throw new SessiondError("session_busy", "session is running", false); };
-    // Prompt checks BEFORE enqueue (never wait for a worker).
-    if (this.records.has(sessionId)) failClosedBusy();
-    if (this.activations.has(sessionId)) failClosedBusy();
-    if (this.coordinator.hasPendingKind(sessionId, "activate")) failClosedBusy();
-    await this.coordinator.admit(sessionId, "delete", async (ctx) => {
-      if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
-      if (ctx.isStale()) throw new SessiondError("conflict", "session identity changed during delete", false);
-      // Defensive record check inside the lane: an activation ahead of a delete
-      // would already have made the prompt admission fail closed, and any
-      // activation admitted after this delete queues BEHIND it (never runs
-      // ahead) — so no live record can exist here; stay fail-closed anyway.
-      const canonical = ctx.canonicalId;
-      if (this.records.has(canonical)) failClosedBusy();
-      await this.deps.sessionCatalog!.deleteSession(canonical);
-      this.titleOverlay.remove(canonical);
-    });
+  getWorkspaceFlags(): { revision: number; sessions: Record<string, { pinned?: boolean; archived?: boolean }>; projects: Record<string, { pinned?: boolean; archived?: boolean }> } {
+    const snapshot = this.workspaceStateStore().snapshot();
+    return {
+      revision: snapshot.revision,
+      sessions: { ...snapshot.sessions },
+      projects: { ...snapshot.projects },
+    };
   }
 
-  /**
-   * D4 service wrappers for the read-side catalog that apply the service-owned
-   * revisioned title overlay to `sessions.list` / `sessions.read`. A read that
-   * begins after a confirmed rename MUST observe the new title; an older
-   * catalog response can never clear a newer overlay revision.
-   */
+  private mapWorkspaceStateFailure(error: unknown, kind: "session" | "project"): SessiondError {
+    if (error instanceof SessiondError) return error;
+    const code = error instanceof import("./workspace-state.js").WorkspaceStateError ? error.code : "unavailable";
+    const retryable = error instanceof import("./workspace-state.js").WorkspaceStateError ? error.retryable : true;
+    if (code === "invalid_input") return new SessiondError("invalid_input", `invalid ${kind} flags`, false);
+    return new SessiondError("unavailable", `workspace state is unavailable for ${kind} flags`, retryable);
+  }
+
   async listSessionPage(request: SessionPageRequest): Promise<SessionPage> {
     const catalog = this.sessionCatalog();
     if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable", false);
@@ -3550,9 +3527,21 @@ export class SessiondService {
     const page = catalog.listSessionPage
       ? await catalog.listSessionPage(request)
       : await this.legacySessionPage(catalog, request);
+    const workspace = this.deps.workspaceState !== null && this.deps.workspaceState !== undefined
+      ? this.deps.workspaceState.snapshot().sessions
+      : undefined;
     return {
       ...page,
-      sessions: page.sessions.map((item) => this.titleOverlay.apply(item, captured.get(item.sessionId))),
+      sessions: page.sessions.map((item) => {
+        const titled = this.titleOverlay.apply(item, captured.get(item.sessionId));
+        const flags = workspace?.[item.sessionId];
+        if (flags === undefined || titled.pinned !== undefined || titled.archived !== undefined) return titled;
+        return {
+          ...titled,
+          ...(flags.pinned === undefined ? {} : { pinned: flags.pinned }),
+          ...(flags.archived === undefined ? {} : { archived: flags.archived }),
+        };
+      }),
     };
   }
 

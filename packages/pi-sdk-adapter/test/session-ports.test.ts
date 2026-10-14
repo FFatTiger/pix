@@ -51,7 +51,6 @@ function fakeManager(id: string): PiSdkSessionManager {
     getSessionId: () => id,
     getHeader: () => undefined,
     appendSessionInfo: () => "",
-    appendCustomEntry: () => "",
   };
 }
 
@@ -161,7 +160,6 @@ describe("pi-sdk session ports (shared pair)", () => {
           getSessionId: () => "s1",
           getHeader: () => undefined,
           appendSessionInfo: (value: string) => { appended.push(value); name = value; return ""; },
-          appendCustomEntry: () => "",
         };
       },
     };
@@ -204,7 +202,6 @@ describe("pi-sdk session ports (shared pair)", () => {
           getSessionId: () => "s1",
           getHeader: () => undefined,
           appendSessionInfo: (value: string) => { onAppend(value); return ""; },
-          appendCustomEntry: () => "",
         };
       },
     });

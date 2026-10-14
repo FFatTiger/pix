@@ -517,25 +517,39 @@ export const SessionsRenameResultSchema = z.strictObject({
 });
 export type SessionsRenameResult = z.infer<typeof SessionsRenameResultSchema>;
 
-export const SessionsSetFlagsParamsSchema = z.strictObject({
-  sessionId: NonEmptyStringSchema,
-  /**
-   * Server-side sidebar flags. At least one field must be present; absent
-   * fields are left unchanged (append-only JSONL semantics, last entry wins).
-   */
+/**
+ * Unified organization-state write (round 5 redo): sessiond-owned workspace
+ * state covers BOTH session and project pin/archive. `key` is a session id or
+ * a normalized absolute project root. At least one flag must be present.
+ */
+export const WorkspaceSetFlagsParamsSchema = z.strictObject({
+  kind: z.enum(["session", "project"]),
+  key: NonEmptyStringSchema,
   pinned: z.boolean().optional(),
   archived: z.boolean().optional(),
 }).refine((value) => value.pinned !== undefined || value.archived !== undefined, {
   message: "at least one flag must be provided",
 });
-export type SessionsSetFlagsParams = z.infer<typeof SessionsSetFlagsParamsSchema>;
+export type WorkspaceSetFlagsParams = z.infer<typeof WorkspaceSetFlagsParamsSchema>;
 
-export const SessionsSetFlagsResultSchema = z.strictObject({
-  sessionId: NonEmptyStringSchema,
+export const WorkspaceSetFlagsResultSchema = z.strictObject({
+  kind: z.enum(["session", "project"]),
+  key: NonEmptyStringSchema,
   pinned: z.boolean(),
   archived: z.boolean(),
+  revision: z.number().int().nonnegative(),
 });
-export type SessionsSetFlagsResult = z.infer<typeof SessionsSetFlagsResultSchema>;
+export type WorkspaceSetFlagsResult = z.infer<typeof WorkspaceSetFlagsResultSchema>;
+
+export const WorkspaceFlagsGetParamsSchema = z.strictObject({});
+export type WorkspaceFlagsGetParams = z.infer<typeof WorkspaceFlagsGetParamsSchema>;
+
+export const WorkspaceFlagsGetResultSchema = z.strictObject({
+  revision: z.number().int().nonnegative(),
+  sessions: z.record(z.string(), z.strictObject({ pinned: z.boolean().optional(), archived: z.boolean().optional() })),
+  projects: z.record(z.string(), z.strictObject({ pinned: z.boolean().optional(), archived: z.boolean().optional() })),
+});
+export type WorkspaceFlagsGetResult = z.infer<typeof WorkspaceFlagsGetResultSchema>;
 
 export const SessionsDeleteResultSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
@@ -692,8 +706,13 @@ export const SessiondRpcRequestSchema = z.discriminatedUnion("method", [
   }),
   z.strictObject({
     ...rpcEnvelope,
-    method: z.literal("sessions.setFlags"),
-    params: SessionsSetFlagsParamsSchema,
+    method: z.literal("workspace.setFlags"),
+    params: WorkspaceSetFlagsParamsSchema,
+  }),
+  z.strictObject({
+    ...rpcEnvelope,
+    method: z.literal("workspace.flags.get"),
+    params: WorkspaceFlagsGetParamsSchema,
   }),
   z.strictObject({
     ...rpcEnvelope,
@@ -745,7 +764,8 @@ export const SESSIOND_RPC_METHODS = [
   "sessions.thinking",
   "sessions.tree",
   "sessions.rename",
-  "sessions.setFlags",
+  "workspace.setFlags",
+  "workspace.flags.get",
   "sessions.delete",
   "sessions.findLatest",
   "config.getSessionIdleTimeoutMs",
@@ -781,7 +801,8 @@ export type SessiondMethodParams = {
   "sessions.thinking": SessionsThinkingParams;
   "sessions.tree": SessionsTreeParams;
   "sessions.rename": SessionsRenameParams;
-  "sessions.setFlags": SessionsSetFlagsParams;
+  "workspace.setFlags": WorkspaceSetFlagsParams;
+  "workspace.flags.get": WorkspaceFlagsGetParams;
   "sessions.delete": SessionsDeleteParams;
   "sessions.findLatest": SessionsFindLatestParams;
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsParams;
@@ -814,7 +835,8 @@ export type SessiondMethodResult = {
   "sessions.thinking": SessionsThinkingResult;
   "sessions.tree": SessionsTreeResult;
   "sessions.rename": SessionsRenameResult;
-  "sessions.setFlags": SessionsSetFlagsResult;
+  "workspace.setFlags": WorkspaceSetFlagsResult;
+  "workspace.flags.get": WorkspaceFlagsGetResult;
   "sessions.delete": SessionsDeleteResult;
   "sessions.findLatest": SessionsFindLatestResult;
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsResult;
@@ -847,7 +869,8 @@ export const SessiondMethodResultSchemas = {
   "sessions.thinking": SessionsThinkingResultSchema,
   "sessions.tree": SessionsTreeResultSchema,
   "sessions.rename": SessionsRenameResultSchema,
-  "sessions.setFlags": SessionsSetFlagsResultSchema,
+  "workspace.setFlags": WorkspaceSetFlagsResultSchema,
+  "workspace.flags.get": WorkspaceFlagsGetResultSchema,
   "sessions.delete": SessionsDeleteResultSchema,
   "sessions.findLatest": SessionsFindLatestResultSchema,
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsResultSchema,
@@ -880,7 +903,8 @@ export const SessiondRpcSuccessSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.thinking"), result: SessionsThinkingResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.tree"), result: SessionsTreeResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.rename"), result: SessionsRenameResultSchema }),
-  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.setFlags"), result: SessionsSetFlagsResultSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("workspace.setFlags"), result: WorkspaceSetFlagsResultSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("workspace.flags.get"), result: WorkspaceFlagsGetResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.delete"), result: SessionsDeleteResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.findLatest"), result: SessionsFindLatestResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("config.getSessionIdleTimeoutMs"), result: ConfigGetSessionIdleTimeoutMsResultSchema }),

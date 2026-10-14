@@ -514,24 +514,24 @@ packages/
   偏好（现状如此，卡片提示"仅对本设备生效"）；draft 写目标会话的 draft-store 键后导航，
   目标 composer 挂载时水合，永不自动发送。
 
-### 服务端置顶/归档（第 5 轮）
+### 统一整理状态（第 5 轮重做：会话 + 项目置顶/归档）
 
-- **存储与 owner**：会话 pinned/archived 的持久真相 = 会话 JSONL 里的 `pix-session-flags`
-  custom 条目（append-only，per-field last-defined-wins；与改名同一 JSONL 家族，
-  无新存储）。物化索引 = SQLite 投影 v8（pinned/archived 列进 checksum；分页
-  ORDER BY pinned 优先——置顶会话永远 surfaced 在第 1 页，多设备一致的持久身份）。
-  写路径 = PATCH /v1/sessions/:id（body 为 {name} 或 {pinned}/{archived} 布尔，
-  不可混合）→ sessiond RPC `sessions.setFlags` → SessionMutationPort.setSessionFlags
-  （总是 offline 追加，live/stopped 会话同样适用；返回读回的有效合并态）。
-- **实时同步**：sessiond 在 flags 写入与改名后向 running-watch 订阅广播新全局推送
-  `sessions_changed`（纯失效信号）→ Host 转发为同名 WS 帧 → 客户端失效会话列表
-  query 重新拉取（两台设备无需刷新）。旧客户端忽略未知帧不崩。
-- **客户端**：`useSessionFlags`（读缓存页派生集合 + 乐观 patch + 失败回滚 + 错误行
-  提示）；`useSidebarItemState` 保持组件调用形状——会话集合来自服务器、项目
-  置顶/归档/展开仍为本地偏好（项目是派生聚合，无逐项目服务器记录）。
-- **迁移**：AppShell 首次加载检测 localStorage 旧键的 pinnedSessions/archivedSessions
-  → 逐个 additive 上传（服务端已有值以服务端为准）→ 成功后从本地键剥离会话数组。
-- 助手 organize_sessions 维持第 4 轮的 rename/delete（pin/archive 不回归）。
+- **一个归属**：用户的整理偏好（会话与项目的 pinned/archived）是 sessiond 拥有的
+  workspace state，存 `PIX_SESSIOND_DIR/workspace-state.json`（schema v1 + revision、
+  原子写 0600、唯一写入方是 sessiond、损坏隔离后空启动绝不 brick；投影重建永不触碰它）。
+  绝不写进 Pi 会话 JSONL（那是聊天记录真相，且有 live worker 写方）也不进可丢弃的
+  SQLite 投影（投影版本回退到不含偏好的 v7 形态）。
+- **一条通道**：`workspace.setFlags` / `workspace.flags.get` RPC（统一 kind=session|project）；
+  Host 暴露 `GET/PATCH /v1/workspace-flags`（严格 body；sessiond down 时 guard 先行 503；
+  项目键必须是 AllowedRoots 内的绝对路径）；`PATCH /v1/sessions/:id` 的 pinned/archived
+  分支内部走同一 RPC。写入后复用 `sessions_changed` 全局推送 → 所有客户端失效
+  sessions 列表与 flags 查询重拉（改名的跨设备同步修复保留）。
+- **一个界面入口**：`useWorkspaceFlags`（读 GET 文档 + 乐观 patch + 失败快照回滚 + 错误行）；
+  `useSidebarItemState` 保持组件调用形状，四个集合（会话/项目 × 置顶/归档）全部来自服务器；
+  只有项目展开/折叠留在本地。列表行由 sessiond 合并 flags（SessionHeader 可选字段保留），
+  置顶集合与分页解耦（不再靠排序 hack）。
+- **迁移**：首次加载把 localStorage 里旧的会话+项目置顶/归档一次性 additive 上传
+  （server-wins），成功后剥离本地四个数组（只留 expandedProjects）。
 
 ## 9. 跨端策略（当前主线：PWA）
 

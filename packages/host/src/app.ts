@@ -10,6 +10,7 @@ import { securityMiddleware } from "./middleware/security.js";
 import { compressionMiddleware } from "./middleware/compression.js";
 import { gateMiddleware } from "./gate/middleware.js";
 import { registerGateRoutes } from "./gate/routes.js";
+import { registerWorkspaceFlagsRoutes } from "./routes/workspace-flags.js";
 import { registerHealthRoutes, registerBootstrapRoutes } from "./routes/health.js";
 import { registerAssistantRoutes } from "./routes/assistant.js";
 import { createEnvGateConfigSource, createFileGatePasswordStore, createFileGatePreferencesStore, createNormalizedGateConfigSource } from "./gate/config.js";
@@ -107,6 +108,7 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
 
   // 4. /v1 routes
   registerGateRoutes(app, gateDeps, logger);
+  registerWorkspaceFlagsRoutes(app, { workspaceFlags: deps.sessions?.workspaceFlags });
   registerPreferencesRoutes(app, {
     preferencesStore: deps.preferences?.store ?? createFileGatePreferencesStore(),
     ...(deps.preferences?.bodyLimitBytes !== undefined ? { bodyLimitBytes: deps.preferences.bodyLimitBytes } : {}),

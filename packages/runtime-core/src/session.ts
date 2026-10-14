@@ -90,9 +90,9 @@ export interface SessionHeader {
    */
   workspaceAccess?: WorkspaceAccess;
   /**
-   * Server-side sidebar flags (round 5). Durable truth: a `pix-session-flags`
-   * custom entry in the session JSONL; projected through the catalog. Absence
-   * = flag not set (never guessed). Old producers simply omit them.
+   * Organization flags merged by sessiond from its durable workspace state
+   * (round 5 redo). Absence = flag not set (never guessed); old producers
+   * simply omit them. The adapter/JSONL layer never populates these.
    */
   pinned?: boolean;
   archived?: boolean;

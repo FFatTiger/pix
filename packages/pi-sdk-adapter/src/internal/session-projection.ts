@@ -76,7 +76,7 @@ import { matchesAssistantWorkspacePattern } from "@fffattiger/pix-runtime-core";
  * rebuilds the old policy; a newer adapter treats an older file as unusable and
  * rebuilds. Live mixed sharing will flap classification and totals.
  */
-export const PROJECTION_SCHEMA_VERSION = 8;
+export const PROJECTION_SCHEMA_VERSION = 7;
 const PROJECTION_FORMAT = "pix-scale1-session-projection";
 /** Index file name inside the Pix-owned projection directory. */
 export const PROJECTION_INDEX_FILENAME = "session-index.sqlite";
@@ -106,9 +106,6 @@ export interface ProjectedSession {
   /** Materialized browse identity; page queries never resolve this on demand. */
   projectRoot?: string;
   browseKind?: "regular" | "session_only" | "hidden";
-  /** Server-side sidebar flags from the last pix-session-flags JSONL entry. */
-  pinned?: boolean;
-  archived?: boolean;
   mtimeMs: number;
   size: number;
 }
@@ -135,8 +132,6 @@ function rowChecksum(row: ProjectedSession): string {
     row.firstMessage,
     row.projectRoot ?? row.cwd,
     effectiveBrowseKind(row),
-    row.pinned === true ? "1" : "0",
-    row.archived === true ? "1" : "0",
     String(row.mtimeMs),
     String(row.size),
   ].join("\u0000");
@@ -158,8 +153,6 @@ function projectionRowToHeader(row: DbRow, parentSessionId: string | null): Sess
     updatedAt: row.modified_ms,
     lastMessageAt: row.modified_ms,
     messageCount: row.message_count,
-    ...(row.pinned === null || row.pinned === undefined ? {} : { pinned: row.pinned === 1 }),
-    ...(row.archived === null || row.archived === undefined ? {} : { archived: row.archived === 1 }),
     ...(parentSessionId === null ? {} : { parentSessionId }),
   };
 }
@@ -176,8 +169,6 @@ interface DbRow {
   first_message: string;
   project_root: string;
   browse_kind: "regular" | "session_only" | "hidden";
-  pinned: number | null;
-  archived: number | null;
   file_mtime_ms: number;
   file_size: number;
   checksum: string;
@@ -196,8 +187,6 @@ function dbRowToProjected(row: DbRow): ProjectedSession {
     firstMessage: row.first_message,
     projectRoot: row.project_root,
     browseKind: row.browse_kind,
-    ...(row.pinned === null || row.pinned === undefined ? {} : { pinned: row.pinned === 1 }),
-    ...(row.archived === null || row.archived === undefined ? {} : { archived: row.archived === 1 }),
     mtimeMs: row.file_mtime_ms,
     size: row.file_size,
   };
@@ -268,7 +257,7 @@ export class SessionProjectionIndex {
       }
       const rows = db.prepare(
         "SELECT path, id, cwd, name, parent_session_path, created_ms, modified_ms, message_count, "
-        + "first_message, project_root, browse_kind, pinned, archived, file_mtime_ms, file_size, checksum FROM session_projection",
+        + "first_message, project_root, browse_kind, file_mtime_ms, file_size, checksum FROM session_projection",
       ).all() as unknown as DbRow[];
       const out: ProjectedSession[] = [];
       for (const raw of rows) {
@@ -311,7 +300,6 @@ export class SessionProjectionIndex {
         + "parent_session_path TEXT, created_ms INTEGER, modified_ms INTEGER NOT NULL, "
         + "message_count INTEGER NOT NULL, first_message TEXT NOT NULL, "
         + "project_root TEXT NOT NULL, browse_kind TEXT NOT NULL, "
-        + "pinned INTEGER, archived INTEGER, "
         + "file_mtime_ms REAL NOT NULL, file_size INTEGER NOT NULL, checksum TEXT NOT NULL)",
       );
       db.exec(
@@ -338,7 +326,7 @@ export class SessionProjectionIndex {
       const insert = db.prepare(
         "INSERT INTO session_projection (path, id, cwd, name, parent_session_path, created_ms, "
         + "modified_ms, message_count, first_message, project_root, browse_kind, "
-        + "pinned, archived, file_mtime_ms, file_size, checksum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        + "file_mtime_ms, file_size, checksum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       );
       for (const row of rows) {
         insert.run(
@@ -353,8 +341,6 @@ export class SessionProjectionIndex {
           row.firstMessage,
           row.projectRoot ?? row.cwd,
           effectiveBrowseKind(row),
-          row.pinned === undefined ? null : row.pinned ? 1 : 0,
-          row.archived === undefined ? null : row.archived ? 1 : 0,
           row.mtimeMs,
           row.size,
           rowChecksum(row),
@@ -434,10 +420,10 @@ export class SessionProjectionIndex {
       const offset = (request.page - 1) * request.pageSize;
       const rows = db.prepare(
         "SELECT s.path, s.id, s.cwd, s.name, s.parent_session_path, s.created_ms, s.modified_ms, "
-        + "s.message_count, s.first_message, s.project_root, s.browse_kind, s.pinned, s.archived, s.file_mtime_ms, "
+        + "s.message_count, s.first_message, s.project_root, s.browse_kind, s.file_mtime_ms, "
         + "s.file_size, s.checksum, parent.id AS parent_session_id "
         + "FROM session_projection s LEFT JOIN session_projection parent ON parent.path = s.parent_session_path "
-        + `WHERE ${where} ORDER BY (s.pinned = 1) DESC, s.modified_ms DESC, s.id COLLATE BINARY ASC LIMIT ? OFFSET ?`,
+        + `WHERE ${where} ORDER BY s.modified_ms DESC, s.id COLLATE BINARY ASC LIMIT ? OFFSET ?`,
       ).all(...parameters, request.pageSize, offset) as unknown as Array<DbRow & { parent_session_id: string | null }>;
       const sessions: SessionHeader[] = rows.map((row) => projectionRowToHeader(row, row.parent_session_id));
       return {
@@ -467,7 +453,7 @@ export class SessionProjectionIndex {
       db = new DatabaseSync(this.indexPath);
       const row = db.prepare(
         "SELECT path, id, cwd, name, parent_session_path, created_ms, modified_ms, "
-        + "message_count, first_message, project_root, browse_kind, pinned, archived, file_mtime_ms, "
+        + "message_count, first_message, project_root, browse_kind, file_mtime_ms, "
         + "file_size, checksum FROM session_projection "
         + "WHERE cwd = ? AND (parent_session_path IS NULL OR parent_session_path = '') "
         + "ORDER BY modified_ms DESC, id COLLATE BINARY ASC LIMIT 1",
@@ -527,7 +513,7 @@ export class SessionProjectionIndex {
       const upsert = db.prepare(
         "INSERT OR REPLACE INTO session_projection (path, id, cwd, name, parent_session_path, created_ms, "
         + "modified_ms, message_count, first_message, project_root, browse_kind, "
-        + "pinned, archived, file_mtime_ms, file_size, checksum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        + "file_mtime_ms, file_size, checksum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       );
       for (const row of upserts) {
         upsert.run(
@@ -542,8 +528,6 @@ export class SessionProjectionIndex {
           row.firstMessage,
           row.projectRoot ?? row.cwd,
           effectiveBrowseKind(row),
-          row.pinned === undefined ? null : row.pinned ? 1 : 0,
-          row.archived === undefined ? null : row.archived ? 1 : 0,
           row.mtimeMs,
           row.size,
           rowChecksum(row),
@@ -661,8 +645,6 @@ export async function parseSessionFile(path: string): Promise<ProjectedSession |
   let firstMessage = "";
   let name: string | undefined;
   let hasCustomParentProvenance = false;
-  let pinnedFlag: boolean | undefined;
-  let archivedFlag: boolean | undefined;
   let lastActivityTime: number | undefined;
   const ok = await forEachJsonlLine(path, (rawLine) => {
     if (!rawLine.trim()) return;
@@ -692,19 +674,6 @@ export async function parseSessionFile(path: string): Promise<ProjectedSession |
       const data = record.data;
       if (data !== null && typeof data === "object" && typeof (data as Record<string, unknown>).parentSessionId === "string") {
         hasCustomParentProvenance = true;
-      }
-    }
-    if (record.type === "custom" && record.customType === "pix-session-flags") {
-      // Append-only JSONL semantics: each entry sets only the fields it
-      // carries; per-field LAST-DEFINED value wins (a later entry that omits
-      // a flag leaves that flag unchanged).
-      const data = record.data;
-      if (data !== null && typeof data === "object") {
-        const flags = data as Record<string, unknown>;
-        if (flags.pinned === true) pinnedFlag = true;
-        else if (flags.pinned === false) pinnedFlag = false;
-        if (flags.archived === true) archivedFlag = true;
-        else if (flags.archived === false) archivedFlag = false;
       }
     }
     if (record.type !== "message") return;
@@ -746,8 +715,6 @@ export async function parseSessionFile(path: string): Promise<ProjectedSession |
     browseKind: parentSessionPath !== undefined || hasCustomParentProvenance
       ? "hidden"
       : browseKindForWorkspace(cwd),
-    ...(pinnedFlag === undefined ? {} : { pinned: pinnedFlag }),
-    ...(archivedFlag === undefined ? {} : { archived: archivedFlag }),
     mtimeMs: identity.mtimeMs,
     size: identity.size,
   };

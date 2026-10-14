@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import test from "node:test";
 import { SessiondService } from "../src/service.js";
 import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
+import { InMemoryWorkspaceStateStore } from "../src/workspace-state.js";
 import { resolveAssistantWorkspaceDir } from "@fffattiger/pix-runtime-core";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -146,48 +147,89 @@ test("worker.statusQuery: a crashed worker's session disappears from the snapsho
   }
 });
 
-test("sessions.setFlags: durable write, authoritative read-back, global sessions_changed push, fail-closed input", async () => {
-  const applied: Array<{ sessionId: string; flags: { pinned?: boolean; archived?: boolean } }> = [];
-  const effective = new Map<string, { pinned: boolean; archived: boolean }>();
+test("workspace flags: durable store write, authoritative read-back, global sessions_changed push, fail-closed input", async () => {
+  const store = new InMemoryWorkspaceStateStore();
   const workers = new FakeWorkerFactory({});
-  const mutation = {
-    async renameSession(): Promise<void> { throw new Error("unused"); },
-    async setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }) {
-      applied.push({ sessionId, flags });
-      const previous = effective.get(sessionId) ?? { pinned: false, archived: false };
-      const next = { pinned: flags.pinned ?? previous.pinned, archived: flags.archived ?? previous.archived };
-      effective.set(sessionId, next);
-      return next;
-    },
-  };
   const service = new SessiondService({
     sessionLocator: locator,
     activationContext: { async resolve(sessionId) { return { cwd: sessionId === "t" ? "/repos/t" : "/repos/x", projectRoot: "/repos" }; } },
     workerFactory: workers,
-    sessionMutation: mutation,
+    workspaceState: store,
   }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
   try {
+    // Session flags: merged effective state, revision bumps.
     const result = await service.setSessionFlags("t", { pinned: true, archived: true });
-    assert.deepEqual(result, { sessionId: "t", pinned: true, archived: true });
-    assert.deepEqual(applied, [{ sessionId: "t", flags: { pinned: true, archived: true } }]);
-
-    // Partial update leaves the other flag unchanged (port merges).
+    assert.deepEqual(result, { sessionId: "t", pinned: true, archived: true, revision: 1 });
     const partial = await service.setSessionFlags("t", { archived: false });
-    assert.deepEqual(partial, { sessionId: "t", pinned: true, archived: false });
+    assert.deepEqual(partial, { sessionId: "t", pinned: true, archived: false, revision: 2 });
 
-    // No flags at all → structured invalid_input, no write.
+    // Project flags: same store, same push.
+    const project = await service.setProjectFlags("/repos/t", { pinned: true });
+    assert.deepEqual(project, { projectRoot: "/repos/t", pinned: true, archived: false, revision: 3 });
+
+    // Unified read.
+    const flags = service.getWorkspaceFlags();
+    assert.equal(flags.revision, 3);
+    assert.deepEqual(flags.sessions, { t: { pinned: true, archived: false } });
+    assert.deepEqual(flags.projects, { "/repos/t": { pinned: true } });
+
+    // No flags at all → structured invalid_input, no write, no revision bump.
     await assert.rejects(service.setSessionFlags("t", {}), (error: { code?: string }) => error.code === "invalid_input");
-    assert.equal(applied.length, 2);
+    await assert.rejects(service.setProjectFlags("not/absolute", { pinned: true }), (error: { code?: string }) => error.code === "invalid_input");
+    assert.equal(store.snapshot().revision, 3);
 
-    // Global sessions_changed push reaches every running-watch subscriber.
+    // Global sessions_changed push reaches running-watch subscribers on both kinds.
     const pushes: string[] = [];
     const watch = service.prepareRunningWatch();
     await watch.flushTo((push) => { pushes.push(push.type); });
     await service.setSessionFlags("t", { pinned: false });
+    await service.setProjectFlags("/repos/t", { archived: true });
     await wait(150);
     assert.ok(pushes.includes("sessions_changed"), `pushes=${JSON.stringify(pushes)}`);
     watch.close();
   } finally {
     await service.shutdown();
   }
+});
+
+test("workspace flags merge onto list rows; a missing store fails closed", async () => {
+  const workers = new FakeWorkerFactory({});
+  const store = new InMemoryWorkspaceStateStore();
+  await store.setSessionFlags("listed", { pinned: true });
+  // The fake catalog page serves one row; flags from the store land on it.
+  const catalog = {
+    async listSessionPage() {
+      return {
+        sessions: [{ sessionId: "listed", cwd: "/repos/listed", projectRoot: "/repos/listed" }],
+        page: 1, pageSize: 10, total: 1, totalPages: 1, catalogRevision: 1,
+      };
+    },
+  };
+  const withStore = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId) { return { cwd: `/repos/${sessionId}`, projectRoot: `/repos/${sessionId}` }; } },
+    workerFactory: workers,
+    sessionCatalog: catalog as never,
+    workspaceState: store,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  try {
+    const page = await withStore.listSessionPage({ page: 1, pageSize: 10 });
+    assert.equal(page.sessions[0]?.pinned, true);
+  } finally {
+    await withStore.shutdown();
+  }
+
+  // No store wired → flag writes fail closed (never a fake success).
+  const noStore = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId) { return { cwd: `/repos/${sessionId}`, projectRoot: `/repos/${sessionId}` }; } },
+    workerFactory: new FakeWorkerFactory({}),
+    workspaceState: null,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  try {
+    await assert.rejects(noStore.setSessionFlags("x", { pinned: true }), (error: { code?: string }) => error.code === "unavailable");
+  } finally {
+    await noStore.shutdown();
+  }
+});
 });

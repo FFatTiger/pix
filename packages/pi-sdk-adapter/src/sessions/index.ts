@@ -71,8 +71,6 @@ export interface PiSdkSessionStore {
   readSessionTree(sessionId: string): Promise<SessionTree>;
   deleteSession(sessionId: string): Promise<void>;
   renameSession(sessionId: string, name: string): Promise<void>;
-  /** Server-side sidebar flags: append pix-session-flags JSONL entry, read back effective state. */
-  setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ pinned: boolean; archived: boolean }>;
   locate(sessionId: string): Promise<SessionLocation>;
   resolveLeafId(sessionId: string, targetId?: string): Promise<string>;
   /**
@@ -179,10 +177,6 @@ class PiSdkSessionMutation implements SessionMutationPort {
 
   renameSession(sessionId: string, name: string): Promise<void> {
     return this.store.renameSession(sessionId, name);
-  }
-
-  setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ pinned: boolean; archived: boolean }> {
-    return this.store.setSessionFlags(sessionId, flags);
   }
 }
 

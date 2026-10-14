@@ -39,6 +39,7 @@ fork the logic.
 | Pi SDK translation & capability projection | `packages/pi-sdk-adapter` | touch Pi SDK types anywhere else |
 | Session lifecycle authority | `packages/sessiond` | be held by Web/Client state |
 | Worker status query (read-only `worker.statusQuery` IPC) | `packages/protocol` (frames) + `packages/sessiond` (authoritative answers, assistant-only guard) + `packages/agent-worker` (correlation) | leak sessiond secrets to workers, let workers read sessiond internals, or answer non-assistant workers |
+| Workspace organization state (session/project pin/archive) | `packages/sessiond` (durable `workspace-state.json` in PIX_SESSIOND_DIR, single writer) | store user prefs in the Pi session JSONL, the disposable SQLite projection, or browser localStorage |
 | Single-session runtime mapping | `packages/agent-worker` | import Pi SDK directly |
 | HTTP/WS gateway, static, gate, files/git routes | `packages/host` | own session authority or runtime models |
 | Client UI + typed transports + runtime view | `packages/client` | reach into backend/daemon/Worker internals |

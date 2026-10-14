@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { SessiondApplication } from "../application.js";
 import type { ActivationContextProvider, SessiondDiagnostics, SessiondDependencies, SessiondOptions } from "../service.js";
 import { SessiondService } from "../service.js";
+import { FileWorkspaceStateStore } from "../workspace-state.js";
 import type { ProjectCatalogPort, SessionCatalogPort, SessionLocatorPort, SessionMutationPort } from "@fffattiger/pix-runtime-core";
 import { SessiondRpcServer } from "../rpc.js";
 import { SessiondError } from "../errors.js";
@@ -210,6 +211,10 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
     // Daemon-owned persisted settings (idle-reclamation timeout) live next to
     // the lock/secret in the private runtime directory.
     settingsFile: join(directory, "settings.json"),
+    // Sessiond-owned durable workspace state (user organization preferences;
+    // round 5 redo). Single writer: the service itself. Tests inject
+    // `workspaceState`/`null` through the dependencies override.
+    workspaceState: new FileWorkspaceStateStore(directory),
   };
   if (catalog) deps.sessionCatalog = catalog;
   const projectCatalog = options.projectCatalog === undefined

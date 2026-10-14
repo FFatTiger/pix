@@ -574,6 +574,8 @@ export interface HostDeps {
     roots?: AllowedRootService;
     delete?: SessionDeleteSeam;
     rename?: SessionRenameSeam;
+    /** Workspace organization-state seam (session+project pin/archive). */
+    workspaceFlags?: import("./routes/workspace-flags.js").WorkspaceFlagsSeam;
     /**
      * Session lifecycle settings (idle-reclamation timeout). When present,
      * GET/PUT /v1/settings/session-idle-timeout are mounted and the

@@ -438,7 +438,6 @@ describe("session tree cache sharing (injected SDK)", () => {
           getSessionId: () => "cached",
           getHeader: () => undefined,
           appendSessionInfo: () => "",
-          appendCustomEntry: () => "",
         }),
       };
       const store = createPiSdkSessionStore({ sessionDir: f.sessionDir, sdk: surface });

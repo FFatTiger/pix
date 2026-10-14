@@ -253,14 +253,6 @@ export interface SessionMutationPort {
    * is committed and the read-side catalog observes it immediately.
    */
   renameSession(sessionId: string, name: string): Promise<void>;
-  /**
-   * Set server-side sidebar flags by appending a `pix-session-flags` custom
-   * entry to the session JSONL (same durable path family as rename; never
-   * rewrites history). Absent fields are left unchanged. Rejects `not_found`
-   * for a missing/stale id and never creates a session. Resolves once the
-   * read-side catalog observes the new flags.
-   */
-  setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ pinned: boolean; archived: boolean }>;
 }
 
 /* ------------------------------------------------------------------ */

@@ -98,7 +98,7 @@ export const SessionHeaderSchema = z.strictObject({
    */
   workspaceAccess: WorkspaceAccessSchema.optional(),
   /**
-   * Server-side sidebar flags (additive, Protocol v2-compatible): absence
+   * Organization flags from the sessiond workspace state (additive): absence
    * means unset — old producers simply omit them and old clients ignore them.
    */
   pinned: z.boolean().optional(),
