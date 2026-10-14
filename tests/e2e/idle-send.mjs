@@ -72,6 +72,7 @@ async function startKillingProxy(targetOrigin) {
   const target = new URL(targetOrigin);
   const targetPort = Number(target.port);
   const livePairs = new Set();
+  const acceptedSockets = new Set();
   let upgradeCount = 0;
   let refusingUpgrades = false;
   const server = http.createServer((req, res) => {
@@ -89,6 +90,10 @@ async function startKillingProxy(targetOrigin) {
     });
     upstream.on("error", () => { res.destroy(); });
     req.pipe(upstream);
+  });
+  server.on("connection", (socket) => {
+    acceptedSockets.add(socket);
+    socket.once("close", () => acceptedSockets.delete(socket));
   });
   server.on("upgrade", (req, socket) => {
     upgradeCount += 1;
@@ -144,13 +149,19 @@ async function startKillingProxy(targetOrigin) {
     refuseUpgrades() { refusingUpgrades = true; },
     allowUpgrades() { refusingUpgrades = false; },
     close: () => new Promise((resolvePromise) => {
-      for (const pair of livePairs) {
+      // killWebSockets() destroys the upstream but leaves the browser
+      // socket half-open on purpose, and a refused upgrade destroys the
+      // socket before it is ever tracked. server.close() waits for every
+      // accepted connection, so destroy them all before closing.
+      for (const pair of [...livePairs]) {
         pair.dead = true;
         pair.socket.destroy();
         pair.upstream.destroy();
       }
+      livePairs.clear();
+      for (const socket of [...acceptedSockets]) socket.destroy();
+      acceptedSockets.clear();
       server.close(() => resolvePromise());
-      server.closeAllConnections?.();
     }),
   };
 }
