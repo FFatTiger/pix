@@ -6,6 +6,7 @@ import { HttpClientProvider } from "@/app/http-context";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
 import { CapabilitiesConfig } from "./CapabilitiesConfig";
+import type { SettingsPageId } from "./settings-page";
 
 const revision = "a".repeat(64);
 const capabilities = [
@@ -34,14 +35,14 @@ vi.mock("@/runtime", () => ({
   }),
 }));
 
-function json(value: unknown, init: ResponseInit = {}) {
-  return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" }, ...init });
+function json(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 }
 
 function mount(
   fetchImpl: ReturnType<typeof vi.fn>,
   hostCapabilities: HostCapability[] = ["builtins.configure", "settings.configure"],
-  onOpenPage?: (page: "memory" | "subagents" | "compaction") => void,
+  onOpenPage?: (page: SettingsPageId) => void,
 ) {
   vi.stubGlobal("fetch", fetchImpl);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -49,7 +50,7 @@ function mount(
     <QueryClientProvider client={queryClient}>
       <HttpClientProvider>
         <CapabilityProvider host={{ mode: "local", capabilities: hostCapabilities }}>
-          <I18nProvider><CapabilitiesConfig onOpenPage={onOpenPage} /></I18nProvider>
+          <I18nProvider><CapabilitiesConfig {...(onOpenPage === undefined ? {} : { onOpenPage })} /></I18nProvider>
         </CapabilityProvider>
       </HttpClientProvider>
     </QueryClientProvider>,
@@ -119,7 +120,7 @@ describe("CapabilitiesConfig overview", () => {
 
   it("opens the detail settings page from a row entry and the memory row", async () => {
     const opened: string[] = [];
-    const onOpenPage = (page: "memory" | "subagents" | "compaction") => opened.push(page);
+    const onOpenPage = (page: SettingsPageId) => opened.push(page);
     mount(defaultFetch(), ["builtins.configure", "settings.configure"], onOpenPage);
 
     fireEvent.click(await screen.findByRole("button", { name: "Open Subagents settings" }));

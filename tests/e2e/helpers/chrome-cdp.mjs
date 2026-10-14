@@ -303,6 +303,13 @@ export async function launchChromeCdp(options = {}) {
           await new Promise((r) => setTimeout(r, pollMs));
         }
       },
+      /** Report the page hidden or visible and fire `visibilitychange`.
+       * Chrome has no CDP lifecycle state for a backgrounded phone, and the
+       * client reads `document.visibilityState`, so the override lives in
+       * the page. Timers keep running; the client stops its own heartbeat. */
+      async setHidden(hidden) {
+        await this.evaluate(`(${SET_VISIBILITY})(${hidden ? "true" : "false"})`);
+      },
       async navigate(url) {
         await send("Page.navigate", { url }, targetSession);
         await this.waitFor("document.readyState === 'complete' || document.readyState === 'interactive'", { timeoutMs: 20_000, label: `navigate ${url}` });
@@ -403,6 +410,14 @@ export async function launchChromeCdp(options = {}) {
  * Page-side helpers injected as source (kept tiny; the page owns its DOM).
  * React-controlled inputs need the native value setter before the input event.
  */
+const SET_VISIBILITY = `function setVisibility(hidden) {
+  const state = hidden ? "hidden" : "visible";
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  document.dispatchEvent(new Event("visibilitychange"));
+  return document.visibilityState;
+}`;
+
 export const PAGE = {
   setComposerText: `(function setComposerText(text) {
     const textarea = document.querySelector(".chat-input-textarea");

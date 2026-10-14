@@ -307,6 +307,123 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
     h.dispose();
   });
 
+  it("a backgrounded tab whose heartbeat never ran does not treat a half-open socket as fresh", async () => {
+    // iOS suspends timers while hidden. The last inbound frame can still be
+    // inside freshnessMs, so a time-only isFresh() would write into a socket
+    // the proxy already killed. Hiding past one heartbeat must force a probe.
+    const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 5_000, freshnessMs: 60_000, hiddenProbeThresholdMs: 5_000 } });
+    const ws1 = await openAndAttach(h);
+    h.changeVisibility(false);
+    // One heartbeat interval plus a moment. Real iOS freezes timers for the
+    // whole backgrounding; this is the window where lastInboundAt is still
+    // inside freshnessMs, so a time-only isFresh() would still say fresh.
+    vi.advanceTimersByTime(31_000);
+    ws1.silentDead = true;
+    h.changeVisibility(true);
+    await flush();
+    const sendP = h.store.sendPrompt("after background");
+    await flush();
+    expect(submitFrames(ws1)).toHaveLength(0);
+    vi.advanceTimersByTime(5_000);
+    await flush();
+    expect(h.sockets.length).toBeGreaterThan(1);
+    const ws2 = h.lastSocket();
+    ws2.serverOpen();
+    ws2.serverSend(ackWithLiveness());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach")!;
+    expect(attachFrame).toBeTruthy();
+    ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
+    await flush(8);
+    const submits = submitFrames(ws2);
+    expect(submits).toHaveLength(1);
+    expect(submits[0]!.payload.prompt).toBe("after background");
+    ws2.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission("s1", submits[0]!.payload.operationId) });
+    await expect(sendP).resolves.toBeTruthy();
+    expect(submitFrames(ws2)).toHaveLength(1);
+    h.dispose();
+  });
+
+  it("a send into a socket that throws while still reporting OPEN recovers once on a fresh socket", async () => {
+    const reports: Array<{ kind: string; code: string }> = [];
+    const h = createHarness({
+      liveness: { heartbeatIntervalMs: 1_000_000, pongTimeoutMs: 5_000, freshnessMs: 60_000 },
+      connectionOptions: { reportSendFailure: (report) => { reports.push({ kind: report.kind, code: report.code }); } },
+    });
+    const ws1 = await openAndAttach(h);
+    ws1.silentDead = true;
+    const sendP = h.store.sendPrompt("into a dead open socket");
+    await flush();
+    expect(submitFrames(ws1)).toHaveLength(0);
+    // One reconnect. A second socket here is the double-resend bug.
+    expect(h.sockets).toHaveLength(2);
+    const ws2 = h.lastSocket();
+    ws2.serverOpen();
+    ws2.serverSend(ackWithLiveness());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach")!;
+    ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
+    await flush(8);
+    const submits = submitFrames(ws2);
+    expect(submits).toHaveLength(1);
+    expect(submits[0]!.payload.prompt).toBe("into a dead open socket");
+    ws2.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission("s1", submits[0]!.payload.operationId) });
+    await expect(sendP).resolves.toBeTruthy();
+    expect(submitFrames(ws2)).toHaveLength(1);
+    expect(h.sockets).toHaveLength(2);
+    expect(reports.map((report) => report.kind)).toEqual(["send_failure", "send_recovered"]);
+    h.dispose();
+  });
+
+  it("a probe whose ping throws marks the socket dead and the caller opens exactly one replacement", async () => {
+    const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 5_000, freshnessMs: 60_000 } });
+    const ws1 = await openAndAttach(h);
+    vi.advanceTimersByTime(30_000);
+    await flush();
+    ws1.silentDead = false;
+    ws1.dieOnSend = true;
+    const probe = h.connection["socket"].probe(1_000);
+    vi.advanceTimersByTime(1_000);
+    const alive = await probe;
+    expect(alive).toBe(false);
+    expect(pingFrames(ws1)).toHaveLength(1);
+    // The catch marked it dead and did not reconnect. One caller reconnects once.
+    expect(h.sockets).toHaveLength(1);
+    h.connection.recoverTransport("probe caller");
+    expect(h.sockets).toHaveLength(2);
+    h.connection.recoverTransport("probe caller again");
+    expect(h.sockets).toHaveLength(2);
+    h.dispose();
+  });
+
+  it("a user-side rejection is not retried and is still reported", async () => {
+    const reports: Array<{ kind: string; code: string }> = [];
+    const h = createHarness({
+      connectionOptions: { reportSendFailure: (report) => { reports.push({ kind: report.kind, code: report.code }); } },
+    });
+    const ws = await openAndAttach(h);
+    const sendP = h.store.sendPrompt("no such capability");
+    await flush();
+    const submit = submitFrames(ws);
+    expect(submit).toHaveLength(1);
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: submit[0]!.id,
+      payload: {
+        status: "rejected",
+        delivery: "not_delivered",
+        sessionId: "s1",
+        operationId: submit[0]!.payload.operationId,
+        error: { code: "unsupported_capability", message: "capability missing", retryable: false },
+      },
+    });
+    await expect(sendP).rejects.toMatchObject({ code: "unsupported_capability", retryable: false });
+    expect(submitFrames(ws)).toHaveLength(1);
+    expect(h.sockets).toHaveLength(1);
+    expect(reports).toEqual([{ kind: "send_failure", code: "unsupported_capability" }]);
+    h.dispose();
+  });
+
   it("without the negotiated feature a dead transport still fails bounded (retryable timeout), never a fake success", async () => {
     const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 10_000 } });
     const ws1 = await openAndAttach(h, ackWithoutLiveness);

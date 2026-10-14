@@ -376,12 +376,14 @@ describe("SessionStore — E15 extension-UI incremental input slot", () => {
     const h = createHarness();
     const ws = await attach(h, EXT_CAPS);
     const originalSend = ws.send.bind(ws) as unknown as (data: string) => void;
-    (ws as unknown as { send: (data: string) => void }).send = () => { throw new Error("boom"); };
+    (ws as unknown as { send: (data: string) => void }).send = () => {
+      throw { code: "unavailable", message: "extension input send failed", retryable: false };
+    };
     const p1 = h.store.sendExtensionUiInput(customRequest, "a");
     const p2 = h.store.sendExtensionUiInput(customRequest, "b");
     await flush();
-    await expect(p1).rejects.toThrow("boom");
-    await expect(p2).rejects.toThrow("boom");
+    await expect(p1).rejects.toMatchObject({ code: "unavailable", message: "extension input send failed", retryable: false });
+    await expect(p2).rejects.toMatchObject({ code: "unavailable", message: "extension input send failed", retryable: false });
 
     // Transport restored → the slot accepts new input.
     (ws as unknown as { send: (data: string) => void }).send = originalSend;

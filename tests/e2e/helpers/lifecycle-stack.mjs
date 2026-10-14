@@ -41,10 +41,14 @@ import {
   createSessiondSessionRenameClient,
   createSessiondWorkspaceFlagsSeam,
   createRuntimeWorkspaceAuthorizer,
+  createAssistantWorkspaceResource,
+  createSessiondAssistantClient,
   PRODUCTION_FULL_CAPABILITIES,
   RESOURCE_DEGRADED_CAPABILITIES,
   PRODUCTION_MAX_UPLOAD_BYTES,
 } from "@fffattiger/pix-host";
+import { homedir } from "node:os";
+import { delimiter } from "node:path";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
 
@@ -172,8 +176,13 @@ export async function writeStubProviderConfig(
  * point at the isolated agentDir (the daemon forwards it to workers). Clears
  * PIX_AGENT_WORKER_FACTORY first: buildWorkerEnv would otherwise forward a
  * leaked injection path from this process's env.
+ *
+ * `assistantResidency: true` is opt-in (default off, matching existing e2e):
+ * sessiond keeps the assistant worker resident, and the Host mounts the
+ * production assistant seam so `GET /v1/assistant` resolves
+ * `<home>/.pi/pix/assistant`. AllowedRoots then also contains that directory.
  */
-export async function bootLifecycleStack({ sessiondDir, projectCwd, hostDir, clientDist }) {
+export async function bootLifecycleStack({ sessiondDir, projectCwd, hostDir, clientDist, assistantResidency = false }) {
   assert.ok(process.env.PI_CODING_AGENT_DIR, "PI_CODING_AGENT_DIR must point at the isolated agentDir");
   delete process.env.PIX_AGENT_WORKER_FACTORY;
   assert.equal(process.env.PIX_AGENT_WORKER_FACTORY, undefined, "worker factory injection must stay cleared");
@@ -181,6 +190,7 @@ export async function bootLifecycleStack({ sessiondDir, projectCwd, hostDir, cli
   const daemon = await startDaemon({
     directory: sessiondDir,
     // NO workerFactoryModulePath: workers run the production SDK adapter.
+    ...(assistantResidency ? { assistantResidency: true } : {}),
     workerOptions: { stdinEndMs: 1_500, sigtermMs: 1_500, sigkillMs: 1_500 },
     serviceOptions: {
       idleTimeoutMs: 0,
@@ -192,7 +202,9 @@ export async function bootLifecycleStack({ sessiondDir, projectCwd, hostDir, cli
 
   const resolver = createProductionCapabilityResolver({ endpoint: daemon.endpoint, secret: daemon.secret, logger: {} });
   const production = await createProductionResources({
-    allowedRootsEnv: projectCwd,
+    // Residency needs the assistant workspace inside AllowedRoots. Unset stays
+    // project-only, so existing suites never authorize ~/.pi/pix/assistant.
+    allowedRootsEnv: assistantResidency ? `${projectCwd}${delimiter}${homedir()}` : projectCwd,
     cwd: projectCwd,
     endpoint: daemon.endpoint,
     secret: daemon.secret,
@@ -203,6 +215,14 @@ export async function bootLifecycleStack({ sessiondDir, projectCwd, hostDir, cli
     agentDir: process.env.PI_CODING_AGENT_DIR,
     roots: production.deps.allowedRoots,
   });
+  const assistantWorkspace = assistantResidency
+    ? await createAssistantWorkspaceResource({
+      home: homedir(),
+      roots: production.deps.allowedRoots,
+      ...(catalogs.trust === undefined ? {} : { trust: catalogs.trust }),
+      ...(catalogs.trustMutation === undefined ? {} : { trustMutation: catalogs.trustMutation }),
+    })
+    : null;
   // One trusted sessiond client for the runtime gateway AND the Host-owned
   // exact-session authorizer (same composition as production host-runner).
   // Production host-runner constructs this client with no timeout override
@@ -247,6 +267,15 @@ export async function bootLifecycleStack({ sessiondDir, projectCwd, hostDir, cli
         allowedRoots: production.deps.allowedRoots,
       }),
     },
+    ...(assistantWorkspace
+      ? {
+        assistant: {
+          cwd: assistantWorkspace.cwd,
+          client: createSessiondAssistantClient({ endpoint: daemon.endpoint, secret: daemon.secret }),
+        },
+      }
+      : {}),
+
     gate: { config: { read: () => ({ status: "disabled", source: "e2e" }) } },
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     runtimeWs,
@@ -277,7 +306,19 @@ export async function bootLifecycleStack({ sessiondDir, projectCwd, hostDir, cli
   log(
     `stack identity source=${identity.sourceCommit.slice(0, 12)} servedJs=${identity.servedJsHash.slice(0, 12)}… fileJs=${identity.fileJsHash.slice(0, 12)}… daemon=${daemon.instanceId.slice(0, 12)}`,
   );
-  return { daemon, handle, origin, wsUrl, rpc, resolver, identity };
+  if (assistantResidency) {
+    assert.ok(assistantWorkspace, "assistant residency requires the Host assistant seam");
+  }
+  return {
+    daemon,
+    handle,
+    origin,
+    wsUrl,
+    rpc,
+    resolver,
+    identity,
+    ...(assistantWorkspace ? { assistantCwd: assistantWorkspace.cwd } : {}),
+  };
 }
 
 export async function readServedClientIdentity(origin, clientDist) {

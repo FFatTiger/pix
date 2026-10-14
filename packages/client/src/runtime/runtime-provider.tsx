@@ -26,6 +26,7 @@ import {
   type RuntimeSocketDeps,
 } from "./socket.js";
 import { RuntimeConnection } from "./runtime-connection.js";
+import { reportSendFailure } from "./send-diagnostics.js";
 import {
   SessionControllerRegistry,
   type RuntimeForegroundActivity,
@@ -118,6 +119,7 @@ export function RuntimeProvider({ children, deps, options }: RuntimeProviderProp
       ...(options?.controllerOptions?.id === undefined ? {} : { id: options.controllerOptions.id }),
       ...(options?.controllerOptions?.setTimeout === undefined ? {} : { setTimeout: options.controllerOptions.setTimeout }),
       ...(options?.controllerOptions?.clearTimeout === undefined ? {} : { clearTimeout: options.controllerOptions.clearTimeout }),
+      reportSendFailure,
     });
     const registry = new SessionControllerRegistry(connection, options);
     return { connection, registry };

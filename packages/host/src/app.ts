@@ -28,6 +28,7 @@ import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerSessionSettingsRoutes } from "./routes/settings.js";
 import { registerCatalogRoutes } from "./routes/catalogs.js";
 import { registerPreferencesRoutes } from "./routes/preferences.js";
+import { registerDiagnosticsRoutes } from "./routes/diagnostics.js";
 import { registerThemeRoutes } from "./routes/themes.js";
 import { createFileWatchManager } from "./resources/file-watch.js";
 
@@ -116,6 +117,7 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
     ...(deps.preferences?.bodyLimitBytes !== undefined ? { bodyLimitBytes: deps.preferences.bodyLimitBytes } : {}),
     logger,
   });
+  registerDiagnosticsRoutes(app, logger);
   registerHealthRoutes(app, deps);
   registerBootstrapRoutes(app, deps, gateDeps);
   if (deps.sessions) {

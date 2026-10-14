@@ -174,6 +174,10 @@ export const urls = {
     memoryLoreTest: () => resource("settings/memory/lore-test"),
   },
   runtime: { ws: () => resource("runtime") },
+  diagnostics: {
+    /** POST /v1/diagnostics/send-failure — one structured send-failure line. */
+    sendFailure: () => resource("diagnostics/send-failure"),
+  },
   assistant: {
     /** GET /v1/assistant — assistant conversation binding (cwd + latest session id). */
     get: () => resource("assistant"),

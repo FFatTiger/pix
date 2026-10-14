@@ -36,4 +36,5 @@ export * from "./memory-settings.js";
 export * from "./built-in-capabilities.js";
 export * from "./capability-catalog.js";
 export * from "./runtime-projections.js";
+export * from "./client-diagnostics.js";
 export * from "./side-chat.js";

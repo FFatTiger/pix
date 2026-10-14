@@ -5,6 +5,7 @@ import {
   type HttpClient,
 } from "@/api/http-client";
 import { registerPreferenceHttpClient } from "@/lib/preferences/preference-sync";
+import { registerDiagnosticsHttpClient } from "@/runtime/send-diagnostics";
 
 const HttpClientContext = createContext<HttpClient | null>(null);
 
@@ -21,6 +22,7 @@ export function HttpClientProvider({ children }: { children: ReactNode }) {
   );
 
   registerPreferenceHttpClient(() => client);
+  registerDiagnosticsHttpClient(() => client);
 
   return (
     <HttpClientContext.Provider value={client}>

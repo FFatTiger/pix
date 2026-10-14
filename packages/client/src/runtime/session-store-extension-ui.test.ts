@@ -340,10 +340,12 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
   it("send failure rejects the reply and clears the slot", async () => {
     const h = createHarness();
     const ws = await attach(h, EXT_CAPS);
-    (ws as unknown as { send: (data: string) => void }).send = () => { throw new Error("boom"); };
+    (ws as unknown as { send: (data: string) => void }).send = () => {
+      throw { code: "unavailable", message: "extension reply send failed", retryable: false };
+    };
     const p = h.store.respondExtensionUi(confirmRequest, { responseKind: "cancelled", cancelled: true });
     await flush();
-    await expect(p).rejects.toThrow("boom");
+    await expect(p).rejects.toMatchObject({ code: "unavailable", message: "extension reply send failed", retryable: false });
     expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
   });
 

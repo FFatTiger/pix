@@ -201,6 +201,12 @@ export class RuntimeSocket {
   private heartbeatTimer: Timer | null = null;
   private pingDeadlineTimer: Timer | null = null;
   private pingOutstanding = false;
+  /** send() threw while the browser socket still said OPEN. */
+  private outboundDead = false;
+  /** Woke from a hide that outlasted one heartbeat, and no inbound frame has
+   * proved the socket since. A backgrounded phone freezes timers, so the
+   * last inbound timestamp is not evidence. */
+  private wakeUnproven = false;
   private probeWaiters: ProbeWaiter[] = [];
 
   constructor(deps: RuntimeSocketDeps, handler: RuntimeSocketHandler) {
@@ -221,10 +227,28 @@ export class RuntimeSocket {
    * frame or no liveness basis to judge). A stale-but-"ready" connection may
    * be half-open (idle proxy kill never delivered a close) and must be probed
    * before anything is submitted through it.
+   *
+   * Hiding suspends timers (iOS background), so a heartbeat that never got to
+   * run does not prove the socket. Once the page has been hidden for a full
+   * heartbeat interval, the last inbound timestamp is not evidence — probe.
    */
   isFresh(): boolean {
     if (!this.livenessNegotiated) return true;
+    if (this.outboundDead || this.wakeUnproven) return false;
+    if (this.hiddenPastUnprovenHeartbeat()) return false;
     return this.deps.now() - this.lastInboundAt <= this.liveness.freshnessMs;
+  }
+
+  /** True while hidden (or just woken) long enough that a suspended heartbeat
+   * could not have proved the transport. Cleared on the next inbound frame. */
+  private hiddenPastUnprovenHeartbeat(): boolean {
+    if (this.hiddenAt === null) return false;
+    return this.deps.now() - this.hiddenAt >= this.liveness.heartbeatIntervalMs;
+  }
+
+  /** The last outbound write threw while the browser socket still said OPEN. */
+  noteOutboundDead(): void {
+    this.outboundDead = true;
   }
 
   /**
@@ -238,7 +262,12 @@ export class RuntimeSocket {
     if (!canSend(this.state)) return Promise.resolve(false);
     const ws = this.ws;
     if (!ws || ws.readyState !== WS_OPEN) return Promise.resolve(false);
+    if (this.outboundDead) return Promise.resolve(false);
     if (this.probeWaiters.length === 0) this.sendPing();
+    // sendPing swallows a throw and resolves waiters that were already
+    // registered. This caller is not one of them yet, so a dead socket
+    // answers here instead of waiting out a pong that will never arrive.
+    if (this.outboundDead) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       const waiter: ProbeWaiter = { resolve, handle: null };
       waiter.handle = this.deps.setTimeout(() => {
@@ -341,6 +370,8 @@ export class RuntimeSocket {
       this.scheduleReconnect();
       return;
     }
+    this.outboundDead = false;
+    this.wakeUnproven = false;
     this.ws = ws;
     this.setState(this.state === "idle" || this.state === "stopped" ? "connecting" : "connecting");
     ws.onopen = () => this.onOpen(gen);
@@ -397,8 +428,11 @@ export class RuntimeSocket {
       return;
     }
     const message = parsed.message;
-    // ANY parsed inbound frame proves the transport is alive.
+    // ANY parsed inbound frame proves the transport is alive, including
+    // across a wake from a hide that outlasted the heartbeat.
     this.lastInboundAt = this.deps.now();
+    this.hiddenAt = null;
+    this.wakeUnproven = false;
     this.clearPingState();
     this.resolveProbes(true);
     if (message.type === "handshake_ack") {
@@ -480,7 +514,13 @@ export class RuntimeSocket {
     // A sendable connection needs a liveness PROBE, not a blind reconnect
     // (handled by the visibility/wake path); an in-flight connect/handshake
     // attempt is already the fastest recovery — opening a second socket in
-    // parallel would leak one of them.
+    // parallel would leak one of them. A socket whose last write already
+    // threw is the exception: the probe cannot use it, and waiting for the
+    // next user action leaves the tab on a dead transport.
+    if (this.outboundDead) {
+      this.forceReconnect("outbound send already failed");
+      return;
+    }
     if (this.state === "attached" || this.state === "ready" || this.state === "attaching"
       || this.state === "connecting" || this.state === "handshaking") return;
     // Cancel a pending backoff and reconnect now.
@@ -499,16 +539,31 @@ export class RuntimeSocket {
   private handleVisibilityChange(visible: boolean): void {
     if (!visible) {
       this.hiddenAt = this.deps.now();
+      // iOS suspends timers for a hidden page. Stop the chain here so a
+      // test clock (which keeps running) cannot ping a socket the browser
+      // would not have touched, and so the wake probe is the first write.
+      this.stopHeartbeat();
       return;
     }
     const hiddenFor = this.hiddenAt === null ? 0 : this.deps.now() - this.hiddenAt;
-    this.hiddenAt = null;
-    if (hiddenFor < this.liveness.hiddenProbeThresholdMs) return;
+    const suspendedHeartbeat = hiddenFor >= this.liveness.heartbeatIntervalMs;
+    // A hide long enough to have suspended a heartbeat keeps hiddenAt until
+    // the next inbound frame. isFresh() stays false across the wake, so a
+    // send in the same turn cannot race into the half-open socket.
+    if (!suspendedHeartbeat) this.hiddenAt = null;
+    if (suspendedHeartbeat) this.wakeUnproven = true;
     if (!this.livenessNegotiated || !canSend(this.state)) return;
-    if (this.isFresh()) return;
+    // The decision uses the duration captured above. isFresh() reads the
+    // clock again, and a test clock advances on that read.
+    if (!suspendedHeartbeat && hiddenFor < this.liveness.hiddenProbeThresholdMs) return;
+    if (!suspendedHeartbeat && this.isFresh()) return;
     void this.probe(this.liveness.pongTimeoutMs).then((alive) => {
       if (alive || this.disposed || !this.wantConnection) return;
-      if (!canSend(this.state)) return; // loss already surfaced; recovery owns it
+      // A ping that throws never delivers a close, so the state stays
+      // sendable. isFresh() is then false only because outboundDead is set,
+      // and a time-only check would skip the reconnect. A state that already
+      // left sendable was handed to recovery and must not be reconnected twice.
+      if (!canSend(this.state) && !this.outboundDead) return;
       this.forceReconnect("liveness probe failed after wake");
     });
   }
@@ -592,7 +647,13 @@ export class RuntimeSocket {
     try {
       ws.send(JSON.stringify({ type: "ping", id: this.id() }));
     } catch {
-      return; // send failures surface via onclose; a probe still has its own deadline
+      // A throw with no close is the half-open socket. Mark it dead and
+      // fail the probe; do NOT reconnect here. forceReconnect from this
+      // catch re-enters the wake probe (isFresh stays false) and opens a
+      // socket per failure. The caller that asked for the probe reconnects.
+      this.outboundDead = true;
+      this.resolveProbes(false);
+      return;
     }
     this.pingOutstanding = true;
     this.pingDeadlineTimer = this.deps.setTimeout(() => {

@@ -36,6 +36,7 @@ import {
   type WsSnapshotMessage,
   type WsSubmitTurnResultMessage,
   type WsTurnStatusMessage,
+  type SendFailureReport,
 } from "@fffattiger/pix-protocol";
 import { createDefaultIdFactory, type IdFactory } from "./correlation.js";
 import { canSend, type ConnectionState } from "./lifecycle.js";
@@ -146,8 +147,13 @@ export interface RuntimeControllerBinding {
   unbind(): void;
 }
 
+/** Bounded send-failure diagnostic. No prompt text, no credentials. */
+export type { SendFailureReport } from "@fffattiger/pix-protocol";
+
 export interface RuntimeConnectionOptions {
   readonly id?: IdFactory;
+  /** Fire-and-forget diagnostic sink. Undefined in tests; never throws into send. */
+  readonly reportSendFailure?: (report: SendFailureReport) => void;
   readonly setTimeout?: (fn: () => void, ms: number) => unknown;
   readonly clearTimeout?: (handle: unknown) => void;
   readonly maxOutboundAttempts?: number;
@@ -330,6 +336,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   private readonly nowFn: () => number;
   private readonly maxOutboundAttempts: number;
   private readonly livenessProbeTimeoutMs: number;
+  readonly reportSendFailure: ((report: SendFailureReport) => void) | undefined;
   private readonly attempts = new Map<string, AttemptRecord>();
   private readonly bindingsBySessionId = new Map<string, BindingRecord>();
   private readonly turnOwners = new Map<string, symbol>();
@@ -365,6 +372,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     this.nowFn = deps.now;
     this.maxOutboundAttempts = options.maxOutboundAttempts ?? DEFAULT_MAX_OUTBOUND_ATTEMPTS;
     this.livenessProbeTimeoutMs = options.livenessProbeTimeoutMs ?? DEFAULT_LIVENESS_PROBE_TIMEOUT_MS;
+    this.reportSendFailure = options.reportSendFailure;
     this.socket = new RuntimeSocket({ ...deps, id: this.id }, this);
     this.view = this.computeView();
   }
@@ -384,6 +392,12 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   get hasPendingCreate(): boolean { return this.pendingCreate !== null; }
 
   connect(): void { this.socket.connect(); }
+
+  /** Proven-dead transport: tear the socket down and open a fresh one now.
+   * No-op while a recovery attempt is already in flight. */
+  recoverTransport(reason: string): void {
+    this.socket.forceReconnect(reason);
+  }
 
   dispose(): void {
     const error: ProtocolError = { code: "unavailable", message: "runtime disposed", retryable: false };
@@ -1005,7 +1019,21 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     try {
       this.socket.send(message);
     } catch (error) {
-      if (this.removeExactAttempt(record)) record.onSendFailure(error);
+      // canDeliverNow was true and send still threw: the browser socket is
+      // dead without a close (half-open). Structured rejects (frame too
+      // large, invalid images) fail this attempt. A raw throw is transport
+      // loss: mark the socket dead and force ONE reconnect. The controller
+      // resends the same operationId on the new socket. Calling onSendFailure
+      // here would start a second resend on top of that reconnect.
+      const mapped = this.sendThrewError(error);
+      if (mapped.code === "unavailable" && mapped.retryable) {
+        // The browser socket is dead and still says OPEN. Remember that
+        // without reconnecting here: a logical-retry lane (the submit
+        // owner) reconnects once and resends the same id. Reconnecting in
+        // this catch as well writes that id a second time.
+        this.socket.noteOutboundDead();
+      }
+      if (this.removeExactAttempt(record)) record.onSendFailure(mapped);
       return null;
     }
     return {
@@ -1013,6 +1041,19 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       generation,
       cancel: () => { this.removeExactAttempt(record); },
     };
+  }
+
+  /** A throw from socket.send is not an application error. Structured
+   * non-retryable rejects (frame too large, invalid images) pass through;
+   * a raw Error or anything else is transport loss and stays retryable. */
+  private sendThrewError(cause: unknown): ProtocolError {
+    if (cause !== null && typeof cause === "object") {
+      const value = cause as Partial<ProtocolError>;
+      if (typeof value.code === "string" && typeof value.message === "string" && typeof value.retryable === "boolean") {
+        return value as ProtocolError;
+      }
+    }
+    return connectionLostError();
   }
 
   /** True when bytes may be written NOW: sendable AND provably fresh. */
@@ -1082,7 +1123,9 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       try {
         this.socket.send(message);
       } catch (error) {
-        if (this.removeExactAttempt(record)) record.onSendFailure(error);
+        const mapped = this.sendThrewError(error);
+        if (mapped.code === "unavailable" && mapped.retryable) this.socket.noteOutboundDead();
+        if (this.removeExactAttempt(record)) record.onSendFailure(mapped);
       }
     }
   }

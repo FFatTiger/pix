@@ -34,8 +34,17 @@ export class FakeWebSocket {
     this.url = url;
   }
 
+  /** Test seam: the browser socket still reports OPEN, but the proxy already
+   * destroyed the upstream half. `send` throws and no close is delivered.
+   * `dieOnSend` is the same failure, armed so the next write is the one
+   * that discovers it (a probe must actually attempt the ping). */
+  silentDead = false;
+  dieOnSend = false;
+
   send(data: string): void {
     if (this.readyState !== OPEN) throw new Error("FakeWebSocket send while not open");
+    if (this.dieOnSend) this.silentDead = true;
+    if (this.silentDead) throw new Error("FakeWebSocket upstream destroyed");
     this.sent.push(JSON.parse(data));
   }
 
@@ -75,6 +84,8 @@ export interface HarnessOptions {
   readonly connectionOptions?: RuntimeConnectionOptions;
   /** If true, createWebSocket throws once before succeeding (transient). */
   readonly failFirstConnect?: boolean;
+  /** If true, the first outbound frame of every socket is swallowed (half-open). */
+  readonly silentDeadAfterOpen?: boolean;
   /** Transport liveness overrides (heartbeat cadence, probe budgets). */
   readonly liveness?: Partial<LivenessOptions>;
 }
@@ -158,7 +169,12 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
     dispose: () => registry.dispose(),
     goOnline: () => { for (const cb of onlineListeners) cb(); },
     goVisible: () => { for (const cb of visibleListeners) cb(); },
-    changeVisibility: (visible: boolean) => { for (const cb of visibilityListeners) cb(visible); },
+    changeVisibility: (visible: boolean) => {
+      for (const cb of visibilityListeners) cb(visible);
+      // The browser fires visibilitychange once. Both subscribers run: the
+      // probe owner and the "page became visible, reconnect now" owner.
+      if (visible) for (const cb of visibleListeners) cb();
+    },
     lastSocket: () => sockets[sockets.length - 1]!,
     controller: (sessionId) => registry.lookup(sessionId),
   };

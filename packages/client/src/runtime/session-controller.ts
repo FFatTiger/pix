@@ -626,6 +626,10 @@ interface TurnPending {
   fenceSource: SubmitTurnFenceSource;
   /** Bounded authority-fence repair attempts for this logical turn. */
   revisionRepairCount: RevisionRepairCount;
+  /** Silent recover-and-resend used (0|1). A second failure surfaces. */
+  transportRecoveryCount: 0 | 1;
+  /** Deadline for the silent recovery, measured from the first failure. */
+  transportRecoveryDeadline: number | null;
   /** Bounded stale-attached-fence drop (idle-lost observation) — independent of revisionRepairCount. */
   staleAttachedRepairCount: RevisionRepairCount;
   /** Exact fence identity submitted on the current wire attempt. */
@@ -690,6 +694,23 @@ export interface TurnTerminalInfo {
 }
 
 
+/** Rejections no reconnect can change: the user's own input, a missing
+ * capability, or a session that does not exist. Everything else — transport
+ * loss, a stale epoch, a conflict — recovers once. */
+const USER_SEND_REJECTION_CODES: ReadonlySet<string> = new Set([
+  "invalid_input",
+  "invalid_request",
+  "invalid_command",
+  "unsupported_capability",
+  "unauthorized",
+  "forbidden",
+  "not_found",
+]);
+
+function isUserSendRejection(error: ProtocolError): boolean {
+  return USER_SEND_REJECTION_CODES.has(error.code);
+}
+
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_SEND_TIMEOUT_MS = 10_000;
 const DEFAULT_STOP_ACK_TIMEOUT_MS = 10_000;
@@ -697,6 +718,8 @@ const DEFAULT_DETACH_ACK_TIMEOUT_MS = 10_000;
 const DEFAULT_SIDE_CHAT_COMMAND_TIMEOUT_MS = 10_000;
 /** Bounded wait for shared transport sendability before a submit-turn envelope. */
 const SUBMIT_SEND_TIMEOUT_MS = 10_000;
+/** One silent recover-and-resend after a non-user send failure. Never loops. */
+const SUBMIT_RECOVERY_BUDGET_MS = 30_000;
 /** Bounded lifecycle/attach send gate (create/open through the shared transport gate). */
 const LIFECYCLE_GATE_TIMEOUT_MS = 30_000;
 /** Browser-side bound below Host/sessiond limits; read floods fail closed locally. */
@@ -1530,10 +1553,13 @@ export class SessionController implements RuntimeControllerPort {
         };
       }
     }
+    // A raw throw (socket.send on a half-open WebSocket) is transport loss.
+    // Collapsing it to retryable:false makes the composer show the generic
+    // "not sent" copy for a failure the transport is about to recover.
     return {
       code: "unavailable",
       message: "session activation failed",
-      retryable: false,
+      retryable: true,
       phase: "activation",
     };
   }
@@ -1741,6 +1767,8 @@ export class SessionController implements RuntimeControllerPort {
         fenceSource: fence.source,
         revisionRepairCount: 0,
         staleAttachedRepairCount: 0,
+        transportRecoveryCount: 0,
+        transportRecoveryDeadline: null,
         submittedExpectedEpoch: expectedEpoch ?? null,
         submittedExpectedRevision: expectedRevision ?? null,
         dispatchRevision: 0,
@@ -3196,6 +3224,7 @@ export class SessionController implements RuntimeControllerPort {
         );
       }
     }
+    if (pending.transportRecoveryCount === 1) this.reportSendDiagnostic("send_recovered", pending, { code: "unavailable", message: "recovered", retryable: true });
     pending.resolve(admission);
     this.notify();
     if (!this.attached) {
@@ -3231,9 +3260,12 @@ export class SessionController implements RuntimeControllerPort {
     this.pendingTurn = null;
     this.notify();
     if (admission.delivery === "not_delivered") {
+      if (pending.transportRecoveryCount === 1) this.reportSendDiagnostic("send_recovery_failed", pending, admission.error);
+      else this.reportSendDiagnostic("send_failure", pending, admission.error);
       this.settlePromptTransaction(pending.tx, { removeBubble: true });
       pending.reject(this.activationTagged(admission.error));
     } else {
+      this.reportSendDiagnostic("send_failure", pending, admission.error);
       this.retainedUncertainDelivery = true;
       this.settlePromptTransaction(pending.tx, { removeBubble: false });
       pending.reject(admission.error);
@@ -3272,6 +3304,7 @@ export class SessionController implements RuntimeControllerPort {
       && pending.staleAttachedRepairCount === 0
     ) {
       pending.staleAttachedRepairCount = 1;
+      pending.transportRecoveryCount = 1;
       pending.fenceSource = "none";
       pending.submittedExpectedEpoch = null;
       pending.submittedExpectedRevision = null;
@@ -3317,6 +3350,9 @@ export class SessionController implements RuntimeControllerPort {
     }
 
     pending.revisionRepairCount = 1;
+    // This resend is the fence repair, not a transport failure. A throw while
+    // writing it settles; it must not start a second recovery on top.
+    pending.transportRecoveryCount = 1;
     pending.submittedExpectedEpoch = admission.epoch;
     pending.submittedExpectedRevision = admission.revision;
     pending.epoch = admission.epoch;
@@ -3359,13 +3395,83 @@ export class SessionController implements RuntimeControllerPort {
    */
   private failSubmitTurnBeforeWire(pending: TurnPending, cause: unknown): void {
     if (this.pendingTurn !== pending) return;
+    const error = this.activationFailure(cause);
+    if (this.recoverSubmitTurn(pending, error)) return;
+    if (pending.transportRecoveryCount === 1) this.reportSendDiagnostic("send_recovery_failed", pending, error);
     pending.attempt?.cancel();
     this.binding.unregisterTurn(pending.operationId);
     this.pendingTurn = null;
     this.settlePromptTransaction(pending.tx, { removeBubble: true });
-    const error = this.activationFailure(cause);
     pending.reject(error);
     this.setError(error);
+  }
+
+  /**
+   * One silent recovery for a send that failed before the server admitted it.
+   * User-side rejections, a second failure, and a blown 30s budget surface
+   * instead. Returns true when the resend was started.
+   *
+   * Two proven-dead shapes share this one retry:
+   *  - the socket threw while still OPEN: the connection already forced the
+   *    reconnect (see registerAttempt). Resend the SAME operationId on the
+   *    new socket. Do not force a second reconnect.
+   *  - any other non-user failure (stale epoch, conflict, a gate that gave
+   *    up while the socket still looked sendable): force one reconnect +
+   *    re-attach, then resend that same operationId. sessiond's duplicate
+   *    admission makes a resend that already landed a no-op.
+   */
+  private recoverSubmitTurn(pending: TurnPending, error: ProtocolError): boolean {
+    if (this.pendingTurn !== pending) return false;
+    if (pending.transportRecoveryCount !== 0) return false;
+    if (isUserSendRejection(error)) {
+      this.reportSendDiagnostic("send_failure", pending, error);
+      return false;
+    }
+    // A gate timeout already waited its full budget for a connection that
+    // never came back. Recovering it would start that wait over.
+    if (error.code === "timeout") {
+      this.reportSendDiagnostic("send_failure", pending, error);
+      return false;
+    }
+    const now = Date.now();
+    const deadline = pending.transportRecoveryDeadline ?? now + SUBMIT_RECOVERY_BUDGET_MS;
+    if (now >= deadline) {
+      this.reportSendDiagnostic("send_failure", pending, error);
+      return false;
+    }
+    pending.transportRecoveryCount = 1;
+    pending.transportRecoveryDeadline = deadline;
+    pending.delivery = "in_flight";
+    pending.wireGeneration = null;
+    this.reportSendDiagnostic("send_failure", pending, error);
+    const state = this.runtimeConnection.connectionState;
+    if (state !== "unavailable" && state !== "reconnecting" && state !== "connecting" && state !== "handshaking") {
+      this.runtimeConnection.recoverTransport("submit turn recovery");
+    }
+    if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
+    this.sendSubmitTurn();
+    return true;
+  }
+
+  /** Fire-and-forget diagnostic. Never throws into the send path. */
+  private reportSendDiagnostic(kind: "send_failure" | "send_recovered" | "send_recovery_failed", pending: TurnPending, error: ProtocolError): void {
+    const report = this.runtimeConnection.reportSendFailure;
+    if (!report) return;
+    try {
+      report({
+        kind,
+        code: error.code,
+        phase: "activation",
+        message: error.message.slice(0, 200),
+        retryable: error.retryable,
+        connectionState: this.runtimeConnection.connectionState,
+        epoch: pending.epoch,
+        sessionKind: this.snapshot?.cwd?.endsWith("/pix/assistant") ? "assistant" : "session",
+        sessionId: pending.sessionId,
+      });
+    } catch {
+      // Diagnostics never change send outcome.
+    }
   }
 
   /** Swallow observation-attach rejection; submitTurn may still cold-activate unfenced. */
@@ -3399,7 +3505,9 @@ export class SessionController implements RuntimeControllerPort {
     };
   }
 
-  /** One 10s pre-wire gate covering reconnect sendability and exact resume-attach. */
+  /** One 10s pre-wire gate covering reconnect sendability and exact resume-attach.
+   * A recovery resend uses the remaining 30s budget instead, so the one retry
+   * cannot add a second full wait and cannot hang past its deadline. */
   private waitForSubmitWire(pending: TurnPending, revision: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -3409,9 +3517,12 @@ export class SessionController implements RuntimeControllerPort {
         this.clearTimeoutFn(timer);
         fn();
       };
+      const budget = pending.transportRecoveryDeadline === null
+        ? SUBMIT_SEND_TIMEOUT_MS
+        : Math.max(0, pending.transportRecoveryDeadline - Date.now());
       const timer = this.setTimeoutFn(() => {
         finish(() => reject({ code: "timeout", message: "runtime not sendable in time", retryable: true } satisfies ProtocolError));
-      }, SUBMIT_SEND_TIMEOUT_MS);
+      }, Math.min(SUBMIT_SEND_TIMEOUT_MS, budget));
       void (async () => {
         try {
           if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
