@@ -268,18 +268,22 @@ test("lease: symlink / wrong-permission / hard-linked document fail closed and s
   await lease.close();
 
   // wrong-permission (0644) → DOC_PERMISSIONS on read, bytes+inode unchanged.
-  const hostDir2 = temp("lease-doc-perm-");
-  let l2 = await openHostStateDirectoryLease({ hostDir: hostDir2 });
-  await l2.writeDocument(TRUSTED_ROOTS_STATE_DOCUMENT, doc("perm"));
-  await l2.close();
-  chmodSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT), 0o644);
-  const beforeBytes = readFileSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT));
-  const beforeIno = lstatSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT)).ino;
-  const permLease = await openHostStateDirectoryLease({ hostDir: hostDir2 });
-  await assert.rejects(() => permLease.readDocument(TRUSTED_ROOTS_STATE_DOCUMENT), (e) => e.code === "DOC_PERMISSIONS");
-  assert.deepEqual(readFileSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT)), beforeBytes);
-  assert.equal(lstatSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT)).ino, beforeIno);
-  await permLease.close();
+  // NTFS ignores the mode, so this rejection only exists on POSIX.
+  let l2;
+  if (process.platform !== "win32") {
+    const hostDir2 = temp("lease-doc-perm-");
+    l2 = await openHostStateDirectoryLease({ hostDir: hostDir2 });
+    await l2.writeDocument(TRUSTED_ROOTS_STATE_DOCUMENT, doc("perm"));
+    await l2.close();
+    chmodSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT), 0o644);
+    const beforeBytes = readFileSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT));
+    const beforeIno = lstatSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT)).ino;
+    const permLease = await openHostStateDirectoryLease({ hostDir: hostDir2 });
+    await assert.rejects(() => permLease.readDocument(TRUSTED_ROOTS_STATE_DOCUMENT), (e) => e.code === "DOC_PERMISSIONS");
+    assert.deepEqual(readFileSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT)), beforeBytes);
+    assert.equal(lstatSync(join(hostDir2, TRUSTED_ROOTS_STATE_DOCUMENT)).ino, beforeIno);
+    await permLease.close();
+  }
 
   // hard-linked document → DOC_HARD_LINK on read.
   const hostDir3 = temp("lease-doc-hlink-");
@@ -360,6 +364,7 @@ function assertSanitizedHostError(e, dir) {
 }
 
 test("lease: EACCES on the hostDir path → fixed HOST_DIR_UNSAFE (no raw path/os leak)", async (t) => {
+  if (process.platform === "win32") { t.skip("NTFS does not honor chmod 000 against the owner"); return; }
   if (isRoot()) { t.skip("root bypasses permission checks"); return; }
   const dir = temp("lease-eacces-");
   const hostDir = join(dir, "leaf");

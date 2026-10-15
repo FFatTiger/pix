@@ -57,7 +57,10 @@ test("lock: acquire pins dev/ino identity; release removes only the exact owner"
   });
   assert.equal(owned.dev, lstatSync(lockPath).dev);
   assert.equal(owned.ino, lstatSync(lockPath).ino);
-  assert.equal((lstatSync(lockPath).mode & 0o077), 0, "lock is 0600");
+  // NTFS reports no POSIX mode bits, so 0600 is not observable there.
+  if (process.platform !== "win32") {
+    assert.equal((lstatSync(lockPath).mode & 0o077), 0, "lock is 0600");
+  }
 
   // A live lock → LOCK_BUSY.
   await expectReject(

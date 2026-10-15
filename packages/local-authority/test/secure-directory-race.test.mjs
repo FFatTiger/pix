@@ -94,7 +94,11 @@ function racedFs({ enoentPaths = [], eexistPaths = [], ownerCheck = isOwnedByCur
 // NEVER be treated as created (the confirmed defect) and NEVER be chmod'd.
 // ---------------------------------------------------------------------------
 
-test("EEXIST raced final leaf 0755: rejects NOT_PRIVATE, mode unchanged, never created", async () => {
+test("EEXIST raced final leaf 0755: rejects NOT_PRIVATE, mode unchanged, never created", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("NOT_PRIVATE and the 0755 mode check require POSIX mode bits");
+    return;
+  }
   const dir = temp("race-leaf-0755-");
   const leaf = join(dir, "leaf");
   mkdirSync(leaf, { mode: 0o755 });
@@ -110,7 +114,11 @@ test("EEXIST raced final leaf 0755: rejects NOT_PRIVATE, mode unchanged, never c
   assert.equal(lstatSync(dir).mode & 0o777, 0o700, "parent unchanged");
 });
 
-test("EEXIST raced final 0700 leaf: validateExistingLeaf runs, created:false, marker unchanged", async () => {
+test("EEXIST raced final 0700 leaf: validateExistingLeaf runs, created:false, marker unchanged", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("the raced-leaf 0700 acceptance requires POSIX mode bits");
+    return;
+  }
   const dir = temp("race-leaf-0700-");
   const leaf = join(dir, "leaf");
   mkdirSync(leaf, { mode: 0o700 });
@@ -146,7 +154,11 @@ test("EEXIST raced final 0700 leaf: validateExistingLeaf runs, created:false, ma
   assert.equal(readFileSync(marker, "utf8"), "untouched", "marker unchanged after hook rejection");
 });
 
-test("EEXIST raced final symlink to external 0755 dir: SYMLINK, external mode/content unchanged", async () => {
+test("EEXIST raced final symlink to external 0755 dir: SYMLINK, external mode/content unchanged", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("asserts the POSIX 0755 mode of the external directory");
+    return;
+  }
   const dir = temp("race-leaf-sym-");
   const external = join(dir, "external");
   mkdirSync(external, { mode: 0o755 });
@@ -172,7 +184,11 @@ test("EEXIST raced final symlink to external 0755 dir: SYMLINK, external mode/co
 // non-symlink dir that is current-user owned with the exact private mode.
 // ---------------------------------------------------------------------------
 
-test("EEXIST raced intermediate 0755: NOT_PRIVATE, no descendant created, never chmod'd", async () => {
+test("EEXIST raced intermediate 0755: NOT_PRIVATE, no descendant created, never chmod'd", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("NOT_PRIVATE requires POSIX mode bits");
+    return;
+  }
   const dir = temp("race-int-0755-");
   const inter = join(dir, "inter");
   mkdirSync(inter, { mode: 0o755 });
@@ -188,7 +204,11 @@ test("EEXIST raced intermediate 0755: NOT_PRIVATE, no descendant created, never 
   assert.equal(lstatSync(inter).mode & 0o777, 0o755, "raced intermediate never chmod'd");
 });
 
-test("EEXIST raced intermediate owned by another user: NOT_OWNED, no descendant created", async () => {
+test("EEXIST raced intermediate owned by another user: NOT_OWNED, no descendant created", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("uid ownership is not reported on NTFS");
+    return;
+  }
   const dir = temp("race-int-owner-");
   const inter = join(dir, "inter");
   mkdirSync(inter, { mode: 0o700 });
@@ -204,7 +224,11 @@ test("EEXIST raced intermediate owned by another user: NOT_OWNED, no descendant 
   assert.equal(lstatSync(inter).mode & 0o777, 0o700, "raced intermediate never chmod'd");
 });
 
-test("EEXIST raced intermediate 0700 current-user: strong policy permits; descendants created 0700, created:true", async () => {
+test("EEXIST raced intermediate 0700 current-user: strong policy permits; descendants created 0700, created:true", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("0700 enforcement is POSIX-only");
+    return;
+  }
   const dir = temp("race-int-safe-");
   const inter = join(dir, "inter");
   mkdirSync(inter, { mode: 0o700 });
@@ -224,7 +248,11 @@ test("EEXIST raced intermediate 0700 current-user: strong policy permits; descen
 // Ordinary successful-mkdir behavior through the same internal walk (real fs).
 // ---------------------------------------------------------------------------
 
-test("internal walk with real fs: all-missing nested path created 0700, created:true", async () => {
+test("internal walk with real fs: all-missing nested path created 0700, created:true", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("0700 enforcement is POSIX-only; win32 creation is covered by the fake-fs tests");
+    return;
+  }
   const dir = temp("race-create-ok-");
   const leaf = join(dir, "a", "b", "leaf");
   const fs = { lstat, mkdir, realpath, open, isOwnedByCurrentUser };
@@ -242,7 +270,11 @@ test("internal walk with real fs: all-missing nested path created 0700, created:
 // chmod — O_NOFOLLOW alone cannot stop a real-directory swap.
 // ---------------------------------------------------------------------------
 
-test("created leaf pathname swapped at open to a real 0755 replacement dir: UNSAFE_COMPONENT, zero chmod, no created/hook bypass", async () => {
+test("created leaf pathname swapped at open to a real 0755 replacement dir: UNSAFE_COMPONENT, zero chmod, no created/hook bypass", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("the zero-chmod proof reads POSIX mode bits the replacement must keep");
+    return;
+  }
   const dir = temp("race-open-swap-dir-");
   const leaf = join(dir, "leaf");
   const backup = join(dir, "leaf.original");
@@ -291,7 +323,11 @@ test("created leaf pathname swapped at open to a real 0755 replacement dir: UNSA
   assert.equal(opened, 1, "leaf opened exactly once");
 });
 
-test("created leaf pathname swapped at open to a regular file: UNSAFE_COMPONENT, file unchanged", async () => {
+test("created leaf pathname swapped at open to a regular file: UNSAFE_COMPONENT, file unchanged", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("opening the swapped file is a directory handle on POSIX; win32 open of a file after the swap does not exercise the same fd identity check");
+    return;
+  }
   const dir = temp("race-open-swap-file-");
   const leaf = join(dir, "leaf");
   const backup = join(dir, "leaf.original");

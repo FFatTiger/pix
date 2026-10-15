@@ -257,16 +257,33 @@ test("ensurePrivateDirectory posix: mode enforcement still applies on posix", as
 // State documents
 // ---------------------------------------------------------------------------
 
-test("readStateDocument win32: 0o666 mode bits are not a permission failure; hard links still fail", async () => {
+test("readStateDocument win32: 0o666 mode bits are not a permission failure; hard links still fail", async (t) => {
   const dir = temp("doc-win32-");
   const doc = join(dir, "state.json");
   writeFileSync(doc, "{\"ok\":true}\n", { mode: 0o666 });
   chmodSync(doc, 0o666);
-  // posix mode (default) rejects group/other bits.
-  await expectReject(() => readStateDocument(doc, { maxBytes: 1024 }), "DOC_PERMISSIONS");
-  // win32 mode reads it.
-  const result = await readStateDocument(doc, { maxBytes: 1024 }, "win32");
-  assert.equal(result.content, "{\"ok\":true}\n");
+  if (process.platform === "win32") {
+    // NTFS reports 0o666 for every file and the running platform is win32, so
+    // the POSIX DOC_PERMISSIONS branch never runs. The read must succeed.
+    const result = await readStateDocument(doc, { maxBytes: 1024 });
+    assert.equal(result.content, "{\"ok\":true}\n");
+  } else {
+    // posix mode (default) rejects group/other bits.
+    await expectReject(() => readStateDocument(doc, { maxBytes: 1024 }), "DOC_PERMISSIONS");
+  }
+  // win32 mode reads it on every host (the platform argument, not the OS).
+  const forced = await readStateDocument(doc, { maxBytes: 1024 }, "win32");
+  assert.equal(forced.content, "{\"ok\":true}\n");
+  // Hard link still fails on both platforms. link() needs a second name.
+  const { linkSync } = await import("node:fs");
+  const alias = join(dir, "alias.json");
+  try {
+    linkSync(doc, alias);
+  } catch (error) {
+    t.skip(`hard links unavailable here (${error.code ?? error.message})`);
+    return;
+  }
+  await expectReject(() => readStateDocument(doc, { maxBytes: 1024 }, "win32"), "DOC_HARD_LINK");
 });
 
 test("backend factory: platform option plumbs through read/write paths", async () => {
@@ -310,7 +327,11 @@ test("writeStateDocument win32: non-retryable rename failure still fails closed"
   assert.equal(readFileSync(doc, "utf8"), "old\n");
 });
 
-test("writeStateDocument posix: EPERM rename never retries (frozen atomic rename-over)", async () => {
+test("writeStateDocument posix: EPERM rename never retries (frozen atomic rename-over)", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("the default platform is win32 here, so EPERM takes the bounded retry; the frozen no-retry path is the explicit posix run below and on POSIX hosts");
+    return;
+  }
   const dir = temp("doc-rename3-");
   const doc = join(dir, "doc.json");
   writeFileSync(doc, "old\n");

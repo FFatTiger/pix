@@ -71,6 +71,8 @@ function assertSanitized(e, code, message, path) {
 // ---------------------------------------------------------------------------
 
 test("posixFileIdentity: EACCES → fixed sanitized UNSAFE_COMPONENT (no raw path/os leak)", async (t) => {
+  // chmod 000 does not deny the file owner on NTFS, so this cannot produce EACCES.
+  if (process.platform === "win32") { t.skip("NTFS does not honor chmod 000 against the owner"); return; }
   if (isRoot()) { t.skip("root bypasses permission checks"); return; }
   const dir = temp("leak-ident-");
   const child = join(dir, "child");
@@ -87,6 +89,7 @@ test("posixFileIdentity: EACCES → fixed sanitized UNSAFE_COMPONENT (no raw pat
 });
 
 test("readLifetimeLock: EACCES → {kind:'unsafe',reason:'LOCK_UNSAFE'} (return union, no throw)", async (t) => {
+  if (process.platform === "win32") { t.skip("NTFS does not honor chmod 000 against the owner"); return; }
   if (isRoot()) { t.skip("root bypasses permission checks"); return; }
   const dir = temp("leak-lock-");
   writeFileSync(join(dir, "host.lock"), lockPayload(process.pid, "instance-rll-01"), { mode: 0o600 });
@@ -101,6 +104,7 @@ test("readLifetimeLock: EACCES → {kind:'unsafe',reason:'LOCK_UNSAFE'} (return 
 });
 
 test("acquireLifetimeLock: unreadable existing lock (EEXIST → read EACCES) → LOCK_UNSAFE", async (t) => {
+  if (process.platform === "win32") { t.skip("NTFS does not honor chmod 000 against the owner"); return; }
   if (isRoot()) { t.skip("root bypasses permission checks"); return; }
   const dir = temp("leak-acquire-");
   const lockPath = join(dir, "host.lock");
@@ -119,6 +123,7 @@ test("acquireLifetimeLock: unreadable existing lock (EEXIST → read EACCES) →
 });
 
 test("canonicalizeAbsolutePath: EACCES on an existing component → fixed UNSAFE_COMPONENT", async (t) => {
+  if (process.platform === "win32") { t.skip("NTFS does not honor chmod 000 against the owner"); return; }
   if (isRoot()) { t.skip("root bypasses permission checks"); return; }
   const dir = temp("leak-canon-");
   const child = join(dir, "child");
@@ -149,6 +154,7 @@ test("ensurePrivateDirectory: EACCES → fixed UNSAFE_COMPONENT (no raw leak)", 
 });
 
 test("writeStateDocument: unreadable lock revalidation → fixed LOCK_LOST (not raw, not WRITE_FAILED)", async (t) => {
+  if (process.platform === "win32") { t.skip("NTFS does not honor chmod 000 against the owner"); return; }
   if (isRoot()) { t.skip("root bypasses permission checks"); return; }
   const docDir = temp("leak-doc-");
   const lockDir = temp("leak-lockdir-");
@@ -192,9 +198,13 @@ test("canonicalize: parent-is-file fails closed (UNSAFE_COMPONENT)", async () =>
   const dir = temp("leak-parentfile-");
   const file = join(dir, "plain");
   writeFileSync(file, "x", { mode: 0o600 });
+  // POSIX: lstat of a child under a file is ENOTDIR → UNSAFE_COMPONENT.
+  // win32: the walk resolves the file itself and rejects it as NOT_DIRECTORY.
+  // Both are fail-closed; neither creates anything.
+  const code = process.platform === "win32" ? "NOT_DIRECTORY" : "UNSAFE_COMPONENT";
   await assert.rejects(
     () => canonicalizeAbsolutePath(join(file, "child")),
-    (e) => e instanceof LocalAuthorityError && e.code === "UNSAFE_COMPONENT",
+    (e) => e instanceof LocalAuthorityError && e.code === code,
   );
 });
 
@@ -217,10 +227,12 @@ test("ensurePrivateDirectory: symlink/non-dir intermediate stays SYMLINK/NOT_DIR
     () => ensurePrivateDirectory(join(file, "leaf")),
     (e) => e instanceof LocalAuthorityError && e.code === "NOT_DIRECTORY",
   );
-  // canonicalize lstat's the FULL path (ENOTDIR) → UNSAFE_COMPONENT.
+  // canonicalize lstat's the FULL path. POSIX ENOTDIR → UNSAFE_COMPONENT;
+  // win32 resolves the file and rejects NOT_DIRECTORY. Both fail closed.
+  const canonCode = process.platform === "win32" ? "NOT_DIRECTORY" : "UNSAFE_COMPONENT";
   await assert.rejects(
     () => canonicalizeAbsolutePath(join(file, "leaf")),
-    (e) => e instanceof LocalAuthorityError && e.code === "UNSAFE_COMPONENT",
+    (e) => e instanceof LocalAuthorityError && e.code === canonCode,
   );
 });
 

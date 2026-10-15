@@ -196,12 +196,19 @@ test("docx-preview matches the extension case-insensitively (.DOCX)", async () =
 
 test("docx-preview escapes the file name in the title", async () => {
   const { root, app } = await fixture();
-  writeFileSync(join(root, "a&b<c>\"onerror=x.docx"), makeTextDocx(["payload"]));
-  const res = await preview(app, join(root, "a&b<c>\"onerror=x.docx"));
+  // `"` `:` and some of `<>` are illegal in a Windows file name. The name
+  // keeps the characters both platforms accept (`&` `<`) so the escape is
+  // still proven; the wrapper escapes every one of `& < > "`.
+  const name = process.platform === "win32" ? "a&b<c onerror=x.docx" : "a&b<c>\"onerror=x.docx";
+  const escaped = process.platform === "win32"
+    ? "a&amp;b&lt;c onerror=x.docx"
+    : "a&amp;b&lt;c&gt;&quot;onerror=x.docx";
+  writeFileSync(join(root, name), makeTextDocx(["payload"]));
+  const res = await preview(app, join(root, name));
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.ok(html.includes("a&amp;b&lt;c&gt;&quot;onerror=x.docx"), "escaped title");
-  assert.ok(!html.includes('class="file-title">a&b<c>'), "raw unescaped name never emitted");
+  assert.ok(html.includes(escaped), "escaped title");
+  assert.ok(!html.includes(`class="file-title">${name}`), "raw unescaped name never emitted");
 });
 
 test("docx-preview inlines embedded images as data URIs and never external http(s) sources", async () => {

@@ -235,9 +235,14 @@ test("ledger open rejects invalid instanceId before any filesystem mutation", as
 test("PIX_HOST_DIR: newly created dedicated leaf gets 0700; ledger 0600; atomic write", async () => {
   const hostDir = temp("pi-host-dir-");
   const ledger = await openTrustedRootsLedger({ hostDir });
-  assert.equal(lstatSync(hostDir).mode & 0o777, 0o700, "newly created host dir must be 0700");
+  // NTFS has no POSIX mode bits, so 0700/0600 are only observable on POSIX.
+  if (process.platform !== "win32") {
+    assert.equal(lstatSync(hostDir).mode & 0o777, 0o700, "newly created host dir must be 0700");
+  }
   await ledger.writeAll([claim({ path: "/tmp/a", repoRoot: "/tmp/r", base: "/tmp/r-worktrees", claimId: "claim-perm-aaa" })]);
-  assert.equal(lstatSync(ledger.ledgerPath).mode & 0o777, 0o600, "ledger must be 0600");
+  if (process.platform !== "win32") {
+    assert.equal(lstatSync(ledger.ledgerPath).mode & 0o777, 0o600, "ledger must be 0600");
+  }
   assert.equal(lstatSync(ledger.ledgerPath).isFile(), true);
   assert.equal(lstatSync(ledger.ledgerPath).isSymbolicLink(), false);
   const body = readFileSync(ledger.ledgerPath, "utf8");
@@ -285,7 +290,12 @@ test("PIX_HOST_DIR: existing populated/wrong-mode dir rejected with no mode/cont
   assert.equal(existsSync(join(hostDir2, LEDGER_LOCK_NAME)), false);
 });
 
-test("PIX_HOST_DIR: existing dedicated empty/recognized dir accepted; existing non-0700 rejected", async () => {
+test("PIX_HOST_DIR: existing dedicated empty/recognized dir accepted; existing non-0700 rejected", async (t) => {
+  // chmod 0755 does not change an NTFS directory, so the rejection cannot happen.
+  if (process.platform === "win32") {
+    t.skip("NOT_PRIVATE / 0700 rejection requires POSIX mode bits");
+    return;
+  }
   // Existing empty 0700 dir accepted.
   const hostDir = temp("pi-existing-empty-");
   chmodSync(hostDir, 0o700);
@@ -329,16 +339,21 @@ test("PIX_HOST_DIR: wrong owner / wrong-permission ledger / hard-linked ledger /
   assert.match(src, /Host directory is owned by another user/, "ownership check must exist in the shared lease");
 
   // wrong-permission ledger (0644) → open rejects LEDGER_PERMISSIONS, unchanged.
-  const hostDir = temp("pi-wrongperm-");
-  let ledger = await openTrustedRootsLedger({ hostDir });
-  await ledger.writeAll([claim({ claimId: "claim-wperm-aaaa", path: "/tmp/wp", repoRoot: "/tmp/r", base: "/tmp/r-worktrees" })]);
-  await ledger.close();
-  chmodSync(join(hostDir, LEDGER_FILE_NAME), 0o644);
-  const beforeBytes = readFileSync(join(hostDir, LEDGER_FILE_NAME));
-  const beforeIno = lstatSync(join(hostDir, LEDGER_FILE_NAME)).ino;
-  await assert.rejects(() => openTrustedRootsLedger({ hostDir }), (e) => e.code === "LEDGER_PERMISSIONS");
-  assert.deepEqual(readFileSync(join(hostDir, LEDGER_FILE_NAME)), beforeBytes);
-  assert.equal(lstatSync(join(hostDir, LEDGER_FILE_NAME)).ino, beforeIno);
+  // NTFS ignores chmod, so the rejection is POSIX-only; the hard-link and
+  // symlink cases below still run on Windows.
+  let ledger;
+  if (process.platform !== "win32") {
+    const hostDir = temp("pi-wrongperm-");
+    ledger = await openTrustedRootsLedger({ hostDir });
+    await ledger.writeAll([claim({ claimId: "claim-wperm-aaaa", path: "/tmp/wp", repoRoot: "/tmp/r", base: "/tmp/r-worktrees" })]);
+    await ledger.close();
+    chmodSync(join(hostDir, LEDGER_FILE_NAME), 0o644);
+    const beforeBytes = readFileSync(join(hostDir, LEDGER_FILE_NAME));
+    const beforeIno = lstatSync(join(hostDir, LEDGER_FILE_NAME)).ino;
+    await assert.rejects(() => openTrustedRootsLedger({ hostDir }), (e) => e.code === "LEDGER_PERMISSIONS");
+    assert.deepEqual(readFileSync(join(hostDir, LEDGER_FILE_NAME)), beforeBytes);
+    assert.equal(lstatSync(join(hostDir, LEDGER_FILE_NAME)).ino, beforeIno);
+  }
 
   // hard-linked ledger → open rejects LEDGER_HARD_LINK.
   const hostDir2 = temp("pi-hardlink-");

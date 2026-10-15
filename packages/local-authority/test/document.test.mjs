@@ -61,7 +61,11 @@ test("document: missing reads as missing; write publishes durable 0600 content w
   const owned = await acquireLifetimeLock(lockPath, { payload: lockPayload(process.pid, "instance-doc-01"), isPidAlive: alive });
   await writeStateDocument(path, "{\"a\":1}\n", { maxBytes: MAX, lockCheck: { path: lockPath, ownership: owned } });
   assert.equal(readFileSync(path, "utf8"), "{\"a\":1}\n");
-  assert.equal((lstatSync(path).mode & 0o077), 0, "document is 0600");
+  // NTFS has no POSIX mode bits: chmod 0600 does not clear group/other, and
+  // the win32 read path deliberately does not treat 0o666 as unsafe.
+  if (process.platform !== "win32") {
+    assert.equal((lstatSync(path).mode & 0o077), 0, "document is 0600");
+  }
   assert.equal(readdirSync(dir).filter((n) => n.endsWith(".tmp")).length, 0, "no temp debris");
   assert.deepEqual(await readStateDocument(path, { maxBytes: MAX }), { content: "{\"a\":1}\n" });
   await release(path, lockPath, owned);
@@ -89,14 +93,18 @@ test("document: bounded read — symlink / non-regular / perms / hard-link / ove
   mkdirSync(path);
   await expectReject(() => readStateDocument(path, { maxBytes: MAX }), "NOT_REGULAR");
 
-  // Wrong permissions (0644).
+  // Wrong permissions (0644). NTFS ignores the mode, so the POSIX
+  // DOC_PERMISSIONS rejection cannot happen there; the win32 read of a
+  // 0o666 file is covered by win32-platform.test.mjs.
   rmSync(path, { recursive: true, force: true });
   writeFileSync(path, "y", { mode: 0o600 });
-  chmodSync(path, 0o644);
-  await expectReject(() => readStateDocument(path, { maxBytes: MAX }), "DOC_PERMISSIONS");
+  if (process.platform !== "win32") {
+    chmodSync(path, 0o644);
+    await expectReject(() => readStateDocument(path, { maxBytes: MAX }), "DOC_PERMISSIONS");
+  }
 
-  // Hard-linked document.
-  chmodSync(path, 0o600);
+  // Hard-linked document. nlink is real on NTFS too.
+  if (process.platform !== "win32") chmodSync(path, 0o600);
   const aliasDir = temp("doc-alias-");
   linkSync(path, join(aliasDir, "alias"));
   await expectReject(() => readStateDocument(path, { maxBytes: MAX }), "DOC_HARD_LINK");

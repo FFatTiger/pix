@@ -39,7 +39,13 @@ async function expectReject(fn, code) {
   );
 }
 
-test("ensurePrivateDirectory: creates missing nested components 0700 via fd; no chmod of existing", async () => {
+test("ensurePrivateDirectory: creates missing nested components 0700 via fd; no chmod of existing", async (t) => {
+  // win32 skips mode enforcement (NTFS has no POSIX bits; mkdir mode is
+  // advisory). Creation itself is covered by the win32 fake-fs tests.
+  if (process.platform === "win32") {
+    t.skip("0700 enforcement is POSIX-only; NTFS has no mode bits");
+    return;
+  }
   const dir = temp("priv-create-");
   const target = join(dir, "a", "b", "leaf");
   const result = await ensurePrivateDirectory(target);
@@ -51,7 +57,12 @@ test("ensurePrivateDirectory: creates missing nested components 0700 via fd; no 
   assert.equal(lstatSync(dir).mode & 0o777, 0o700);
 });
 
-test("ensurePrivateDirectory: existing leaf is validate-only — exact 0700 + owner pass, wrong mode rejects", async () => {
+test("ensurePrivateDirectory: existing leaf is validate-only — exact 0700 + owner pass, wrong mode rejects", async (t) => {
+  // chmod 0755 does not change an NTFS directory, so NOT_PRIVATE cannot fire.
+  if (process.platform === "win32") {
+    t.skip("NOT_PRIVATE requires POSIX mode bits");
+    return;
+  }
   const dir = temp("priv-existing-");
   chmodSync(dir, 0o700);
   const result = await ensurePrivateDirectory(dir);

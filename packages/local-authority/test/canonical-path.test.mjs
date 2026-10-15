@@ -45,7 +45,13 @@ test("canonicalize: requires absolute bounded path without NUL/control chars", a
   await expectReject(`/${"x".repeat(5000)}`, "INVALID_PATH");
 });
 
-test("canonicalize: rejects roots, parent escapes, network and Windows claims", async () => {
+test("canonicalize: rejects roots, parent escapes, network and Windows claims", async (t) => {
+  // On win32 `/` is not the filesystem root (it is drive-relative) and a
+  // drive path is legal. The win32 rejections live in win32-platform.test.mjs.
+  if (process.platform === "win32") {
+    t.skip("POSIX root/drive rejection; win32 coverage is in win32-platform.test.mjs");
+    return;
+  }
   await expectReject("/", "ROOT_PATH");
   await expectReject("/a/../b", "PARENT_ESCAPE");
   await expectReject("/a/./b", "PARENT_ESCAPE");
@@ -99,7 +105,14 @@ test("canonicalize: UTF-8 and space components are accepted", async () => {
   assert.equal(canonical, join(realpathSync(dir), "ütf dir", "with space", "файл-名"));
 });
 
-test("canonicalize: a symlink to a file fails closed", async () => {
+test("canonicalize: a symlink to a file fails closed", async (t) => {
+  if (process.platform === "win32") {
+    // Trailing through a file symlink is ENOTDIR on POSIX. Windows resolves
+    // the symlink and then reports the canonical target as a non-directory,
+    // which is a different (still fail-closed) code. Covered below.
+    t.skip("POSIX ENOTDIR classification; win32 reports NOT_DIRECTORY");
+    return;
+  }
   const dir = temp("canon-filesym-");
   const { writeFileSync } = await import("node:fs");
   const file = join(dir, "target.txt");
@@ -136,7 +149,11 @@ test("canonicalize: macOS /var alias resolves under /private/var (no false rejec
   assert.equal(await canonicalizeAbsolutePath("/etc"), "/private/etc");
 });
 
-test("canonicalize: realpath alias of a real system dir is stable", async () => {
+test("canonicalize: realpath alias of a real system dir is stable", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX /usr system directory");
+    return;
+  }
   const real = await import("node:fs/promises").then((m) => m.realpath("/usr"));
   assert.equal(await canonicalizeAbsolutePath("/usr"), real);
 });

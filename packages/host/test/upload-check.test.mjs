@@ -73,7 +73,13 @@ test("upload-check classifies regular files, directories, symlinks and absent ta
   assertNoUploadArtifacts(root);
 });
 
-test("upload-check classifies non-regular entries (FIFO) as non-replaceable", async () => {
+test("upload-check classifies non-regular entries (FIFO) as non-replaceable", async (t) => {
+  // Windows has no POSIX FIFO. A directory (covered above) is the non-regular
+  // entry this platform can actually create.
+  if (process.platform === "win32") {
+    t.skip("mkfifo is POSIX-only; directories already cover non-replaceable entries");
+    return;
+  }
   const { root, app } = await fixture();
   execFileSync("mkfifo", [join(root, "pipe")]);
   const body = await (await check(app, root, ["pipe"])).json();
