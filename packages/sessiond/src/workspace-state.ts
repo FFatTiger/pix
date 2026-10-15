@@ -33,16 +33,20 @@
  * the document to v2.
  *
  * Durability discipline (mirrors the daemon settings file, hardened):
- *   - temp write (0600) → fsync → atomic rename, same directory
- *   - corrupt/unreadable file is QUARANTINED (renamed to
+ *   - temp write (0600) → file fsync → atomic rename, same directory →
+ *     POSIX best-effort directory fsync (win32 skips it)
+ *   - corrupt file is QUARANTINED (renamed to
  *     workspace-state.json.corrupt-<epoch-ms>) and the store restarts empty:
  *     organization prefs are user convenience, never worth bricking sessiond.
+ *   - TRANSIENTLY unreadable file (EACCES/EIO/EBUSY) is NOT treated as empty:
+ *     the store throws a retryable unavailable instead, so a later persist
+ *     can never overwrite a real file it failed to read.
  *   - missing file ⇒ empty state (revision 0)
  *
  * Path safety: project keys must be absolute normalized paths; the HOST layer
  * additionally checks AllowedRoots before forwarding a project write.
  */
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 export const WORKSPACE_STATE_KIND = "pix.sessiond.workspace-state" as const;
@@ -269,9 +273,13 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
     try {
       if (!existsSync(this.filePath)) return { revision: 0, sessions: {}, projects: {} };
       raw = readFileSync(this.filePath, "utf8");
-    } catch {
-      // Unreadable ⇒ treat as corrupt (quarantine below would also fail).
-      return { revision: 0, sessions: {}, projects: {} };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return { revision: 0, sessions: {}, projects: {} };
+      // Transient read failure (EACCES/EIO/EBUSY/AV lock): NEVER continue as
+      // an empty store — the next persist would overwrite the real file. Fail
+      // closed as a retryable unavailable; the caller decides whether to retry.
+      throw new WorkspaceStateError("unavailable", "workspace state could not be read", true);
     }
     const parsed = parseDocument(raw);
     if (parsed !== null) return parsed;
@@ -286,7 +294,8 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
     return { revision: 0, sessions: {}, projects: {} };
   }
 
-  /** Atomic write: same-dir temp (0600) → fsync → rename. Throws unavailable.
+  /** Atomic write: same-dir temp (0600) → write → fsync → rename → (POSIX)
+   * best-effort directory fsync. Throws unavailable.
    * win32: a replace-rejected rename (readonly attr / AV lock) gets ONE
    * bounded unlink+rename retry (single writer under the daemon instance
    * lock; the tiny absent-target window is documented in docs/windows.md). */
@@ -305,6 +314,9 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
       const handle = openSync(tmp, "w", 0o600);
       try {
         writeFileSync(handle, document, "utf8");
+        // Durability: fsync the FILE before the rename publishes it, so a
+        // crash right after the rename never exposes a truncated document.
+        fsyncSync(handle);
       } finally {
         closeSync(handle);
       }
@@ -316,8 +328,29 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
         rmSync(this.filePath, { force: true });
         renameSync(tmp, this.filePath);
       }
+      this.fsyncDirectoryBestEffort();
     } catch {
       throw new WorkspaceStateError("unavailable", "could not persist workspace state", true);
+    }
+  }
+
+  /**
+   * Best-effort directory fsync so the rename itself survives a crash. Skipped
+   * on win32 (directory fsync is not a meaningful durability primitive there);
+   * on POSIX a filesystem that rejects it (network/odd mounts) only loses the
+   * rename-durability nicety, never correctness — the error is swallowed.
+   */
+  private fsyncDirectoryBestEffort(): void {
+    if (process.platform === "win32") return;
+    try {
+      const dir = openSync(dirname(this.filePath), "r");
+      try {
+        fsyncSync(dir);
+      } finally {
+        closeSync(dir);
+      }
+    } catch {
+      // best-effort by contract
     }
   }
 }

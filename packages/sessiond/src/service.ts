@@ -3808,7 +3808,12 @@ export class SessiondService {
   }
 
   getWorkspaceFlags(): { revision: number; sessions: Record<string, { pinned?: boolean; archived?: boolean }>; projects: Record<string, { pinned?: boolean; archived?: boolean }> } {
-    const snapshot = this.workspaceStateStore().snapshot();
+    let snapshot: import("./workspace-state.js").WorkspaceStateSnapshot;
+    try {
+      snapshot = this.workspaceStateStore().snapshot();
+    } catch (error) {
+      throw this.mapWorkspaceStateFailure(error, "session");
+    }
     return {
       revision: snapshot.revision,
       sessions: { ...snapshot.sessions },
@@ -3831,9 +3836,16 @@ export class SessiondService {
     const page = catalog.listSessionPage
       ? await catalog.listSessionPage(request)
       : await this.legacySessionPage(catalog, request);
-    const workspace = this.deps.workspaceState !== null && this.deps.workspaceState !== undefined
-      ? this.deps.workspaceState.snapshot().sessions
-      : undefined;
+    // A transient store failure must not degrade to "no pins"
+    // (fallback-as-success); the listing fails honestly instead.
+    let workspace: Record<string, import("./workspace-state.js").WorkspaceFlags> | undefined;
+    if (this.deps.workspaceState !== null && this.deps.workspaceState !== undefined) {
+      try {
+        workspace = this.deps.workspaceState.snapshot().sessions;
+      } catch (error) {
+        throw this.mapWorkspaceStateFailure(error, "session");
+      }
+    }
     return {
       ...page,
       sessions: page.sessions.map((item) => {

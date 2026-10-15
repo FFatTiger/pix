@@ -5,7 +5,7 @@
  * quarantine), merge semantics, and the in-memory test double's contract
  * parity. NOT run in this commit (user-deferred validation).
  */
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -173,6 +173,61 @@ describe("FileWorkspaceStateStore durability", () => {
       assert.deepEqual(reloaded.snapshot().projects, { "/repos/pix": { archived: true } });
       const raw = JSON.parse(await readFile(join(dir, WORKSPACE_STATE_FILE_NAME), "utf8")) as { assistantDelegations?: unknown };
       assert.ok(raw.assistantDelegations, "the namespace is on disk in the same document");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a transiently unreadable file throws a retryable unavailable — never empty, never overwritten", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pix-ws-state-transient-"));
+    try {
+      const store = new FileWorkspaceStateStore(dir);
+      store.setSessionFlags("s1", { pinned: true });
+      const file = join(dir, WORKSPACE_STATE_FILE_NAME);
+      await chmod(file, 0o000);
+      const blocked = new FileWorkspaceStateStore(dir);
+      let error: unknown;
+      try {
+        blocked.snapshot();
+      } catch (caught) {
+        error = caught;
+      }
+      assert.ok(error instanceof Error, "snapshot must fail honestly");
+      assert.equal((error as { code?: string }).code, "unavailable");
+      assert.equal((error as { retryable?: boolean }).retryable, true);
+      // No quarantine was fabricated and the real file is untouched.
+      const entries = await readdir(dir);
+      assert.equal(entries.some((name) => name.includes(".corrupt-")), false);
+      assert.equal(entries.includes(WORKSPACE_STATE_FILE_NAME), true);
+      // A write through the blocked store also refuses (it cannot load first).
+      let writeError: unknown;
+      try {
+        blocked.setSessionFlags("s2", { pinned: true });
+      } catch (caught) {
+        writeError = caught;
+      }
+      assert.ok(writeError instanceof Error, "a write must not proceed over an unreadable file");
+      // Recovery: once the transient failure clears, the original content loads.
+      await chmod(file, 0o600);
+      const recovered = new FileWorkspaceStateStore(dir);
+      assert.deepEqual(recovered.snapshot().sessions, { s1: { pinned: true } });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a write fsyncs the document before the atomic rename (no temp residue, complete content)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pix-ws-state-fsync-"));
+    try {
+      const store = new FileWorkspaceStateStore(dir);
+      store.setSessionFlags("s1", { pinned: true });
+      store.writeAssistantDelegations({ version: 1, delegations: [], chains: {}, queue: [] });
+      // The published document is complete and parses; the temp is gone.
+      const raw = JSON.parse(await readFile(join(dir, WORKSPACE_STATE_FILE_NAME), "utf8")) as { revision: number };
+      assert.equal(raw.revision, 2);
+      await assert.rejects(stat(join(dir, `${WORKSPACE_STATE_FILE_NAME}.tmp`)));
+      // A fresh store re-reads exactly the same state (write-through parity).
+      assert.equal(new FileWorkspaceStateStore(dir).snapshot().revision, 2);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
