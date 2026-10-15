@@ -1611,3 +1611,34 @@ test("lore connection save/test mount with the memoryLore seam; failures are res
   assert.equal((await putLoreConnection(noLore, { baseUrl: "https://x" })).status, 404);
   assert.equal((await postLoreTest(noLore, {})).status, 404);
 });
+
+test("lore-test is rate limited: the 13th probe in a window is a 429", async () => {
+  const roots = await rootsFor(temp("pix-cat-lore-rate-"));
+  const app = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({}),
+    memoryLore: {
+      saveLoreConnection: async (input) => ({ configured: true, baseUrl: input.baseUrl, source: "config", tokenConfigured: Boolean(input.apiToken) }),
+      testLoreConnection: async (input) => ({ ok: true, baseUrl: input.baseUrl }),
+    },
+  });
+  for (let index = 0; index < 12; index += 1) {
+    const res = await postLoreTest(app, { baseUrl: "https://api.loremem.com", apiToken: "lm_t" });
+    assert.equal(res.status, 200, `probe ${index} within the limit`);
+  }
+  const blocked = await postLoreTest(app, { baseUrl: "https://api.loremem.com", apiToken: "lm_t" });
+  assert.equal(blocked.status, 429);
+  assert.equal((await blocked.json()).code, "RATE_LIMITED");
+  // The save route is not throttled by the probe limiter.
+  assert.equal((await putLoreConnection(app, { baseUrl: "https://api.loremem.com", apiToken: "lm_t" })).status, 200);
+  // A fresh app instance gets a fresh window.
+  const fresh = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({}),
+    memoryLore: {
+      saveLoreConnection: async () => { throw new Error("unused"); },
+      testLoreConnection: async (input) => ({ ok: true, baseUrl: input.baseUrl }),
+    },
+  });
+  assert.equal((await postLoreTest(fresh, { baseUrl: "https://api.loremem.com", apiToken: "lm_t" })).status, 200);
+});

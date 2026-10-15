@@ -196,7 +196,8 @@ export async function testLoreConnection(
 ): Promise<LoreTestOutcome> {
   const env = options.env ?? process.env;
   const shared = readSharedLoreConfig(env);
-  const rawBase = (typeof input?.baseUrl === "string" && input.baseUrl.trim() !== ""
+  const hasInputBase = typeof input?.baseUrl === "string" && input.baseUrl.trim() !== "";
+  const rawBase = (hasInputBase
     ? input.baseUrl
     : shared.baseUrl ?? nonEmptyString(env.LORE_BASE_URL) ?? "")!.trim().replace(/\/+$/, "");
   if (rawBase === "") return { ok: false, reason: "invalid_url" };
@@ -208,9 +209,14 @@ export async function testLoreConnection(
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return { ok: false, reason: "invalid_url" };
   if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) return { ok: false, reason: "insecure_http" };
-  const apiToken = (typeof input?.apiToken === "string" && input.apiToken.length > 0
-    ? input.apiToken
-    : shared.apiToken ?? nonEmptyString(env.LORE_API_TOKEN));
+  const explicitToken = typeof input?.apiToken === "string" && input.apiToken.length > 0 ? input.apiToken : undefined;
+  // The saved token only ever travels to the CURRENTLY EFFECTIVE base. A
+  // probe of any other origin must carry its own explicit token — never the
+  // stored secret (and never LORE_API_TOKEN), or the endpoint would leak it.
+  const effectiveBase = (shared.baseUrl ?? nonEmptyString(env.LORE_BASE_URL) ?? "").trim().replace(/\/+$/, "");
+  const apiToken = hasInputBase && rawBase !== effectiveBase
+    ? explicitToken
+    : explicitToken ?? shared.apiToken ?? nonEmptyString(env.LORE_API_TOKEN);
   if (apiToken === undefined) return { ok: false, reason: "missing_token" };
 
   // Same URL shape as the bundled extension's `buildApiUrl`: /api/health on
@@ -224,10 +230,14 @@ export async function testLoreConnection(
       method: "GET",
       headers: { authorization: `Bearer ${apiToken}` },
       signal: AbortSignal.timeout(LORE_TEST_TIMEOUT_MS),
+      // A redirect would move the Authorization header to another origin;
+      // manual mode surfaces the 3xx instead and the probe fails closed.
+      redirect: "manual",
     });
   } catch {
     return { ok: false, reason: "unreachable" };
   }
+  if (response.status >= 300 && response.status < 400) return { ok: false, reason: "unreachable" };
   if (response.status === 401 || response.status === 403) return { ok: false, reason: "unauthorized" };
   if (!response.ok) return { ok: false, reason: "unreachable" };
   return { ok: true, baseUrl: rawBase };

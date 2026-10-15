@@ -112,6 +112,31 @@ function catalogUnavailable(): HttpError {
   return new HttpError(503, "CATALOG_UNAVAILABLE", CATALOG_UNAVAILABLE_MESSAGE);
 }
 
+/** Lore test-connection probe limit: max probes per rolling window. */
+const LORE_TEST_RATE_LIMIT_MAX = 12;
+/** Lore test-connection probe window in ms. */
+const LORE_TEST_RATE_WINDOW_MS = 60_000;
+
+/**
+ * Fixed-window limiter for the Lore test-connection probe. The probe sends a
+ * bearer credential to an arbitrary user-chosen origin, so an authenticated
+ * client must not be able to drive it in a tight loop; the bound is far above
+ * any human retry cadence.
+ */
+function createLoreTestRateLimiter(now: () => number = Date.now): () => boolean {
+  let windowStart = 0;
+  let used = 0;
+  return () => {
+    const at = now();
+    if (at - windowStart >= LORE_TEST_RATE_WINDOW_MS) {
+      windowStart = at;
+      used = 0;
+    }
+    used += 1;
+    return used <= LORE_TEST_RATE_LIMIT_MAX;
+  };
+}
+
 function requireNonEmptyString(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) throw catalogUnavailable();
   return value;
@@ -1053,6 +1078,10 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
     });
 
     if (deps.memoryLore) {
+      // Per-process fixed-window limiter for the probe route: the host serves
+      // one local user, and the bound stops an authenticated client from
+      // driving the probe as a relay. Each app instance gets its own window.
+      const loreTestAllowed = createLoreTestRateLimiter();
       // Save the shared Lore connection (~/.lore/config.json, 0600; token
       // write-only, never echoed). No CAS: the document is owned by the Lore
       // tooling, last write wins, unknown keys preserved.
@@ -1072,9 +1101,12 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
 
       // Probe GET <base>/api/health. A failed probe is a normal 200 RESULT
       // (reason drives the fixed UI copy), never a transport error; the
-      // token is never reflected in the response.
+      // token is never reflected in the response. Rate-limited.
       app.post("/v1/settings/memory/lore-test", async (c) => {
         noStore(c);
+        if (!loreTestAllowed()) {
+          throw new HttpError(429, "RATE_LIMITED", "Too many Lore connection tests; wait a minute and retry");
+        }
         if (c.req.url.includes("?")) {
           throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
         }

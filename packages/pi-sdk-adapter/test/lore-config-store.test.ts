@@ -141,6 +141,80 @@ describe("testLoreConnection", () => {
     assert.deepEqual(result, { ok: true, baseUrl: "https://core.example" });
   });
 
+  it("reuses the saved token only for the currently effective base (exact match after normalization)", async () => {
+    await writeFile(
+      join(loreHome, "config.json"),
+      `${JSON.stringify({ base_url: "https://core.example/", api_token: "lm_saved" }, null, 2)}\n`,
+    );
+    let seen: { init: RequestInit } | undefined;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      seen = { init: init ?? {} };
+      return jsonResponse({});
+    }) as typeof fetch;
+    // Same base modulo the trailing slash → the saved token is used.
+    const same = await testLoreConnection({ baseUrl: "https://core.example" }, { env: baseEnv, fetchImpl });
+    assert.deepEqual(same, { ok: true, baseUrl: "https://core.example" });
+    assert.equal((seen!.init.headers as Record<string, string>).authorization, "Bearer lm_saved");
+  });
+
+  it("never sends the saved token to a different base (missing_token, no probe)", async () => {
+    await writeFile(
+      join(loreHome, "config.json"),
+      `${JSON.stringify({ base_url: "https://core.example", api_token: "lm_saved" }, null, 2)}\n`,
+    );
+    const result = await testLoreConnection(
+      { baseUrl: "https://attacker.example" },
+      {
+        env: baseEnv,
+        fetchImpl: (async () => {
+          throw new Error("must not fetch");
+        }) as typeof fetch,
+      },
+    );
+    assert.deepEqual(result, { ok: false, reason: "missing_token" });
+    // An explicit token still probes any base.
+    let seenUrl: string | undefined;
+    const explicit = await testLoreConnection(
+      { baseUrl: "https://attacker.example", apiToken: "lm_other" },
+      {
+        env: baseEnv,
+        fetchImpl: (async (url: string | URL) => {
+          seenUrl = String(url);
+          return jsonResponse({});
+        }) as typeof fetch,
+      },
+    );
+    assert.deepEqual(explicit, { ok: true, baseUrl: "https://attacker.example" });
+    assert.ok(seenUrl!.startsWith("https://attacker.example/api/health"));
+  });
+
+  it("never sends LORE_API_TOKEN to a different base either", async () => {
+    const result = await testLoreConnection(
+      { baseUrl: "https://attacker.example" },
+      {
+        env: { ...baseEnv, LORE_BASE_URL: "https://core.example", LORE_API_TOKEN: "lm_env" },
+        fetchImpl: (async () => {
+          throw new Error("must not fetch");
+        }) as typeof fetch,
+      },
+    );
+    assert.deepEqual(result, { ok: false, reason: "missing_token" });
+  });
+
+  it("does not follow redirects: a 3xx is an unreachable failure, never a followed probe", async () => {
+    let seenInit: RequestInit | undefined;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      seenInit = init ?? {};
+      return new Response(null, { status: 302, headers: { location: "https://evil.example/api/health" } });
+    }) as typeof fetch;
+    const result = await testLoreConnection(
+      { baseUrl: "https://core.example", apiToken: "lm_t" },
+      { env: baseEnv, fetchImpl },
+    );
+    assert.deepEqual(result, { ok: false, reason: "unreachable" });
+    assert.equal(seenInit!.redirect, "manual");
+  });
+
   it("401/403 → unauthorized; network failure/5xx → unreachable", async () => {
     const unauthorized = await testLoreConnection(
       { baseUrl: "https://core.example", apiToken: "lm_bad" },
