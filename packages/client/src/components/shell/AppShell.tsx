@@ -404,10 +404,12 @@ export function AppShell({ search }: AppShellProps) {
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
-  // The assistant is project-less: its fixed directory has no meaningful file
-  // panel, so the files pane stays hidden in the assistant view (subagents /
-  // side chat remain available — they are conversation-scoped, not project).
-  const canFiles = can("files") && liveWorkspaceEnabled && !isAssistantView;
+  // The assistant's fixed directory is its workspace: the files pane browses
+  // it like any project root.
+  const filesCwd = isAssistantView ? assistantCwd : search.cwd;
+  const canFiles = can("files") && liveWorkspaceEnabled && filesCwd !== undefined;
+  const filesCwdRef = useRef(filesCwd);
+  filesCwdRef.current = filesCwd;
 
   // ── Top-level workspace tabs (URL drives ACTIVE; session tabs are durable) ──
   const [tabs, setTabs] = useState<WorkspaceTab[]>(loadWorkspaceSessionTabs);
@@ -1012,7 +1014,7 @@ export function AppShell({ search }: AppShellProps) {
     // workspace authority. A direct cwd+file URL has no selected session and
     // remains governed independently by the Host's AllowedRoots checks.
     if (!canFiles) return;
-    const cwd = liveSearchRef.current.cwd;
+    const cwd = liveSearchRef.current.cwd ?? filesCwdRef.current;
     if (cwd === undefined) return;
     const openOptions = options ?? {};
     setTabs((prev) => openFileWorkspaceTab(prev, {
@@ -1519,7 +1521,7 @@ export function AppShell({ search }: AppShellProps) {
         <div className="right-panel-content">
           <div className="right-panel-surface" hidden={!fileBrowserOpen}>
             <ExplorerPanel
-              cwd={search.cwd}
+              cwd={filesCwd}
               canFiles={canFiles}
               visible={fileBrowserOpen}
               onOpenFile={handleOpenFile}
