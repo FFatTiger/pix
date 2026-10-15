@@ -3,7 +3,8 @@ name: windows
 on:
   workflow_dispatch:
   push:
-    branches: [feat/windows]
+    branches: [main]
+  pull_request:
 
 jobs:
   windows:
