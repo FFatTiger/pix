@@ -1,0 +1,8 @@
+# Source, tests, and styles are LF in the repository and in every checkout.
+# Windows runners otherwise rewrite them to CRLF (core.autocrlf=true), and
+# tests that search source text for a newline then fail.
+* text=auto eol=lf
+
+# Vendored plugin archives are bytes, not text.
+*.tgz binary
+*.zip binary

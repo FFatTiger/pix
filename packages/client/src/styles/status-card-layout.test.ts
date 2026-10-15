@@ -3,13 +3,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { cssRule } from "./css-rule";
 
 function rule(css: string, selector: string): string {
-  const start = css.indexOf(`${selector} {`);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const end = css.indexOf("}", start);
-  expect(end).toBeGreaterThan(start);
-  return css.slice(start, end + 1);
+  const found = cssRule(css, selector);
+  expect(found, selector).toBeDefined();
+  return found as string;
 }
 
 describe("status card composer-strip layout", () => {
@@ -83,7 +82,7 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-capsule")).toContain("background: var(--bg-secondary)");
     expect(rule(css, ".subagent-activity-capsule")).toContain("box-shadow: 0 -3px 8px -4px");
     expect(rule(css, ".subagent-activity-capsule")).toContain("margin-left: 0");
-    expect(css).toContain(".subagent-activity-capsule::before,\n.subagent-activity-capsule::after {");
+    expect(rule(css, ".subagent-activity-capsule::before,\n.subagent-activity-capsule::after")).toBeDefined();
     // Rest / hover / focus all come from the composer variables, so the tab
     // never paints its own fill or focus color.
     expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("background: var(--composer-bg)");
@@ -141,8 +140,8 @@ describe("status card composer-strip layout", () => {
     expect(shell).toContain("right-pane-rail-badge");
     expect(shell).toContain("handleRailSelect");
     // The rail is desktop-only; the tab row and corner toggle stay mobile-only.
-    expect(shell).toMatch(/\{isMobile \? \(\s*\n\s*<div className="right-pane-selector-wrap">/);
-    expect(shell).toContain("{isMobile ? (\n        <div\n          style={{\n            position: \"absolute\",");
+    expect(shell).toMatch(/\{isMobile \? \(\s*<div className="right-pane-selector-wrap">/);
+    expect(shell.replace(/\r\n/g, "\n")).toContain("{isMobile ? (\n        <div\n          style={{\n            position: \"absolute\",");
     expect(shell.match(/<RightPaneToggle/g)?.length).toBe(1);
   });
 });

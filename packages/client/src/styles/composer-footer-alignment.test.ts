@@ -3,13 +3,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { cssRule } from "./css-rule";
 
 function rule(css: string, selector: string): string {
-  const start = css.indexOf(`${selector} {`);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const end = css.indexOf("}", start);
-  expect(end).toBeGreaterThan(start);
-  return css.slice(start, end + 1);
+  const found = cssRule(css, selector);
+  expect(found, selector).toBeDefined();
+  return found as string;
 }
 
 describe("composer footer alignment", () => {

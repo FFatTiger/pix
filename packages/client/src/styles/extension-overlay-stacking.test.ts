@@ -3,13 +3,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { cssRule } from "./css-rule";
 
 function rule(source: string, selector: string): string {
-  const start = source.indexOf(`${selector} {`);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const end = source.indexOf("}", start);
-  expect(end).toBeGreaterThan(start);
-  return source.slice(start, end);
+  const found = cssRule(source, selector);
+  expect(found, selector).toBeDefined();
+  // Historical slice stopped before the closing brace.
+  return (found as string).slice(0, -1);
 }
 
 describe("extension overlay stacking", () => {
