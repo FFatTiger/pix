@@ -65,6 +65,18 @@ describe("ExtensionNotices", () => {
     expect(screen.getByTestId("extension-notices").textContent).toContain("next");
   });
 
+  it("keeps long notices visually compact while preserving the full message for accessibility", () => {
+    const message = `Smart Compact: ${"continuity warning ".repeat(40)}`;
+    mount([notice(message, 1, "warning")]);
+
+    const toast = screen.getByTestId("extension-notices");
+    const text = toast.querySelector(".extension-notice-message");
+    expect(text).toBeTruthy();
+    expect(toast.getAttribute("aria-label")).toBe(message);
+    expect(text?.textContent).toBe(message);
+    expect(text?.getAttribute("title")).toBe(message);
+  });
+
   it("copies a notice url and dismisses immediately", async () => {
     vi.useFakeTimers();
     const writeText = vi.fn(() => Promise.resolve());

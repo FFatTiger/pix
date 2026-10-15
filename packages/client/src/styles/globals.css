@@ -3475,6 +3475,13 @@ html.pi-booted body::before {
   animation: extension-notice-in 0.18s ease;
   transition: opacity 0.2s ease;
 }
+.extension-notice-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .extension-notice-toast[data-phase="fading"] {
   opacity: 0;
 }

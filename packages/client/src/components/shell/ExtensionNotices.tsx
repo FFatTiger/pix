@@ -95,10 +95,11 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
           data-level={latest.level}
           data-phase={phase}
           role="status"
+          aria-label={latest.message}
           onMouseEnter={() => setPaused(true)}
           onMouseLeave={() => setPaused(false)}
         >
-          <span style={{ minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{latest.message}</span>
+          <span className="extension-notice-message" title={latest.message}>{latest.message}</span>
           {noticeUrl(latest.message) ? (
             <button
               type="button"
