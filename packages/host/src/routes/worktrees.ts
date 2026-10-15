@@ -4,6 +4,7 @@ import type { Context, Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import { unregisterTrustedCreatedRoot, type AllowedRootService } from "../resources/allowed-roots.js";
+import { canonicalizeRealpath } from "../resources/path-canonical.js";
 import type { ManagedWorktreesService } from "../resources/managed-worktrees.js";
 import { ManagedWorktreesLedgerError } from "../resources/managed-worktrees-ledger.js";
 import { createProcessRunner, type ProcessRunner } from "../resources/process-runner.js";
@@ -100,7 +101,7 @@ async function list(runner: ProcessRunner, cwd: string, max: number, signal?: Ab
   for (const item of worktrees) {
     try {
       const info = await lstat(item.path);
-      if (info.isDirectory() && !info.isSymbolicLink()) existing.push({ ...item, path: await realpath(item.path) });
+      if (info.isDirectory() && !info.isSymbolicLink()) existing.push({ ...item, path: canonicalizeRealpath(await realpath(item.path)) });
     } catch { /* stale */ }
   }
   return existing;

@@ -192,6 +192,7 @@ export interface WriteGatePasswordOptions {
   readFile?: (path: string, encoding: "utf8") => string;
   writeFile?: (path: string, data: string) => void;
   rename?: (from: string, to: string) => void;
+  rm?: (path: string) => void;
   lstat?: (path: string) => { isSymbolicLink(): boolean };
   mkdir?: (path: string) => void;
   randomSuffix?: () => string;
@@ -201,9 +202,27 @@ interface PixDocumentFsSeams {
   readFile: (path: string, encoding: "utf8") => string;
   writeFile: (path: string, data: string) => void;
   rename: (from: string, to: string) => void;
+  rm: (path: string) => void;
   lstat: (path: string) => { isSymbolicLink(): boolean };
   mkdir: (path: string) => void;
   randomSuffix: () => string;
+}
+
+/** Windows replace-rejection codes that get ONE bounded rm+rename retry. */
+const WIN32_RENAME_RETRY_CODES = new Set(["EPERM", "EEXIST", "EACCES", "EBUSY"]);
+
+/** Rename with the win32-only bounded replace retry (POSIX: plain rename). */
+function renameReplace(seams: PixDocumentFsSeams, from: string, to: string): void {
+  try {
+    seams.rename(from, to);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (process.platform !== "win32" || code === undefined || !WIN32_RENAME_RETRY_CODES.has(code)) throw error;
+    // win32: readonly attribute / AV lock / open-handle race — one bounded
+    // rm+rename retry (documented residual, docs/windows.md).
+    seams.rm(to);
+    seams.rename(from, to);
+  }
 }
 
 const MAX_CONFIG_BYTES = 256 * 1024;
@@ -240,7 +259,7 @@ function publishPixDocument(configPath: string, root: Record<string, unknown>, s
   try {
     seams.mkdir(dirname(configPath));
     seams.writeFile(tempPath, `${JSON.stringify(root, null, 2)}\n`);
-    seams.rename(tempPath, configPath);
+    renameReplace(seams, tempPath, configPath);
   } catch (error) {
     try { unlinkSync(tempPath); } catch { /* best-effort temp cleanup */ }
     throw new GatePasswordWriteError("WRITE_FAILED", `failed to write config: ${(error as NodeJS.ErrnoException).code ?? String(error)}`);
@@ -264,6 +283,7 @@ export function writeGatePassword(input: { password: string } & WriteGatePasswor
     readFile: input.readFile ?? readFileSync,
     writeFile: input.writeFile ?? ((path, data) => writeFileSync(path, data, { mode: 0o600 })),
     rename: input.rename ?? renameSync,
+    rm: input.rm ?? ((path) => unlinkSync(path)),
     lstat: input.lstat ?? lstatSync,
     mkdir: input.mkdir ?? ((path) => mkdirSync(path, { recursive: true, mode: 0o700 })),
     randomSuffix: input.randomSuffix ?? (() => randomUUID().slice(0, 8)),
@@ -363,6 +383,7 @@ function preferenceSeams(options: WriteGatePasswordOptions): PixDocumentFsSeams 
     readFile: options.readFile ?? readFileSync,
     writeFile: options.writeFile ?? ((path, data) => writeFileSync(path, data, { mode: 0o600 })),
     rename: options.rename ?? renameSync,
+    rm: options.rm ?? ((path) => unlinkSync(path)),
     lstat: options.lstat ?? lstatSync,
     mkdir: options.mkdir ?? ((path) => mkdirSync(path, { recursive: true, mode: 0o700 })),
     randomSuffix: options.randomSuffix ?? (() => randomUUID().slice(0, 8)),

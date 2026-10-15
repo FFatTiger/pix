@@ -117,6 +117,18 @@ export interface PiSdkTrustFaultInjection {
    * or the agent dir and assert the re-verification fails closed.
    */
   beforeReverify?: (trustPath: string, agentDir: string) => Promise<void>;
+  /**
+   * Test seam: throw an errno-coded error as if `rename` itself failed.
+   * win32 replace codes exercise the one unlink+rename retry; POSIX (and any
+   * non-retry code) rethrows, so the publish fails closed.
+   */
+  failRename?: () => void;
+  /**
+   * Test seam: throw an errno-coded error as if the directory fsync failed.
+   * Tolerated codes (EINVAL/ENOTSUP/EISDIR, plus EPERM/EACCES/EBUSY on win32)
+   * are swallowed; anything else fails the publish as unverified.
+   */
+  failDirFsync?: () => void;
 }
 
 /** Options for the SDK-backed trust mutation store. */
@@ -133,10 +145,36 @@ export interface PiSdkTrustMutationStoreOptions {
   projectTrustStore?: ProjectTrustStore;
   /** Test-only fault injection (crash-window probes); never used in production. */
   faultInjection?: PiSdkTrustFaultInjection;
+  /**
+   * Test-only platform override for the win32 rename fallback and mode-bit
+   * skips inside the atomic writer. Production omits it (`process.platform`).
+   */
+  platform?: NodeJS.Platform;
 }
 
 /** Required mode for the persisted trust.json: owner-only read/write. */
 const TRUST_FILE_MODE = 0o600;
+
+/**
+ * POSIX group/other bits must be clear. win32 reports 0o666 for every file
+ * (no mode bits), so the check is skipped there; nlink/symlink/dev/ino stay.
+ */
+export function modeBitsSafe(mode: number, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" || (mode & 0o077) === 0;
+}
+
+/** Directory fsync codes that mean "unsupported", never "durability lost". */
+const DIR_FSYNC_TOLERATED = new Set(["EINVAL", "ENOTSUP", "EISDIR"]);
+/** NTFS surfaces these when opening or flushing a directory handle. */
+const DIR_FSYNC_TOLERATED_WIN32 = new Set([...DIR_FSYNC_TOLERATED, "EPERM", "EACCES", "EBUSY"]);
+/** Windows replace failures that get ONE unlink + rename retry. */
+const WIN32_RENAME_RETRY = new Set(["EPERM", "EEXIST", "EACCES", "EBUSY"]);
+
+export function dirFsyncTolerated(code: string | undefined, platform: NodeJS.Platform = process.platform): boolean {
+  if (code === undefined) return false;
+  const tolerated = platform === "win32" ? DIR_FSYNC_TOLERATED_WIN32 : DIR_FSYNC_TOLERATED;
+  return tolerated.has(code);
+}
 
 /** Hard upper bound on the trust.json size accepted by the bounded RMW. */
 const TRUST_MAX_BYTES = 1024 * 1024; // 1 MiB
@@ -312,7 +350,8 @@ async function readTrustFileStrict(
     if (stat.nlink !== 1) {
       throw new PiSdkTrustMutationError("TRUST_STORE_UNSAFE");
     }
-    if ((stat.mode & 0o077) !== 0) {
+    // win32 mode is always 0o666; chmod cannot clear group/other bits there.
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
       try {
         await fh.chmod(TRUST_FILE_MODE);
       } catch {
@@ -339,12 +378,24 @@ async function readTrustFileStrict(
   }
 }
 
-/** fsync a directory handle so the rename is durable. */
-async function fsyncDir(dirPath: string): Promise<void> {
+/**
+ * fsync a directory handle so the rename is durable. Truly-unsupported
+ * directory fsync (EINVAL/ENOTSUP/EISDIR, plus EPERM/EACCES/EBUSY on win32)
+ * is tolerated; every other errno still fails the publish.
+ */
+async function fsyncDir(
+  dirPath: string,
+  platform: NodeJS.Platform,
+  failDirFsync?: () => void,
+): Promise<void> {
   let fh: FileHandle | undefined;
   try {
+    failDirFsync?.();
     fh = await open(dirPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
     await fh.sync();
+  } catch (error) {
+    if (dirFsyncTolerated(isErrnoException(error) ? error.code : undefined, platform)) return;
+    throw error;
   } finally {
     await fh?.close().catch(() => {});
   }
@@ -399,6 +450,7 @@ async function atomicReplaceTrustFile(
   serialized: string,
   preImage: TrustFilePreImage | undefined,
   faultInjection: PiSdkTrustFaultInjection | undefined,
+  platform: NodeJS.Platform,
 ): Promise<void> {
   const dirStat = await lstat(agentDir);
   if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) {
@@ -419,7 +471,7 @@ async function atomicReplaceTrustFile(
     await tempFh.writeFile(serialized, "utf8");
     await tempFh.sync();
     const tempStat = await tempFh.stat();
-    if (!tempStat.isFile() || tempStat.nlink !== 1 || (tempStat.mode & 0o077) !== 0) {
+    if (!tempStat.isFile() || tempStat.nlink !== 1 || !modeBitsSafe(tempStat.mode, platform)) {
       throw new PiSdkTrustMutationError("TRUST_WRITE_UNVERIFIED");
     }
 
@@ -466,14 +518,25 @@ async function atomicReplaceTrustFile(
         target.nlink !== 1 ||
         target.dev !== preImage.dev ||
         target.ino !== preImage.ino ||
-        (target.mode & 0o077) !== 0
+        !modeBitsSafe(target.mode, platform)
       ) {
         throw new PiSdkTrustMutationError("TRUST_STORE_UNSAFE");
       }
     }
 
     // Atomic rename: readers never observe a partial/corrupt file.
-    await rename(tempPath, trustPath);
+    // win32 only: one unlink+rename retry when the replace hits a readonly
+    // attribute / open handle. Residual: a tiny absent-target window on
+    // win32 only. POSIX keeps the bare rename (no catch).
+    try {
+      faultInjection?.failRename?.();
+      await rename(tempPath, trustPath);
+    } catch (error) {
+      const code = isErrnoException(error) ? error.code : undefined;
+      if (platform !== "win32" || code === undefined || !WIN32_RENAME_RETRY.has(code)) throw error;
+      await rm(trustPath, { force: true }).catch(() => {});
+      await rename(tempPath, trustPath);
+    }
 
     // Crash window #2: fail AFTER the rename, BEFORE the directory fsync — the
     // published file is valid and readable, but durability is unverified so the
@@ -482,7 +545,7 @@ async function atomicReplaceTrustFile(
       throw new PiSdkTrustMutationError("TRUST_WRITE_UNVERIFIED");
     }
     try {
-      await fsyncDir(agentDir);
+      await fsyncDir(agentDir, platform, faultInjection?.failDirFsync);
     } catch {
       throw new PiSdkTrustMutationError("TRUST_WRITE_UNVERIFIED");
     }
@@ -499,7 +562,7 @@ async function atomicReplaceTrustFile(
       !final.isFile() ||
       final.isSymbolicLink() ||
       final.nlink !== 1 ||
-      (final.mode & 0o077) !== 0 ||
+      !modeBitsSafe(final.mode, platform) ||
       final.dev !== tempStat.dev ||
       final.ino !== tempStat.ino
     ) {
@@ -569,7 +632,7 @@ export function createPiSdkTrustMutationStore(
       }
       const canonicalCwd = await canonicalizeCwd(cwd);
       return withTrustMutationLock(trustPath, async () => {
-        await runAtomicSetTrusted(agentDir, trustPath, canonicalCwd, options.faultInjection);
+        await runAtomicSetTrusted(agentDir, trustPath, canonicalCwd, options.faultInjection, options.platform ?? process.platform);
         // Read-after-write verification OUTSIDE the proper-lockfile lock (a
         // fresh public ProjectTrustStore acquires its own lock): the SAME store
         // the read catalogs use must read the just-saved decision back, which
@@ -596,6 +659,7 @@ async function runAtomicSetTrusted(
   trustPath: string,
   canonicalCwd: string,
   faultInjection: PiSdkTrustFaultInjection | undefined,
+  platform: NodeJS.Platform,
 ): Promise<void> {
   // Ensure the agent dir exists (0700 when created, matching the SDK's
   // acquireTrustLockSync mkdir ordering) BEFORE the lock file is placed.
@@ -609,7 +673,7 @@ async function runAtomicSetTrusted(
     const { data, preImage } = await readTrustFileStrict(trustPath);
     data[canonicalCwd] = true;
     const serialized = serializeTrustData(data);
-    await atomicReplaceTrustFile(agentDir, trustPath, serialized, preImage, faultInjection);
+    await atomicReplaceTrustFile(agentDir, trustPath, serialized, preImage, faultInjection, platform);
   } finally {
     // Releasing the proper-lockfile lease is best-effort at this boundary.
     // A same-UID actor can replace the lock directory while the mutation is in

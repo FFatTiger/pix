@@ -19,6 +19,12 @@ const STATE_EXPORTS = [
   "isAbsoluteCanonicalShape",
   // canonical paths
   "canonicalizeAbsolutePath",
+  // platform-aware path primitives (win32 walk support)
+  "canonicalCompareKey",
+  "decomposeAbsolutePath",
+  "securePathApi",
+  "securePathPlatform",
+  "stripWindowsExtendedPrefix",
   // identity / principal
   "posixFileIdentity",
   "currentPrincipal",

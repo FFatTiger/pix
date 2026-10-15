@@ -1,5 +1,6 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { resolve } from "node:path";
+import { isPathOrChildOf } from "../resources/path-canonical.js";
 import type { Context } from "hono";
 import type { HostEnv } from "../env.js";
 import { apiErrorBody, isV1Path } from "../errors.js";
@@ -15,7 +16,7 @@ function safeIndexHtml(clientDist: string | undefined): string | null {
     const candidate = resolve(root, "index.html");
     if (lstatSync(candidate).isSymbolicLink()) return null;
     const canonical = realpathSync(candidate);
-    if (canonical !== root && !canonical.startsWith(`${root}${sep}`)) return null;
+    if (!isPathOrChildOf(canonical, root)) return null;
     return canonical;
   } catch {
     return null;

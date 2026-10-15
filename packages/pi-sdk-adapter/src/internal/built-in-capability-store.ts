@@ -116,11 +116,23 @@ export interface BuiltInCapabilityConfigRead {
  * Bounded sync reader for extension reload. Corrupt/unsafe documents throw so
  * reload fails closed instead of applying a stale desired set.
  */
-export function readBuiltInCapabilityConfigSync(agentDir: string): BuiltInCapabilityConfigRead {
-  return snapshotOf(readSourceSync(resolve(agentDir)));
+export function readBuiltInCapabilityConfigSync(
+  agentDir: string,
+  platform: NodeJS.Platform = process.platform,
+): BuiltInCapabilityConfigRead {
+  return snapshotOf(readSourceSync(resolve(agentDir), platform));
 }
 
-function readSourceSync(agentDir: string): SourceSnapshot {
+/**
+ * POSIX group/other bits must be clear. win32 reports 0o666 for every file,
+ * so the mode check is skipped there; the nlink check stays on every platform.
+ */
+export function builtInDocumentModeSafe(mode: number, nlink: number, platform: NodeJS.Platform = process.platform): boolean {
+  if (nlink > 1) return false;
+  return platform === "win32" || (mode & 0o077) === 0;
+}
+
+function readSourceSync(agentDir: string, platform: NodeJS.Platform = process.platform): SourceSnapshot {
   const path = join(agentDir, DOCUMENT_NAME);
   let fd: number | undefined;
   try {
@@ -133,7 +145,7 @@ function readSourceSync(agentDir: string): SourceSnapshot {
   }
   try {
     const info = fstatSync(fd);
-    if (!info.isFile() || info.size > DOCUMENT_MAX_BYTES || (info.mode & 0o077) !== 0 || info.nlink > 1) {
+    if (!info.isFile() || info.size > DOCUMENT_MAX_BYTES || !builtInDocumentModeSafe(info.mode, info.nlink, platform)) {
       throw runtimeError("unavailable", "built-in configuration is unavailable");
     }
     const text = readFileSync(fd, "utf8");

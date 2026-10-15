@@ -363,8 +363,13 @@ export async function runHost(
     }
     process.exit(0);
   };
-  process.on("SIGINT", (signal) => void shutdown(signal));
-  process.on("SIGTERM", (signal) => void shutdown(signal));
+  // win32: SIGBREAK (Ctrl+Break) and the synthetic SIGHUP (console close)
+  // join SIGINT/SIGTERM so the ledger lock is released instead of a raw exit
+  // (process.exit would skip the flush — the ordered shutdown keeps it bounded).
+  const shutdownSignals: readonly NodeJS.Signals[] = process.platform === "win32"
+    ? ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]
+    : ["SIGINT", "SIGTERM"];
+  for (const signal of shutdownSignals) process.on(signal, (sig) => void shutdown(sig));
 
   // The listening server keeps the event loop alive; block until a signal.
   await new Promise<void>(() => {});

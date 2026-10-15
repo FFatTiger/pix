@@ -6,6 +6,7 @@ import type { Context, Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import type { AllowedRootService, AuthorizedPath } from "../resources/allowed-roots.js";
+import { samePath } from "../resources/path-canonical.js";
 import { KeyedMutex } from "../resources/mutex.js";
 import { readBoundedBody, readJsonObject } from "../resources/request-body.js";
 import type { DefaultCwdFactory, ResourceLimits } from "../resources/types.js";
@@ -444,7 +445,7 @@ async function commitUploadBatch(
     // changed) since preflight, refuse instead of mutating a foreign directory.
     const verifyDirectory = async (): Promise<void> => {
       const current = await roots.authorizeExisting(requestedDirectory, "directory");
-      if (current.canonicalPath !== preflightParent) throw new HttpError(403, "PATH_FORBIDDEN", "Upload directory changed");
+      if (!samePath(current.canonicalPath, preflightParent)) throw new HttpError(403, "PATH_FORBIDDEN", "Upload directory changed");
       const info = await lstat(current.canonicalPath);
       if (info.dev !== parentIdentity.dev || info.ino !== parentIdentity.ino) throw new HttpError(409, "DIRECTORY_REPLACED", "Upload directory was replaced during the transaction");
     };
@@ -680,7 +681,7 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
     const authorized = await deps.roots.authorizeExisting(target, "directory");
     const dirents = await readdir(authorized.canonicalPath, { withFileTypes: true });
     const directories = dirents.filter((entry) => entry.isDirectory() && !IGNORED_NAMES.has(entry.name)).map((entry) => entry.name).sort();
-    return c.json({ path: authorized.canonicalPath, parentPath: authorized.canonicalPath === authorized.root ? null : dirname(authorized.canonicalPath), directories });
+    return c.json({ path: authorized.canonicalPath, parentPath: samePath(authorized.canonicalPath, authorized.root) ? null : dirname(authorized.canonicalPath), directories });
   });
 
   app.get("/v1/cwd/roots", (c) => c.json({ roots: deps.roots.roots(), defaultCwd: deps.defaultCwd ?? null }));

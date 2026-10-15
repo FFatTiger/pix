@@ -26,6 +26,17 @@ describe("isWithinRoot", () => {
     expect(isWithinRoot("C:\\proj\\src", "C:\\proj")).toBe(true);
     expect(isWithinRoot("/proj/", "/proj")).toBe(true);
   });
+
+  it("folds drive and UNC paths case-insensitively and keeps a drive root", () => {
+    expect(isWithinRoot("C:\\proj\\src", "c:\\PROJ")).toBe(true);
+    expect(isWithinRoot("c:\\proj", "C:\\PROJ")).toBe(true);
+    expect(isWithinRoot("D:\\proj", "C:\\proj")).toBe(false);
+    expect(isWithinRoot("//Server/Share/src", "\\\\server\\share")).toBe(true);
+    expect(isWithinRoot("C:/", "C:/")).toBe(true);
+    expect(isWithinRoot("C:/proj", "C:/")).toBe(true);
+    // POSIX case stays significant.
+    expect(isWithinRoot("/Proj", "/proj")).toBe(false);
+  });
 });
 
 describe("joinChild", () => {
@@ -141,5 +152,18 @@ describe("relativePath / baseName", () => {
     expect(baseName("/proj/src/a.ts")).toBe("a.ts");
     expect(baseName("/proj")).toBe("proj");
     expect(baseName("/")).toBe("/");
+  });
+
+  it("keeps a Windows drive root and reads backslash basenames", () => {
+    expect(baseName("C:/")).toBe("C:/");
+    expect(baseName("C:\\repo")).toBe("repo");
+    expect(baseName("C:\\repo\\src\\a.ts")).toBe("a.ts");
+    expect(parentWithinRoot("C:/proj/src", "C:/")).toBe("C:/proj");
+    expect(parentWithinRoot("C:/proj", "C:/")).toBe("C:/");
+    expect(parentWithinRoot("C:/", "C:/")).toBeNull();
+    expect(breadcrumbs("c:/PROJ/src", "C:/proj")).toEqual([
+      { label: "proj", path: "C:/proj" },
+      { label: "src", path: "C:/proj/src" },
+    ]);
   });
 });

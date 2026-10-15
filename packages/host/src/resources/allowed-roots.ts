@@ -4,6 +4,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { HttpError } from "../errors.js";
 import type { HostLogger, HostMode } from "../types.js";
 import { AsyncMutex } from "./mutex.js";
+import { canonicalizeRealpath, samePath } from "./path-canonical.js";
 import {
   TRUSTED_ROOTS_SOURCE,
   TrustedRootsLedgerError,
@@ -144,7 +145,7 @@ function validateAbsolutePath(value: string): string {
 async function canonicalDirectoryWithIdentity(value: string): Promise<{ canonical: string; identity: RootIdentity }> {
   const normalized = validateAbsolutePath(value);
   let canonical: string;
-  try { canonical = await realpath(normalized); }
+  try { canonical = canonicalizeRealpath(await realpath(normalized)); }
   catch { throw new HttpError(404, "PATH_NOT_FOUND", "Directory not found"); }
   const info = await lstat(canonical);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new HttpError(400, "NOT_DIRECTORY", "Path is not a real directory");
@@ -152,7 +153,9 @@ async function canonicalDirectoryWithIdentity(value: string): Promise<{ canonica
 }
 async function identityStillMatches(path: string, expected: RootIdentity): Promise<boolean> {
   try {
-    if (await realpath(path) !== path) return false;
+    // win32: realpath may answer with an extended prefix and different case;
+    // samePath folds both. POSIX keeps the exact comparison.
+    if (!samePath(await realpath(path), path)) return false;
     const current = await lstat(path);
     return current.isDirectory() && !current.isSymbolicLink() && current.dev === expected.dev && current.ino === expected.ino;
   } catch { return false; }
@@ -623,9 +626,9 @@ export async function rehydrateTrustedCreatedRoots(
     if (!(await durableAuthorizes(record.repoRoot))) return false;
     // base exact `${repoRoot}-worktrees` canonical real dir non-symlink
     const expectedBase = resolve(`${record.repoRoot}-worktrees`);
-    if (record.base !== expectedBase) return false;
+    if (!samePath(record.base, expectedBase)) return false;
     try {
-      if (await realpath(record.base) !== record.base) return false;
+      if (!samePath(await realpath(record.base), record.base)) return false;
       const baseInfo = await lstat(record.base);
       if (!baseInfo.isDirectory() || baseInfo.isSymbolicLink()) return false;
     } catch {
@@ -750,7 +753,7 @@ export async function createAllowedRootService(policy: AllowedRootPolicy): Promi
   async function authorizeExisting(target: string, kind: "any" | "file" | "directory" = "any"): Promise<AuthorizedPath> {
     const requestedPath = validateAbsolutePath(target);
     let canonicalPath: string;
-    try { canonicalPath = await realpath(requestedPath); } catch { throw new HttpError(404, "PATH_NOT_FOUND", "Path not found"); }
+    try { canonicalPath = canonicalizeRealpath(await realpath(requestedPath)); } catch { throw new HttpError(404, "PATH_NOT_FOUND", "Path not found"); }
     const root = matchingRoot(state.records, canonicalPath);
     if (!root) throw new HttpError(403, "PATH_FORBIDDEN", "Path is outside the allowed roots");
     const record = state.records.get(root);
@@ -769,15 +772,15 @@ export async function createAllowedRootService(policy: AllowedRootPolicy): Promi
     try {
       const info = await lstat(requestedPath);
       if (info.isSymbolicLink() || !info.isFile()) throw new HttpError(409, "UNSAFE_TARGET", "Only regular file targets can be replaced");
-      const canonicalPath = await realpath(requestedPath);
+      const canonicalPath = canonicalizeRealpath(await realpath(requestedPath));
       if (!isWithin(authorizedParent.root, canonicalPath)) throw new HttpError(403, "PATH_FORBIDDEN", "Upload target escapes the allowed root");
       return { requestedPath, canonicalPath, root: authorizedParent.root };
     } catch (error) {
       if (error instanceof HttpError) throw error;
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    const canonicalParent = await realpath(dirname(requestedPath));
-    if (canonicalParent !== authorizedParent.canonicalPath || !isWithin(authorizedParent.root, canonicalParent)) throw new HttpError(403, "PATH_FORBIDDEN", "Upload parent changed during authorization");
+    const canonicalParent = canonicalizeRealpath(await realpath(dirname(requestedPath)));
+    if (!samePath(canonicalParent, authorizedParent.canonicalPath) || !isWithin(authorizedParent.root, canonicalParent)) throw new HttpError(403, "PATH_FORBIDDEN", "Upload parent changed during authorization");
     return { requestedPath, canonicalPath: requestedPath, root: authorizedParent.root };
   }
 

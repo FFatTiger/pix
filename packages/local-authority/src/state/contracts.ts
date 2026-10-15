@@ -215,6 +215,13 @@ export function isValidInstanceId(value: unknown): value is string {
  * segments), bounded, no NUL. Equivalent to the old Host
  * `isAbsolute && resolve(value) === value` check without a path import, so it
  * stays platform-neutral.
+ *
+ * Win32 canonical shapes (drive `C:\a\b` or UNC `\\server\share\a`, as
+ * produced by `path.win32.resolve`, backslash-separated, no trailing
+ * separator except a bare drive root) are accepted in addition to the POSIX
+ * shape so ledgers can exist on Windows. Device paths (`\\.\…`) and
+ * extended-length prefixes (`\\?\…`) are never stored canonically and fail
+ * the shape check.
  */
 export function isAbsoluteCanonicalShape(value: unknown): value is string {
   if (
@@ -225,15 +232,38 @@ export function isAbsoluteCanonicalShape(value: unknown): value is string {
   ) {
     return false;
   }
-  if (!value.startsWith("/")) return false;
-  // Filesystem root is a valid *shape* (matches the original
-  // `isAbsolute && resolve(value) === value` semantics); the canonicalize and
-  // secure-directory primitives reject roots operationally.
-  if (value === "/") return true;
-  if (value.startsWith("//") || value.endsWith("/")) return false;
-  const segments = value.slice(1).split("/");
+  if (value.startsWith("/")) {
+    // Filesystem root is a valid *shape* (matches the original
+    // `isAbsolute && resolve(value) === value` semantics); the canonicalize and
+    // secure-directory primitives reject roots operationally.
+    if (value === "/") return true;
+    if (value.startsWith("//") || value.endsWith("/")) return false;
+    const segments = value.slice(1).split("/");
+    for (const segment of segments) {
+      if (segment === "" || segment === "." || segment === "..") return false;
+    }
+    return true;
+  }
+  return isWindowsCanonicalShape(value);
+}
+
+/** Win32 canonical shape: `C:\a\b` or `\\server\share\a` (no `\\?\`/`\\.\`). */
+function isWindowsCanonicalShape(value: string): boolean {
+  const isDrive = /^[A-Za-z]:\\/.test(value);
+  const isUnc = /^\\\\[^\\/:*?"<>|\s]+\\[^\\/:*?"<>|\s]+/.test(value);
+  if (!isDrive && !isUnc) return false;
+  // `C:\` alone is the drive root (a valid shape, like `/`); anything else
+  // must not end with a separator.
+  if (isDrive && /^[A-Za-z]:\\$/.test(value)) return true;
+  if (value.endsWith("\\") || value.endsWith("/")) return false;
+  // UNC heads start with two separators; slice them off before splitting so
+  // only real segments are validated.
+  const segments = (isUnc ? value.slice(2) : value).split("\\");
   for (const segment of segments) {
     if (segment === "" || segment === "." || segment === "..") return false;
+    // A drive head `C:` is fine; embedded forward slashes would mean the value
+    // was never win32-resolved.
+    if (segment.includes("/")) return false;
   }
   return true;
 }

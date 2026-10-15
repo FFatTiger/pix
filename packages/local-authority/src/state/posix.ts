@@ -40,7 +40,15 @@
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute } from "node:path";
+import {
+  canonicalCompareKey,
+  decomposeAbsolutePath,
+  securePathApi,
+  securePathPlatform,
+  stripWindowsExtendedPrefix,
+  type SecurePathPlatform,
+} from "./platform-paths.js";
 import {
   hasControlChar,
   isRecord,
@@ -66,8 +74,15 @@ import {
  * "this OS/filesystem does not support fsync on a directory handle", never
  * "the durable write is lost" — so they are tolerated. Any other error (EIO,
  * EACCES, EROFS, ENOSPC, EMFILE, ENOMEM, ...) is FATAL and fails the publish.
+ *
+ * Windows adds EPERM/EACCES/EBUSY: opening a directory handle / flushing it
+ * surfaces those codes on NTFS where the POSIX unsupported set never appears.
  */
 const DIR_FSYNC_UNSUPPORTED_CODES = new Set(["EINVAL", "ENOTSUP", "EISDIR"]);
+const DIR_FSYNC_UNSUPPORTED_CODES_WIN32 = new Set(["EINVAL", "ENOTSUP", "EISDIR", "EPERM", "EACCES", "EBUSY"]);
+
+/** Windows replace-failure codes that get ONE bounded unlink+rename retry. */
+const WIN32_RENAME_RETRY_CODES = new Set(["EPERM", "EEXIST", "EACCES", "EBUSY"]);
 
 const MAX_CANONICAL_PATH_LENGTH = 4096;
 const DEFAULT_PRIVATE_DIR_MODE = 0o700;
@@ -126,7 +141,10 @@ function errnoCode(error: unknown): string | undefined {
  * Canonicalize an absolute path via nearest-existing-ancestor realpath.
  *
  * 1. Requires an absolute, bounded, NUL/control-free path; rejects filesystem
- *    roots, lexical parent/current escapes, network (UNC) and Windows claims.
+ *    roots, lexical parent/current escapes, and — on POSIX — network (UNC) and
+ *    Windows drive claims. On win32 (default `process.platform`; injectable for
+ *    tests) drive-letter and UNC roots are canonical instead, extended `\\?\`
+ *    prefixes are stripped, and device paths (`\\.\…`) fail closed.
  * 2. Finds the nearest EXISTING ancestor and `realpath`s it (so the macOS
  *    `/var` → `/private/var` system alias, and generic existing-prefix aliases,
  *    resolve instead of false-rejecting).
@@ -137,7 +155,13 @@ function errnoCode(error: unknown): string | undefined {
  *
  * Never creates anything; the caller's secure-dir walk handles creation.
  */
-export async function canonicalizeAbsolutePath(path: string): Promise<string> {
+export async function canonicalizeAbsolutePath(
+  path: string,
+  platform: NodeJS.Platform | string = process.platform,
+  fs: { lstat: typeof lstat; realpath: typeof realpath } = { lstat, realpath },
+): Promise<string> {
+  const plat = securePathPlatform(platform);
+  const papi = securePathApi(plat);
   if (
     typeof path !== "string"
     || path.length === 0
@@ -147,72 +171,82 @@ export async function canonicalizeAbsolutePath(path: string): Promise<string> {
   ) {
     throw new LocalAuthorityError("INVALID_PATH", "Path must be a bounded absolute path without control characters");
   }
-  if (/^[A-Za-z]:[\\/]/.test(path)) {
-    throw new LocalAuthorityError("WINDOWS_PATH", "Windows drive-letter paths are not supported");
+  if (plat === "posix") {
+    if (/^[A-Za-z]:[\\/]/.test(path)) {
+      throw new LocalAuthorityError("WINDOWS_PATH", "Windows drive-letter paths are not supported");
+    }
+    if (/^\/\//.test(path)) {
+      throw new LocalAuthorityError("NETWORK_PATH", "Network share paths are not supported");
+    }
+    if (!isAbsolute(path)) {
+      throw new LocalAuthorityError("INVALID_PATH", "Path must be absolute");
+    }
+    if (path === "/") {
+      throw new LocalAuthorityError("ROOT_PATH", "Filesystem root is not a valid canonical target");
+    }
+
+    // Reject lexical parent/current escapes BEFORE normalization (never silently
+    // resolve `..` across a symlink boundary).
+    for (const segment of path.split("/")) {
+      if (segment === "." || segment === "..") {
+        throw new LocalAuthorityError("PARENT_ESCAPE", "Path must not contain parent or current directory components");
+      }
+      if (segment.includes("\0")) {
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", "Path component is unsafe");
+      }
+    }
+  } else {
+    // win32: validate drive/UNC shape + segments (also rejects device paths).
+    const decomposed = decomposeAbsolutePath(path, "win32");
+    if (decomposed.segments.length === 0) {
+      throw new LocalAuthorityError("ROOT_PATH", "Filesystem root is not a valid canonical target");
+    }
   }
-  if (/^\/\//.test(path)) {
-    throw new LocalAuthorityError("NETWORK_PATH", "Network share paths are not supported");
-  }
-  if (!isAbsolute(path)) {
-    throw new LocalAuthorityError("INVALID_PATH", "Path must be absolute");
-  }
-  if (path === "/") {
+
+  const normalized = papi.resolve(plat === "win32" ? stripWindowsExtendedPrefix(path) : path);
+  const decomposed = decomposeAbsolutePath(normalized, plat);
+  if (decomposed.segments.length === 0) {
     throw new LocalAuthorityError("ROOT_PATH", "Filesystem root is not a valid canonical target");
   }
-
-  // Reject lexical parent/current escapes BEFORE normalization (never silently
-  // resolve `..` across a symlink boundary).
-  for (const segment of path.split("/")) {
-    if (segment === "." || segment === "..") {
-      throw new LocalAuthorityError("PARENT_ESCAPE", "Path must not contain parent or current directory components");
-    }
-    if (segment.includes("\0")) {
-      throw new LocalAuthorityError("UNSAFE_COMPONENT", "Path component is unsafe");
-    }
-  }
-
-  const normalized = resolve(path);
-  if (normalized === "/") {
-    throw new LocalAuthorityError("ROOT_PATH", "Filesystem root is not a valid canonical target");
-  }
-
-  // Nearest existing ancestor: climb until lstat succeeds.
+  // Nearest existing ancestor: climb until lstat succeeds. Drive roots (`C:\`)
+  // and UNC share roots (`\\server\share`) are `dirname` fixed points on
+  // win32, so the climb terminates exactly like the `/` fixed point on POSIX.
   let existing = normalized;
   const missing: string[] = [];
   for (;;) {
     try {
-      await lstat(existing);
+      await fs.lstat(existing);
       break;
     } catch (error) {
       if (errnoCode(error) !== "ENOENT") {
         throw new LocalAuthorityError("UNSAFE_COMPONENT", "Path component cannot be inspected");
       }
-      const parent = dirname(existing);
+      const parent = papi.dirname(existing);
       if (parent === existing) {
         throw new LocalAuthorityError("ROOT_PATH", "Path has no existing ancestor");
       }
-      missing.unshift(basename(existing));
+      missing.unshift(papi.basename(existing));
       existing = parent;
     }
   }
 
   let canonicalPrefix: string;
   try {
-    canonicalPrefix = await realpath(existing);
+    canonicalPrefix = stripWindowsExtendedPrefix(await fs.realpath(existing));
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Existing ancestor cannot be canonicalized");
   }
-  const result = missing.length === 0 ? canonicalPrefix : join(canonicalPrefix, ...missing);
+  const result = missing.length === 0 ? canonicalPrefix : papi.join(canonicalPrefix, ...missing);
 
   // Walk canonical components: every EXISTING component must be a real
   // non-symlink directory. A missing tail (ENOENT) is expected and allowed.
-  const resultSegments = result.slice(1).split("/").filter((segment) => segment.length > 0);
-  let current = "/";
-  for (const segment of resultSegments) {
-    current = current === "/" ? `/${segment}` : `${current}/${segment}`;
+  const resultRoot = decomposeAbsolutePath(result, plat);
+  let current = resultRoot.root;
+  for (const segment of resultRoot.segments) {
+    current = papi.join(current, segment);
     let info;
     try {
-      info = await lstat(current);
+      info = await fs.lstat(current);
     } catch (error) {
       if (errnoCode(error) === "ENOENT") break;
       throw new LocalAuthorityError("UNSAFE_COMPONENT", "Canonical path component cannot be inspected");
@@ -328,38 +362,38 @@ export async function ensurePrivateDirectoryWithFs(
   path: string,
   options: EnsurePrivateDirectoryOptions,
   fs: EnsurePrivateDirectoryFs,
+  platform: NodeJS.Platform | string = process.platform,
 ): Promise<EnsurePrivateDirectoryResult> {
   const requireOwnedByCurrentUser = options.requireOwnedByCurrentUser ?? true;
   const requireMode = options.requireMode ?? DEFAULT_PRIVATE_DIR_MODE;
   const validateExistingLeaf = options.validateExistingLeaf;
+  const plat = securePathPlatform(platform);
+  const papi = securePathApi(plat);
+  // POSIX mode/uid enforcement is meaningless on NTFS (no mode bits, no uid);
+  // win32 keeps symlink/junction + dev/ino identity pinning and relies on the
+  // user-profile ACL for privacy (documented residual, docs/windows.md).
+  const enforceUnixPermissions = plat === "posix";
 
-  const normalized = resolve(path);
+  const normalized = papi.resolve(plat === "win32" ? stripWindowsExtendedPrefix(path) : path);
   if (
     typeof path !== "string"
     || path.length === 0
     || path.includes("\0")
     || hasControlChar(path)
-    || !isAbsolute(path)
+    // Absolute-ness is judged on the INPUT (stripped on win32), exactly like
+    // the frozen POSIX check — never on a resolve() that would quietly anchor
+    // a relative path to the process cwd.
+    || !papi.isAbsolute(plat === "win32" ? stripWindowsExtendedPrefix(path) : path)
   ) {
     throw new LocalAuthorityError("INVALID_PATH", "Directory path is invalid");
   }
-  if (normalized === "/") {
+  const decomposed = decomposeAbsolutePath(normalized, plat);
+  if (decomposed.segments.length === 0) {
     throw new LocalAuthorityError("ROOT_PATH", "Directory must not be the filesystem root");
   }
+  const segments = decomposed.segments;
 
-  const segments = normalized === "/"
-    ? []
-    : normalized.slice(1).split("/").filter((segment) => segment.length > 0);
-  for (const segment of segments) {
-    if (segment === "." || segment === "..") {
-      throw new LocalAuthorityError("PARENT_ESCAPE", "Directory path is unsafe");
-    }
-    if (segment.includes("\0") || segment.includes("/")) {
-      throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
-    }
-  }
-
-  let current = "/";
+  let current = decomposed.root;
   let creating = false;
   // True ONLY when THIS call's mkdir(recursive:false, 0700) fulfilled the final
   // leaf component. Never derived from pathname equality alone — a raced EEXIST
@@ -375,7 +409,7 @@ export async function ensurePrivateDirectoryWithFs(
   let racedParent: { path: string; dev: number; ino: number } | null = null;
 
   for (const segment of segments) {
-    current = current === "/" ? `/${segment}` : `${current}/${segment}`;
+    current = papi.join(current, segment);
     const isLeaf = current === normalized;
 
     if (racedParent !== null) {
@@ -467,10 +501,10 @@ export async function ensurePrivateDirectoryWithFs(
       // legitimate same-user concurrent creation working while failing closed
       // on any foreign or lax planted component. Its stable dev/ino is
       // re-verified before the next descendant is created.
-      if (requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(info))) {
+      if (enforceUnixPermissions && requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(info))) {
         throw new LocalAuthorityError("NOT_OWNED", "Directory path is unsafe");
       }
-      if ((info.mode & 0o777) !== requireMode) {
+      if (enforceUnixPermissions && (info.mode & 0o777) !== requireMode) {
         throw new LocalAuthorityError("NOT_PRIVATE", "Directory path is unsafe");
       }
       racedParent = { path: current, dev: info.dev, ino: info.ino };
@@ -501,55 +535,61 @@ export async function ensurePrivateDirectoryWithFs(
     // otherwise be opened and silently chmod'd. The created identity must also
     // match the last pre-open lstat (a swap before open fails closed). Never
     // path-chmod after a handle close.
-    if (
-      createdIdentity === null
-      || createdIdentity.dev !== finalInfo.dev
-      || createdIdentity.ino !== finalInfo.ino
-    ) {
-      throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
-    }
-    let dirHandle;
-    try {
-      dirHandle = await fs.open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      try {
-        // fstat the OPENED handle BEFORE any chmod: must be a real directory
-        // with the exact dev/ino of the inode this call created.
-        const opened = await dirHandle.stat();
-        if (
-          !opened.isDirectory()
-          || opened.dev !== createdIdentity.dev
-          || opened.ino !== createdIdentity.ino
-        ) {
-          throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
-        }
-        await dirHandle.chmod(requireMode);
-        // fstat again AFTER chmod: same identity/type and the exact required
-        // mode (fd identity + mode re-verified before the handle is closed).
-        const after = await dirHandle.stat();
-        if (
-          !after.isDirectory()
-          || after.dev !== createdIdentity.dev
-          || after.ino !== createdIdentity.ino
-          || (after.mode & 0o777) !== requireMode
-        ) {
-          throw new LocalAuthorityError("NOT_PRIVATE", "Directory private mode could not be enforced");
-        }
-      } finally {
-        // Always close the opened handle on every path (mismatch/error included).
-        await dirHandle.close().catch(() => {});
+    //
+    // win32: there are no mode bits to enforce (mkdir's mode is advisory-only)
+    // and directory handles are not openable this way; the created identity is
+    // pinned by the post-mkdir lstat + the final re-lstat below instead.
+    if (enforceUnixPermissions) {
+      if (
+        createdIdentity === null
+        || createdIdentity.dev !== finalInfo.dev
+        || createdIdentity.ino !== finalInfo.ino
+      ) {
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
       }
-    } catch (error) {
-      if (error instanceof LocalAuthorityError) throw error;
-      throw new LocalAuthorityError("NOT_PRIVATE", "Directory private mode could not be enforced");
+      let dirHandle;
+      try {
+        dirHandle = await fs.open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try {
+          // fstat the OPENED handle BEFORE any chmod: must be a real directory
+          // with the exact dev/ino of the inode this call created.
+          const opened = await dirHandle.stat();
+          if (
+            !opened.isDirectory()
+            || opened.dev !== createdIdentity.dev
+            || opened.ino !== createdIdentity.ino
+          ) {
+            throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+          }
+          await dirHandle.chmod(requireMode);
+          // fstat again AFTER chmod: same identity/type and the exact required
+          // mode (fd identity + mode re-verified before the handle is closed).
+          const after = await dirHandle.stat();
+          if (
+            !after.isDirectory()
+            || after.dev !== createdIdentity.dev
+            || after.ino !== createdIdentity.ino
+            || (after.mode & 0o777) !== requireMode
+          ) {
+            throw new LocalAuthorityError("NOT_PRIVATE", "Directory private mode could not be enforced");
+          }
+        } finally {
+          // Always close the opened handle on every path (mismatch/error included).
+          await dirHandle.close().catch(() => {});
+        }
+      } catch (error) {
+        if (error instanceof LocalAuthorityError) throw error;
+        throw new LocalAuthorityError("NOT_PRIVATE", "Directory private mode could not be enforced");
+      }
     }
   } else {
     // Existing directory (pre-existing, or raced EEXIST leaf): NEVER chmod.
     // Require current-user ownership where supported and exact private mode;
     // Host policy validates the contents.
-    if (requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(finalInfo))) {
+    if (enforceUnixPermissions && requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(finalInfo))) {
       throw new LocalAuthorityError("NOT_OWNED", "Directory is owned by another user");
     }
-    if ((finalInfo.mode & 0o777) !== requireMode) {
+    if (enforceUnixPermissions && (finalInfo.mode & 0o777) !== requireMode) {
       throw new LocalAuthorityError("NOT_PRIVATE", "Directory mode must be private");
     }
     if (validateExistingLeaf) {
@@ -580,13 +620,15 @@ export async function ensurePrivateDirectoryWithFs(
   }
 
   // Final re-verify the leaf is still a real canonical non-symlink directory.
+  // win32: realpath may return a different case (NTFS is case-insensitive) or
+  // an extended `\\?\` prefix, so equality uses the platform compare key.
   let finalReal: string;
   try {
     finalReal = await fs.realpath(current);
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
-  if (finalReal !== current) {
+  if (canonicalCompareKey(finalReal, plat) !== canonicalCompareKey(current, plat)) {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
   return { path: current, created: leafCreated, identity: toIdentity(finalRecheck) };
@@ -600,6 +642,7 @@ export async function ensurePrivateDirectoryWithFs(
 export async function ensurePrivateDirectory(
   path: string,
   options: EnsurePrivateDirectoryOptions = {},
+  platform: NodeJS.Platform | string = process.platform,
 ): Promise<EnsurePrivateDirectoryResult> {
   return ensurePrivateDirectoryWithFs(path, options, {
     lstat,
@@ -607,7 +650,7 @@ export async function ensurePrivateDirectory(
     realpath,
     open,
     isOwnedByCurrentUser,
-  });
+  }, platform);
 }
 
 // ---------------------------------------------------------------------------
@@ -617,6 +660,7 @@ export async function ensurePrivateDirectory(
 export async function readStateDocument(
   path: string,
   options: ReadStateDocumentOptions,
+  platform: NodeJS.Platform | string = process.platform,
 ): Promise<StateDocumentReadResult> {
   let info;
   try {
@@ -637,7 +681,9 @@ export async function readStateDocument(
     throw new LocalAuthorityError("DOC_OVERSIZE", "State document exceeds the size bound");
   }
   // Wrong permission: no group/other read/write access on the document.
-  if ((info.mode & 0o077) !== 0) {
+  // win32: files carry no POSIX group/other bits (mode reads 0o666); the check
+  // is POSIX-only (nlink/symlink/regular-file checks stay cross-platform).
+  if (securePathPlatform(platform) === "posix" && (info.mode & 0o077) !== 0) {
     throw new LocalAuthorityError("DOC_PERMISSIONS", "State document permissions are unsafe");
   }
   // Hard-linked document: extra names could alias a file we must not rewrite.
@@ -653,7 +699,12 @@ export async function readStateDocument(
   return { content: text };
 }
 
-async function fsyncDirectory(dirPath: string, failDirFsync?: () => void): Promise<void> {
+async function fsyncDirectory(
+  dirPath: string,
+  failDirFsync?: () => void,
+  platform: SecurePathPlatform = "posix",
+): Promise<void> {
+  const tolerated = platform === "win32" ? DIR_FSYNC_UNSUPPORTED_CODES_WIN32 : DIR_FSYNC_UNSUPPORTED_CODES;
   try {
     failDirFsync?.();
     const handle = await open(dirPath, constants.O_RDONLY);
@@ -664,7 +715,7 @@ async function fsyncDirectory(dirPath: string, failDirFsync?: () => void): Promi
     }
   } catch (error) {
     const code = errnoCode(error);
-    if (typeof code === "string" && DIR_FSYNC_UNSUPPORTED_CODES.has(code)) {
+    if (typeof code === "string" && tolerated.has(code)) {
       // Truly-unsupported platform/filesystem: tolerate (documented above).
       return;
     }
@@ -684,7 +735,9 @@ export async function writeStateDocument(
   path: string,
   payload: string,
   options: WriteStateDocumentOptions,
+  platform: NodeJS.Platform | string = process.platform,
 ): Promise<void> {
+  const plat = securePathPlatform(platform);
   if (Buffer.byteLength(payload, "utf8") > options.maxBytes) {
     throw new LocalAuthorityError("DOC_OVERSIZE", "Serialized state document exceeds size bound");
   }
@@ -731,8 +784,21 @@ export async function writeStateDocument(
         throw new LocalAuthorityError("LOCK_LOST", "Lifetime lock ownership lost before publish");
       }
     }
-    options.inject?.failRename?.();
-    await rename(temp, targetPath);
+    try {
+      // Test seam: throws as if the rename itself failed (errno-coded errors
+      // exercise the win32 replace retry below; POSIX rethrows everything).
+      options.inject?.failRename?.();
+      await rename(temp, targetPath);
+    } catch (error) {
+      const code = errnoCode(error);
+      if (plat !== "win32" || code === undefined || !WIN32_RENAME_RETRY_CODES.has(code)) throw error;
+      // Windows replace failure (readonly attribute / AV lock / open-handle
+      // race): ONE bounded unlink + rename retry under the held lifetime lock.
+      // The tiny absent-target window is a documented win32-only residual
+      // (docs/windows.md); POSIX keeps the atomic rename-over.
+      await rm(targetPath, { force: true }).catch(() => {});
+      await rename(temp, targetPath);
+    }
     // rename preserves mode/identity; verify final is the same regular file.
     let published;
     try {
@@ -748,7 +814,7 @@ export async function writeStateDocument(
     ) {
       throw new LocalAuthorityError("WRITE_FAILED", "Published state document identity mismatch");
     }
-    await fsyncDirectory(dirname(targetPath), options.inject?.failDirFsync);
+    await fsyncDirectory(dirname(targetPath), options.inject?.failDirFsync, plat);
   } catch (error) {
     await rm(temp, { force: true }).catch(() => {});
     if (error instanceof LocalAuthorityError) throw error;
@@ -766,7 +832,11 @@ export function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    // EPERM (POSIX) / EACCES (win32): the process exists but cannot be
+    // signaled — treated as alive on both platforms. ESRCH and anything else
+    // mean dead. On win32 signal 0 is libuv's OpenProcess existence probe.
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EPERM" || code === "EACCES";
   }
 }
 
@@ -907,6 +977,12 @@ export interface PosixSecureStateBackendOptions {
     failRename?: () => void;
     failDirFsync?: () => void;
   };
+  /**
+   * Platform override for the walk/canonicalize/IO semantics (default
+   * `process.platform`). Production never passes it; unit tests inject
+   * `"win32"` on POSIX hosts to exercise the Windows branches.
+   */
+  platform?: NodeJS.Platform | string;
 }
 
 /** Build the POSIX `SecureStateBackend` implementation. */
@@ -914,20 +990,21 @@ export function createPosixSecureStateBackend(
   options: PosixSecureStateBackendOptions = {},
 ): SecureStateBackend {
   const inject = options.inject ?? {};
+  const platform = options.platform ?? process.platform;
   return {
     kind: "posix",
-    canonicalizePath: (path) => canonicalizeAbsolutePath(path),
+    canonicalizePath: (path) => canonicalizeAbsolutePath(path, platform),
     fileIdentity: (path) => posixFileIdentity(path),
     principal: () => currentPrincipal(),
     isOwnedByCurrentUser: (identity) => isOwnedByCurrentUser(identity),
-    ensurePrivateDirectory: (path, opts) => ensurePrivateDirectory(path, opts),
-    readStateDocument: (path, opts) => readStateDocument(path, opts),
+    ensurePrivateDirectory: (path, opts) => ensurePrivateDirectory(path, opts, platform),
+    readStateDocument: (path, opts) => readStateDocument(path, opts, platform),
     writeStateDocument: (path, payload, opts) =>
       writeStateDocument(path, payload, {
         maxBytes: opts.maxBytes,
         ...(opts.lockCheck ? { lockCheck: opts.lockCheck } : {}),
         inject: { ...inject, ...(opts.inject ?? {}) },
-      }),
+      }, platform),
     acquireLifetimeLock: (path, opts) => acquireLifetimeLock(path, opts),
     readLifetimeLock: (path) => readLifetimeLock(path),
     releaseLifetimeLock: (path, opts) => releaseLifetimeLock(path, opts),

@@ -3214,14 +3214,22 @@ export class SessiondService {
     }
   }
 
-  /** Persist the idle timeout to the settings file; throws on write failure. */
+  /** Persist the idle timeout to the settings file; throws on write failure.
+   * win32: replace-rejected renames get one bounded unlink+rename retry. */
   private persistIdleTimeoutMs(ms: number): void {
     if (!this.deps.settingsFile) return;
     const target = this.deps.settingsFile;
     const tmp = `${target}.tmp`;
     try {
       writeFileSync(tmp, JSON.stringify({ idleTimeoutMs: ms }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-      renameSync(tmp, target);
+      try {
+        renameSync(tmp, target);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (process.platform !== "win32" || code === undefined || !["EPERM", "EEXIST", "EACCES", "EBUSY"].includes(code)) throw error;
+        unlinkSync(target);
+        renameSync(tmp, target);
+      }
     } catch {
       try { unlinkSync(tmp); } catch { /* leftover tmp is best-effort */ }
       throw new SessiondError("unavailable", "could not persist idle timeout", true);

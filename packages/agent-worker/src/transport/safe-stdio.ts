@@ -159,6 +159,12 @@ export interface ParentDeathWatchdogOptions {
   readonly exit?: (code: number) => void;
   /** Poll interval ms (default 250). */
   readonly pollMs?: number;
+  /** Test injection for the platform (default `process.platform`). */
+  readonly platform?: NodeJS.Platform | string;
+  /** Test injection for the pid-liveness probe (win32 mode). Defaults to signal-0 `process.kill`. */
+  readonly pidAlive?: (pid: number) => boolean;
+  /** Test injection for reading the current ppid (POSIX mode). Defaults to `process.ppid`. */
+  readonly currentPpid?: () => number;
 }
 
 /**
@@ -175,6 +181,11 @@ export interface ParentDeathWatchdogOptions {
  * PID reuse within the short poll window is astronomically unlikely and is
  * further covered by the stdin EOF path once the transport boots.
  *
+ * On Windows there is no reparenting: a dead parent leaves the child's ppid
+ * unchanged, so the poll instead probes the RECORDED parent pid for liveness
+ * (signal-0 existence probe). The stdin EOF path remains the primary signal
+ * on both platforms; this watchdog is the pre-transport bootstrap guard.
+ *
  * IMPORTANT: never logs or flushes on fire — stderr may already be broken.
  * Directly calls `exit(1)`.
  */
@@ -183,12 +194,25 @@ export function installParentDeathWatchdog(
 ): ParentDeathWatchdog {
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const pollMs = options.pollMs ?? 250;
-  const initialPpid = process.ppid;
+  const isWin32 = (options.platform ?? process.platform) === "win32";
+  const pidAlive = options.pidAlive ?? ((pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return code === "EPERM" || code === "EACCES";
+    }
+  });
+  const currentPpid = options.currentPpid ?? ((): number => process.ppid);
+  const initialPpid = currentPpid();
   let cancelled = false;
   let timer: ReturnType<typeof setInterval> | undefined = setInterval(() => {
     if (cancelled) return;
-    // Parent died → child reparented (ppid changed, typically to 1).
-    if (process.ppid !== initialPpid) {
+    // Parent died → Unix: reparented (ppid changed, typically to 1);
+    // win32: no reparenting, so probe the recorded parent pid directly.
+    const parentDied = isWin32 ? !pidAlive(initialPpid) : currentPpid() !== initialPpid;
+    if (parentDied) {
       if (timer !== undefined) {
         clearInterval(timer);
         timer = undefined;

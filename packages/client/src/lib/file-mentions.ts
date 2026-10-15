@@ -2,18 +2,20 @@
 // tokens. Pure string logic so it runs in the browser (no node:path).
 
 const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
+const WINDOWS_UNC_RE = /^\/\/[^/]+\/[^/]+/;
 
 /** Forward slashes + strip trailing slashes (also strips a lone drive root). */
 export function normalizePathSlashes(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
-function isWindowsDrivePath(p: string): boolean {
-  return WINDOWS_DRIVE_RE.test(p);
+/** Drive (`C:` / `C:/…`) or UNC (`//server/share`, also `\\server\\share` before normalize). */
+export function isWindowsDrivePath(p: string): boolean {
+  return WINDOWS_DRIVE_RE.test(p) || WINDOWS_UNC_RE.test(p);
 }
 
-/** Lowercased comparison key — Windows paths are case-insensitive. */
-function pathCompareKey(p: string): string {
+/** Lowercased comparison key — Windows drive and UNC paths are case-insensitive. */
+export function pathCompareKey(p: string): string {
   return isWindowsDrivePath(p) ? p.toLowerCase() : p;
 }
 

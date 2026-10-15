@@ -1,5 +1,5 @@
 import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import {
   MAX_SUBAGENT_AGENT_TYPE_LENGTH,
   MAX_SUBAGENT_DESCRIPTION_LENGTH,
@@ -130,10 +130,24 @@ function regularDir(path: string) {
 }
 
 function containedPath(root: string, candidate: string): string | null {
-  const resolvedRoot = resolve(root);
-  const resolved = resolve(candidate);
-  const rel = relative(resolvedRoot, resolved);
-  if (rel.startsWith("..") || rel.split(sep).includes("..")) return null;
+  return containedPathOn(root, candidate);
+}
+
+/**
+ * Lexical containment. `relative()` returns an absolute path for a different
+ * win32 drive/UNC root (`relative("C:\\a", "D:\\b")` → `D:\b`), which
+ * `startsWith("..")` misses — `isAbsolute(rel)` rejects that escape.
+ */
+export function containedPathOn(
+  root: string,
+  candidate: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const api = platform === "win32" ? win32 : { resolve, relative, sep, isAbsolute };
+  const resolvedRoot = api.resolve(root);
+  const resolved = api.resolve(candidate);
+  const rel = api.relative(resolvedRoot, resolved);
+  if (rel.startsWith("..") || api.isAbsolute(rel) || rel.split(api.sep).includes("..")) return null;
   return resolved;
 }
 

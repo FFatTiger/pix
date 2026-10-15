@@ -152,6 +152,14 @@ export function buildWorkerEnv(input: WorkerEnvBuildInput = {}): NodeJS.ProcessE
   if (typeof source.TMPDIR === "string" && source.TMPDIR.length > 0) env.TMPDIR = source.TMPDIR;
   if (typeof source.TEMP === "string" && source.TEMP.length > 0) env.TEMP = source.TEMP;
   if (typeof source.TMP === "string" && source.TMP.length > 0) env.TMP = source.TMP;
+  // Windows-critical process environment: without SystemRoot a Node child (and
+  // any grandchild like git.exe) cannot load system DLLs / resolve DNS; ComSpec
+  // and PATHEXT back command resolution; APPDATA/LOCALAPPDATA back per-user
+  // tool homes. Absent on POSIX — the length guard keeps them no-ops there.
+  for (const key of ["SystemRoot", "SystemDrive", "WINDIR", "ComSpec", "PATHEXT", "APPDATA", "LOCALAPPDATA"] as const) {
+    const value = source[key];
+    if (typeof value === "string" && value.length > 0) env[key] = value;
+  }
 
   const explicitPiDir =
     typeof source.PI_CODING_AGENT_DIR === "string" && source.PI_CODING_AGENT_DIR.length > 0

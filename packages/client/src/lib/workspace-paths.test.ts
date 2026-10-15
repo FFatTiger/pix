@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isAgentHomeWorkspacePath,
+  isEphemeralWorkspacePath,
   isHiddenRailSession,
   isNonProjectWorkspacePath,
   primaryRealProjectPath,
@@ -27,6 +28,9 @@ describe("workspace-paths — sidebar project/session rail filter", () => {
   it("hides ephemeral tmp trees even when they look like a project name", () => {
     expect(isNonProjectWorkspacePath("/tmp/pix-stable-composer")).toBe(true);
     expect(isNonProjectWorkspacePath("/private/tmp/num-scope-pix-source")).toBe(true);
+    expect(isEphemeralWorkspacePath("C:\\Users\\x\\AppData\\Local\\Temp\\pix-scratch")).toBe(true);
+    expect(isEphemeralWorkspacePath("C:/Users/x/AppData/Local/Temp")).toBe(false);
+    expect(isNonProjectWorkspacePath("/Users/alice/Documents/program/pix")).toBe(false);
   });
 
   it("picks the primary real project (most sessions) and skips agent homes", () => {

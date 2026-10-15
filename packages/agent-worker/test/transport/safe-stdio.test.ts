@@ -83,6 +83,52 @@ describe("safe-stdio", () => {
     assert.equal(dog.armed, false);
   });
 
+  it("installParentDeathWatchdog win32 mode fires when the recorded parent pid is dead", async () => {
+    const exits: number[] = [];
+    const dog = installParentDeathWatchdog({
+      exit: (code) => exits.push(code),
+      pollMs: 10,
+      platform: "win32",
+      pidAlive: () => false, // parent gone: no reparenting to observe on win32
+      currentPpid: () => 4242, // must NOT be consulted on win32
+    });
+    await tick(50);
+    dog.cancel();
+    assert.deepEqual(exits, [1], "win32 watchdog exits once when the parent pid probe reads dead");
+  });
+
+  it("installParentDeathWatchdog win32 mode stays armed while the parent pid answers", async () => {
+    const exits: number[] = [];
+    const dog = installParentDeathWatchdog({
+      exit: (code) => exits.push(code),
+      pollMs: 10,
+      platform: "win32",
+      pidAlive: () => true,
+    });
+    await tick(40);
+    assert.equal(dog.armed, true);
+    assert.deepEqual(exits, []);
+    dog.cancel();
+  });
+
+  it("installParentDeathWatchdog posix mode uses ppid change, not the pid probe", async () => {
+    const exits: number[] = [];
+    let ppid = 4242;
+    const dog = installParentDeathWatchdog({
+      exit: (code) => exits.push(code),
+      pollMs: 10,
+      platform: "linux",
+      pidAlive: () => false, // must NOT be consulted on posix
+      currentPpid: () => ppid,
+    });
+    await tick(30);
+    assert.deepEqual(exits, []);
+    ppid = 1; // reparented
+    await tick(40);
+    dog.cancel();
+    assert.deepEqual(exits, [1]);
+  });
+
   it("createStdinEofLatch latches end and reports stream-terminal state", async () => {
     const stream = new PassThrough();
     const latch = createStdinEofLatch(stream);

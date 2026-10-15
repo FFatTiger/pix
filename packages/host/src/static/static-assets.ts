@@ -1,5 +1,6 @@
 import { lstat, stat, readFile, realpath } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
+import { isPathOrChildOf } from "../resources/path-canonical.js";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { MiddlewareHandler } from "hono";
@@ -54,7 +55,7 @@ export function resolveClientFile(root: string, pathname: string): string | null
   }
   if (decoded.includes("\0")) return null;
   const target = resolve(root, `.${decoded}`);
-  if (target !== root && !target.startsWith(`${root}${sep}`)) return null;
+  if (!isPathOrChildOf(target, root)) return null;
   return target;
 }
 
@@ -73,10 +74,7 @@ async function canonicalFileWithinRoot(root: string, target: string): Promise<st
   } catch {
     return null;
   }
-  if (
-    canonicalTarget !== canonicalRoot &&
-    !canonicalTarget.startsWith(`${canonicalRoot}${sep}`)
-  ) {
+  if (!isPathOrChildOf(canonicalTarget, canonicalRoot)) {
     return null;
   }
   return canonicalTarget;

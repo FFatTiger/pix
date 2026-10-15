@@ -23,25 +23,52 @@ export function normalizeSeparators(input: string): string {
   return input.includes("\\") ? input.split("\\").join("/") : input;
 }
 
-/** Strip trailing separators (POSIX-normalized). Preserves a bare root "/". */
+/**
+ * Strip trailing separators (POSIX-normalized). Preserves a bare root "/"
+ * and a Windows drive root (`C:/`): `C:` means "cwd on drive C", not the root.
+ */
 function stripTrailing(normalized: string): string {
   if (normalized === "/") return normalized;
   return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
 }
 
-/** POSIX-style parent of an absolute path. Returns "/" at the filesystem root. */
+/** `C:` (after stripping) is a drive root; `C:` alone would mean cwd-on-C. */
+function preserveDriveRoot(stripped: string): string {
+  return /^[a-zA-Z]:$/.test(stripped) ? `${stripped}/` : stripped;
+}
+
+/** Drive (`C:/…`) or UNC (`//server/share`) after separator normalization. */
+function isWindowsShaped(normalized: string): boolean {
+  return /^[a-zA-Z]:(\/|$)/.test(normalized) || normalized.startsWith("//");
+}
+
+/** Case-fold only when either side is a drive or UNC path. POSIX stays as-is. */
+function compareKey(normalized: string, fold: boolean): string {
+  return fold ? normalized.toLowerCase() : normalized;
+}
+
+/** POSIX-style parent of an absolute path. Returns "/" at the filesystem root, "C:/" at a drive root. */
 function posixParent(normalized: string): string {
   const path = stripTrailing(normalized);
   if (path === "/") return "/";
+  if (/^[a-zA-Z]:\/$/.test(path)) return path;
   const idx = path.lastIndexOf("/");
   if (idx <= 0) return "/";
-  return path.slice(0, idx);
+  const parent = path.slice(0, idx);
+  if (/^[a-zA-Z]:$/.test(parent)) return `${parent}/`;
+  return parent;
+}
+
+function folded(left: string, right: string): { t: string; r: string } {
+  const fold = isWindowsShaped(left) || isWindowsShaped(right);
+  return { t: compareKey(left, fold), r: compareKey(right, fold) };
 }
 
 /** Trailing label of a path, used for the root crumb and file display. */
 export function baseName(input: string): string {
-  const path = stripTrailing(normalizeSeparators(input));
+  const path = preserveDriveRoot(stripTrailing(normalizeSeparators(input)));
   if (path === "/" || path === "") return "/";
+  if (/^[a-zA-Z]:\/$/.test(path)) return path;
   const idx = path.lastIndexOf("/");
   return idx <= 0 ? path.slice(1) || "/" : path.slice(idx + 1);
 }
@@ -52,11 +79,13 @@ export function baseName(input: string): string {
  * must equal root or start with `root + "/"`.
  */
 export function isWithinRoot(target: string, root: string): boolean {
-  const t = stripTrailing(normalizeSeparators(target));
-  const r = stripTrailing(normalizeSeparators(root));
+  const rawT = preserveDriveRoot(stripTrailing(normalizeSeparators(target)));
+  const rawR = preserveDriveRoot(stripTrailing(normalizeSeparators(root)));
+  const { t, r } = folded(rawT, rawR);
   if (r === "" || r === "/") return true;
   if (t === r) return true;
-  return t.startsWith(`${r}/`);
+  const prefix = r.endsWith("/") ? r : `${r}/`;
+  return t.startsWith(prefix);
 }
 
 /**
@@ -113,9 +142,10 @@ export function joinRelative(root: string, rel: string): string | null {
  */
 export function parentWithinRoot(dir: string, root: string): string | null {
   if (!isWithinRoot(dir, root)) return null;
-  const normalizedDir = stripTrailing(normalizeSeparators(dir));
-  const normalizedRoot = stripTrailing(normalizeSeparators(root));
-  if (normalizedDir === normalizedRoot) return null;
+  const normalizedDir = preserveDriveRoot(stripTrailing(normalizeSeparators(dir)));
+  const normalizedRoot = preserveDriveRoot(stripTrailing(normalizeSeparators(root)));
+  const { t, r } = folded(normalizedDir, normalizedRoot);
+  if (t === r) return null;
   const parent = posixParent(normalizedDir);
   return isWithinRoot(parent, normalizedRoot) ? parent : null;
 }
@@ -132,14 +162,15 @@ export interface Breadcrumb {
  */
 export function breadcrumbs(dir: string, root: string): Breadcrumb[] {
   if (!isWithinRoot(dir, root)) return [];
-  const normalizedRoot = stripTrailing(normalizeSeparators(root));
-  const normalizedDir = stripTrailing(normalizeSeparators(dir));
+  const normalizedRoot = preserveDriveRoot(stripTrailing(normalizeSeparators(root)));
+  const normalizedDir = preserveDriveRoot(stripTrailing(normalizeSeparators(dir)));
   const rootLabel = baseName(normalizedRoot);
   const crumbs: Breadcrumb[] = [
     { label: rootLabel || "/", path: normalizedRoot },
   ];
-  if (normalizedDir === normalizedRoot) return crumbs;
-  const relative = normalizedDir.slice(normalizedRoot.length).replace(/^\/+/, "");
+  const same = folded(normalizedDir, normalizedRoot);
+  if (same.t === same.r) return crumbs;
+  const relative = same.t.slice(same.r.length).replace(/^\/+/, "");
   let acc = normalizedRoot;
   for (const segment of relative.split("/").filter(Boolean)) {
     acc = acc === "/" ? `/${segment}` : `${acc}/${segment}`;
@@ -155,9 +186,10 @@ export function breadcrumbs(dir: string, root: string): Breadcrumb[] {
  * unrelated absolute path.
  */
 export function relativePath(from: string, to: string): string {
-  const f = stripTrailing(normalizeSeparators(from));
-  const t = stripTrailing(normalizeSeparators(to));
-  if (f === "" || f === "/" || t === f) return baseName(t);
-  if (!t.startsWith(`${f}/`)) return baseName(t);
+  const rawF = preserveDriveRoot(stripTrailing(normalizeSeparators(from)));
+  const rawT = preserveDriveRoot(stripTrailing(normalizeSeparators(to)));
+  const { t: f, r: t } = folded(rawF, rawT);
+  if (f === "" || f === "/" || t === f) return baseName(rawT);
+  if (!t.startsWith(`${f}/`)) return baseName(rawT);
   return t.slice(f.length + 1);
 }

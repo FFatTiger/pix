@@ -71,6 +71,13 @@ import { lstat, realpath, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
+  canonicalCompareKey,
+  decomposeAbsolutePath,
+  securePathApi,
+  securePathPlatform,
+  stripWindowsExtendedPrefix,
+} from "@fffattiger/pix-local-authority/state";
+import {
   createPosixSecureStateBackend,
   LocalAuthorityError,
   isRecord,
@@ -338,14 +345,24 @@ function buildTempPatterns(documents: readonly string[]): RegExp[] {
  * only a root-level system alias is accepted — a generic user symlink fails
  * closed before any mutation (nothing is created behind it).
  */
+/** True when `path`'s parent IS the walk root (`/` on POSIX, `C:\` / share on win32). */
+function sameOrRootParent(
+  papi: ReturnType<typeof securePathApi>,
+  path: string,
+  root: string,
+): boolean {
+  return papi.dirname(path) === root;
+}
+
 async function assertNoUnsafeIntermediateSymlink(original: string): Promise<void> {
-  const normalized = resolve(original);
-  const segments = normalized === "/"
-    ? []
-    : normalized.slice(1).split("/").filter((segment) => segment.length > 0);
-  let current = "/";
+  const plat = securePathPlatform();
+  const papi = securePathApi(plat);
+  const normalized = papi.resolve(plat === "win32" ? stripWindowsExtendedPrefix(original) : original);
+  const decomposed = decomposeAbsolutePath(normalized, plat);
+  const segments = decomposed.segments;
+  let current = decomposed.root;
   for (const segment of segments) {
-    current = current === "/" ? `/${segment}` : `${current}/${segment}`;
+    current = papi.join(current, segment);
     let info;
     try {
       info = await lstat(current);
@@ -357,15 +374,16 @@ async function assertNoUnsafeIntermediateSymlink(original: string): Promise<void
     if (info.isDirectory() && !info.isSymbolicLink()) continue;
     if (info.isSymbolicLink()) {
       // Root-level canonical system alias (macOS /var → /private/var etc.):
-      // accept only when it resolves to a real directory.
-      if (dirname(current) === "/") {
+      // accept only when it resolves to a real directory. win32: junction
+      // aliases at the share-root level follow the same rule.
+      if (sameOrRootParent(papi, current, decomposed.root)) {
         let target: string | undefined;
         try {
           target = await realpath(current);
         } catch {
           /* fall through to reject */
         }
-        if (target && target !== current) {
+        if (target && canonicalCompareKey(target, plat) !== canonicalCompareKey(current, plat)) {
           let targetInfo;
           try {
             targetInfo = await lstat(target);

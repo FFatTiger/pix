@@ -26,3 +26,12 @@ export {
   releaseLifetimeLock,
   createPosixSecureStateBackend,
 } from "./posix.js";
+export {
+  canonicalCompareKey,
+  decomposeAbsolutePath,
+  securePathApi,
+  securePathPlatform,
+  stripWindowsExtendedPrefix,
+  type DecomposedAbsolutePath,
+  type SecurePathPlatform,
+} from "./platform-paths.js";

@@ -1,10 +1,14 @@
 import { strict as assert } from "node:assert";
-import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { createHash } from "node:crypto";
-import { createPiSdkBuiltInCapabilityConfigStore } from "../src/internal/built-in-capability-store.js";
+import {
+  builtInDocumentModeSafe,
+  createPiSdkBuiltInCapabilityConfigStore,
+  readBuiltInCapabilityConfigSync,
+} from "../src/internal/built-in-capability-store.js";
 import { defaultBuiltInCapabilities } from "@fffattiger/pix-runtime-core";
 
 const revision = (text: string) => createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
@@ -35,6 +39,43 @@ function assertSanitized(error: unknown, code: string) {
 }
 
 describe("writable pix-builtins.json store", () => {
+  it("accepts a 0o666 document on simulated win32 and still rejects nlink > 1", async () => {
+    assert.equal(builtInDocumentModeSafe(0o666, 1, "win32"), true);
+    assert.equal(builtInDocumentModeSafe(0o666, 1, "darwin"), false);
+    assert.equal(builtInDocumentModeSafe(0o600, 2, "win32"), false);
+    assert.equal(builtInDocumentModeSafe(0o600, 1, "linux"), true);
+    const source = `${JSON.stringify({
+      version: 1,
+      subagents: false,
+      todo: true,
+      ask_user_question: false,
+      side_chat: true,
+      smart_compact: true,
+    }, null, 2)}\n`;
+    const agentDir = await fixture(source);
+    try {
+      await chmod(join(agentDir, "pix-builtins.json"), 0o666);
+      assert.throws(
+        () => readBuiltInCapabilityConfigSync(agentDir),
+        (error: unknown) => {
+          assertSanitized(error, "unavailable");
+          return true;
+        },
+      );
+      assert.deepEqual(readBuiltInCapabilityConfigSync(agentDir, "win32").capabilities, MIXED);
+      await link(join(agentDir, "pix-builtins.json"), join(agentDir, "pix-builtins-link.json"));
+      assert.throws(
+        () => readBuiltInCapabilityConfigSync(agentDir, "win32"),
+        (error: unknown) => {
+          assertSanitized(error, "unavailable");
+          return true;
+        },
+      );
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
   it("defaults missing file to all four enabled and a deterministic empty revision", async () => {
     const agentDir = await fixture();
     try {
