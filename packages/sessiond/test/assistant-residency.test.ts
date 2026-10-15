@@ -242,3 +242,45 @@ test("supervisor: a rekey of the tracked conversation moves the tracked id; fore
   assert.equal(supervisor.presence()?.sessionId, "a1-real");
   supervisor.dispose();
 });
+
+test("supervisor: the backoff ladder resets only after a stable online period, never on a ready blip", async () => {
+  let clock = 10_000;
+  const lines: string[] = [];
+  const supervisor = new AssistantResidencySupervisor({
+    findLatestAssistantSession: async () => ({ sessionId: "a1" }),
+    activate: async () => {},
+    isLiveSession: () => true,
+    isShuttingDown: () => false,
+    publishPresenceChanged: () => {},
+    log: (line: string) => { lines.push(line); },
+  }, { homedir: homedir(), retryBaseMs: 5, retryCapMs: 40, now: () => clock, stableOnlineMs: 60_000 });
+  const lastRetryLine = () => [...lines].reverse().find((line) => line.includes("retry #")) ?? "";
+  supervisor.start();
+  await wait(20);
+  assert.equal(supervisor.presence()?.status, "online");
+
+  // A crash after a STABLE run restarts the ladder at #1.
+  clock += 120_000;
+  supervisor.onRecordCrashed("a1");
+  assert.match(lastRetryLine(), /retry #1 /);
+  await wait(20);
+  assert.equal(supervisor.presence()?.status, "online", "back online after the stable-run crash");
+
+  // Crashes that come before the stability threshold keep climbing.
+  clock += 5_000;
+  supervisor.onRecordCrashed("a1");
+  assert.match(lastRetryLine(), /retry #2 /);
+  await wait(20);
+  assert.equal(supervisor.presence()?.status, "online");
+  clock += 5_000;
+  supervisor.onRecordCrashed("a1");
+  assert.match(lastRetryLine(), /retry #3 /);
+  await wait(20);
+  assert.equal(supervisor.presence()?.status, "online");
+
+  // Another stable run earns the reset again.
+  clock += 120_000;
+  supervisor.onRecordCrashed("a1");
+  assert.match(lastRetryLine(), /retry #1 /);
+  supervisor.dispose();
+});

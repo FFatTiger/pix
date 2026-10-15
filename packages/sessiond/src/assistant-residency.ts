@@ -29,6 +29,8 @@ import { SessiondError } from "./errors.js";
 const DEFAULT_RETRY_BASE_MS = 1_000;
 /** Retry delay ceiling (the ladder never grows past this). */
 const DEFAULT_RETRY_CAP_MS = 60_000;
+/** Online duration that counts as a stable run (resets the ladder on exit). */
+const DEFAULT_STABLE_ONLINE_MS = 60_000;
 
 /** Narrow service surface the supervisor drives. The service owns records. */
 export interface AssistantResidencySurface {
@@ -54,6 +56,15 @@ export interface AssistantResidencyOptions {
   homedir: string;
   retryBaseMs?: number;
   retryCapMs?: number;
+  /** Clock injection for deterministic stability tests (default Date.now). */
+  now?: () => number;
+  /**
+   * How long the tracked worker must stay online before a later crash resets
+   * the backoff ladder (default 60s). A worker that crashes before this is a
+   * crash loop: the ladder keeps climbing instead of resetting on every
+   * short-lived "online" blip.
+   */
+  stableOnlineMs?: number;
 }
 
 type Phase = "off" | "armed" | "starting" | "online" | "restarting";
@@ -69,11 +80,15 @@ export class AssistantResidencySupervisor {
   private readonly homedir: string;
   private readonly retryBaseMs: number;
   private readonly retryCapMs: number;
+  private readonly stableOnlineMs: number;
+  private readonly now: () => number;
   private started = false;
   private phase: Phase = "off";
   private trackedId: string | null = null;
-  /** Consecutive activation failures; resets on a live/adopted record. */
+  /** Consecutive activation failures; resets only after a stable run. */
   private attempt = 0;
+  /** When the tracked worker (re)entered online; undefined while not online. */
+  private onlineSince: number | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(surface: AssistantResidencySurface, options: AssistantResidencyOptions) {
@@ -81,6 +96,8 @@ export class AssistantResidencySupervisor {
     this.homedir = options.homedir;
     this.retryBaseMs = options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
     this.retryCapMs = options.retryCapMs ?? DEFAULT_RETRY_CAP_MS;
+    this.stableOnlineMs = options.stableOnlineMs ?? DEFAULT_STABLE_ONLINE_MS;
+    this.now = options.now ?? Date.now;
   }
 
   /** Idempotent daemon bootstrap. Never throws; failures retry with backoff. */
@@ -112,7 +129,10 @@ export class AssistantResidencySupervisor {
    * the resident conversation: at boot (the activation we started), after the
    * first message created a conversation (armed → online), or when a NEWER
    * assistant conversation was created (the previous one loses the exemption
-   * and follows the normal idle-reclamation path).
+   * and follows the normal idle-reclamation path). Becoming ready does NOT
+   * reset the backoff ladder — only a stable online period does
+   * (see {@link scheduleRestart}) — or a crash loop would reset it on every
+   * short-lived ready blip.
    */
   onRecordReady(sessionId: string, cwd: string): void {
     if (!this.started || this.phase === "off") return;
@@ -121,7 +141,8 @@ export class AssistantResidencySupervisor {
     const adopted = sessionId !== this.trackedId;
     this.clearTimer();
     this.trackedId = sessionId;
-    this.attempt = 0;
+    if (adopted) this.attempt = 0;
+    this.onlineSince = this.now();
     this.phase = "online";
     this.surface.log(adopted
       ? `[assistant-residency] adopted assistant session as resident`
@@ -177,6 +198,7 @@ export class AssistantResidencySupervisor {
       this.clearTimer();
       this.trackedId = null;
       this.attempt = 0;
+      this.onlineSince = undefined;
       this.phase = "armed";
       this.surface.log("[assistant-residency] armed (no assistant conversation yet)");
       this.surface.publishPresenceChanged();
@@ -185,6 +207,7 @@ export class AssistantResidencySupervisor {
     if (latest.sessionId !== this.trackedId) {
       this.trackedId = latest.sessionId;
       this.attempt = 0;
+      this.onlineSince = undefined;
     }
     await this.activateTracked();
   }
@@ -206,6 +229,7 @@ export class AssistantResidencySupervisor {
         this.clearTimer();
         this.trackedId = null;
         this.attempt = 0;
+        this.onlineSince = undefined;
         this.phase = "armed";
         this.surface.log("[assistant-residency] assistant conversation vanished; armed");
         this.surface.publishPresenceChanged();
@@ -218,7 +242,7 @@ export class AssistantResidencySupervisor {
     // actually activated; a switched tracked id re-resolves to the newest.
     if (this.trackedId !== sessionId) { await this.resolveLatest(); return; }
     if (this.surface.isLiveSession(sessionId)) {
-      this.attempt = 0;
+      this.onlineSince = this.now();
       this.phase = "online";
       this.surface.publishPresenceChanged();
       return;
@@ -234,6 +258,12 @@ export class AssistantResidencySupervisor {
 
   private scheduleRestart(reason: string): void {
     if (!this.started || this.surface.isShuttingDown()) return;
+    // A run that stayed online past the stability threshold earns a ladder
+    // reset; anything shorter is a crash loop and keeps climbing.
+    if (this.onlineSince !== undefined && this.now() - this.onlineSince >= this.stableOnlineMs) {
+      this.attempt = 0;
+    }
+    this.onlineSince = undefined;
     this.attempt += 1;
     const delay = Math.min(this.retryBaseMs * 2 ** (this.attempt - 1), this.retryCapMs);
     this.phase = "restarting";
