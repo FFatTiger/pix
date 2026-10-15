@@ -14,6 +14,7 @@
 //   3. no privilege escalation: every path the Client could conceivably hand
 //      the Host from outside the root (absolute escape, `..` traversal) is
 //      rejected with 403 by the allowed-roots authority, not by the Client.
+import { tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { execFileSync } from "node:child_process";
@@ -33,7 +34,7 @@ function temp(prefix) {
   // realpathSync resolves the macOS /var → /private/var symlink so the
   // canonical paths the Host returns (it realpaths every request) match what
   // the test asserts against.
-  const value = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  const value = tempDir(prefix);
   temporary.push(value);
   return value;
 }

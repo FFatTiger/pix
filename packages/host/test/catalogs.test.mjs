@@ -1,3 +1,4 @@
+import { tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -16,7 +17,7 @@ import {
 const DISABLED_GATE = { read: () => ({ status: "disabled", source: "test" }) };
 const temporary = [];
 function temp(prefix) {
-  const value = mkdtempSync(join(tmpdir(), prefix));
+  const value = tempDir(prefix);
   temporary.push(value);
   return value;
 }

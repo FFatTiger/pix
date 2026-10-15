@@ -11,6 +11,7 @@
  *    only while the seam is mounted, always stripped from the degraded
  *    (readonly) projection.
  */
+import { tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
@@ -54,7 +55,7 @@ function recordingTrust(initialTrusted) {
 // ---------------------------------------------------------------------------
 
 test("assistant workspace resource creates the derived directory 0700 and trusts it once", async () => {
-  const root = mkdtempSync(join(tmpdir(), "pix-assistant-host-"));
+  const root = tempDir("pix-assistant-host-");
   try {
     const home = join(root, "home");
     mkdirSync(home, { recursive: true });
@@ -77,7 +78,7 @@ test("assistant workspace resource creates the derived directory 0700 and trusts
 });
 
 test("already-trusted deployments write nothing at boot", async () => {
-  const root = mkdtempSync(join(tmpdir(), "pix-assistant-host-"));
+  const root = tempDir("pix-assistant-host-");
   try {
     const home = join(root, "home");
     mkdirSync(home, { recursive: true });
@@ -93,7 +94,7 @@ test("already-trusted deployments write nothing at boot", async () => {
 });
 
 test("assistant outside AllowedRoots stays disabled with no trust writes", async () => {
-  const root = mkdtempSync(join(tmpdir(), "pix-assistant-host-"));
+  const root = tempDir("pix-assistant-host-");
   try {
     const home = join(root, "home");
     mkdirSync(home, { recursive: true });
@@ -110,7 +111,7 @@ test("assistant outside AllowedRoots stays disabled with no trust writes", async
 });
 
 test("a trust-write failure is non-fatal (empty dir needs no trust decision)", async () => {
-  const root = mkdtempSync(join(tmpdir(), "pix-assistant-host-"));
+  const root = tempDir("pix-assistant-host-");
   try {
     const home = join(root, "home");
     mkdirSync(home, { recursive: true });

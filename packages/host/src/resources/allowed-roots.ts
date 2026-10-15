@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { lstat, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { HttpError } from "../errors.js";
 import type { HostLogger, HostMode } from "../types.js";
 import { AsyncMutex } from "./mutex.js";
-import { canonicalizeRealpath, samePath } from "./path-canonical.js";
+import { canonicalizeRealpath, pathWithin, samePath } from "./path-canonical.js";
 import {
   TRUSTED_ROOTS_SOURCE,
   TrustedRootsLedgerError,
@@ -134,8 +134,7 @@ export interface RehydrateTrustedRootsResult {
 const states = new WeakMap<AllowedRootService, RootState>();
 
 function isWithin(root: string, target: string): boolean {
-  const child = relative(root, target);
-  return child === "" || (!child.startsWith(`..${sep}`) && child !== ".." && !isAbsolute(child));
+  return pathWithin(root, target);
 }
 function validateAbsolutePath(value: string): string {
   if (!value || value.includes("\0")) throw new HttpError(400, "INVALID_PATH", "Path is required and must not contain NUL bytes");

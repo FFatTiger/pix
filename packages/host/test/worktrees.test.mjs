@@ -1,3 +1,4 @@
+import { CANON_TMP as CANON_TMP_LONG, tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import {
@@ -37,9 +38,9 @@ import {
 } from "../dist/resources/allowed-roots.js";
 
 const temporary = [];
-const CANON_TMP = realpathSync(tmpdir());
+const CANON_TMP = CANON_TMP_LONG;
 function temp(prefix) {
-  const value = mkdtempSync(join(CANON_TMP, prefix));
+  const value = tempDir(prefix);
   temporary.push(value);
   return value;
 }

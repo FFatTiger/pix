@@ -39,6 +39,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
+import { realpath as realpathCb } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import {
@@ -232,7 +233,11 @@ export async function canonicalizeAbsolutePath(
 
   let canonicalPrefix: string;
   try {
-    canonicalPrefix = stripWindowsExtendedPrefix(await fs.realpath(existing));
+    // realpath keeps an 8.3 short name (`RUNNER~1`); the long name is the
+    // canonical form every later compare and ledger stores. longPathName is a
+    // no-op when the native lookup fails, so an injected realpath result that
+    // does not exist on disk still flows through.
+    canonicalPrefix = stripWindowsExtendedPrefix(await longPathName(await fs.realpath(existing)));
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Existing ancestor cannot be canonicalized");
   }
@@ -620,15 +625,21 @@ export async function ensurePrivateDirectoryWithFs(
   }
 
   // Final re-verify the leaf is still a real canonical non-symlink directory.
-  // win32: realpath may return a different case (NTFS is case-insensitive) or
-  // an extended `\\?\` prefix, so equality uses the platform compare key.
+  // win32: realpath may return a different case (NTFS is case-insensitive), an
+  // extended `\\?\` prefix, or — from Node's JS realpath — the 8.3 short name
+  // (`C:\Users\RUNNER~1\…`) while the walk built the long name. Equality uses
+  // the platform compare key, and both sides are expanded to the long name
+  // first so a short/long pair is the same directory, not a swap.
   let finalReal: string;
+  let currentLong: string;
   try {
     finalReal = await fs.realpath(current);
+    currentLong = await longPathName(current);
+    finalReal = await longPathName(finalReal);
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
-  if (canonicalCompareKey(finalReal, plat) !== canonicalCompareKey(current, plat)) {
+  if (canonicalCompareKey(finalReal, plat) !== canonicalCompareKey(currentLong, plat)) {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
   return { path: current, created: leafCreated, identity: toIdentity(finalRecheck) };
@@ -651,6 +662,24 @@ export async function ensurePrivateDirectory(
     open,
     isOwnedByCurrentUser,
   }, platform);
+}
+
+/**
+ * Expand a Windows 8.3 short name (`RUNNER~1`) to the long path.
+ *
+ * `fs.realpath` (the JS implementation) preserves short names; `realpath.native`
+ * asks the OS and returns the long name. On POSIX the native call is the same
+ * path realpath already produced, so the compare above stays exact. A caller
+ * that injected a fake `fs.realpath` (tests) still reaches this real syscall
+ * only for the final equality check; when the path does not exist the original
+ * string is kept and the compare fails closed exactly as before.
+ */
+function longPathName(path: string): Promise<string> {
+  return new Promise((resolve) => {
+    realpathCb.native(path, (error, resolved) => {
+      resolve(error || typeof resolved !== "string" ? path : stripWindowsExtendedPrefix(resolved));
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

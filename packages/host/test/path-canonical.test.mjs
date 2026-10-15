@@ -23,10 +23,15 @@ test("stripExtendedPrefix maps extended forms back to plain win32 paths", () => 
   assert.equal(stripExtendedPrefix(`C:\\plain`), `C:\\plain`);
 });
 
-test("canonicalizeRealpath: win32 strips prefix, resolves and folds case; POSIX exact", () => {
-  assert.equal(canonicalizeRealpath(`\\\\?\\C:\\Repo\\Src`, "win32"), `c:\\repo\\src`);
-  assert.equal(canonicalizeRealpath(`c:/REPO/src`, "win32"), `c:\\repo\\src`);
-  assert.equal(canonicalizeRealpath(`\\\\?\\UNC\\SRV\\share\\a`, "win32"), `\\\\srv\\share\\a`);
+test("canonicalizeRealpath: win32 strips prefix and resolves; case stays, pathKey folds it", () => {
+  // Stored and returned paths keep the case realpath reported. NTFS folding
+  // is a comparison concern, so only pathKey is lowercase.
+  assert.equal(canonicalizeRealpath(`\\\\?\\C:\\Repo\\Src`, "win32"), `C:\\Repo\\Src`);
+  assert.equal(pathKey(`\\\\?\\C:\\Repo\\Src`, "win32"), `c:\\repo\\src`);
+  assert.equal(canonicalizeRealpath(`c:/REPO/src`, "win32"), `c:\\REPO\\src`);
+  assert.equal(pathKey(`c:/REPO/src`, "win32"), `c:\\repo\\src`);
+  assert.equal(canonicalizeRealpath(`\\\\?\\UNC\\SRV\\share\\a`, "win32"), `\\\\SRV\\share\\a`);
+  assert.equal(pathKey(`\\\\?\\UNC\\SRV\\share\\a`, "win32"), `\\\\srv\\share\\a`);
   // POSIX identity (frozen).
   assert.equal(canonicalizeRealpath("/tmp/X", "darwin"), "/tmp/X");
   assert.equal(canonicalizeRealpath(`\\\\?\\C:\\a`, "linux"), `\\\\?\\C:\\a`);

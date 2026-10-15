@@ -5,6 +5,7 @@
 // symlink / missing / file), fixed sanitized errors with no raw leak,
 // sessiond independence, read-after-write strict state, immutable failures
 // and honest `project.trust` capability advertisement.
+import { tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
@@ -23,7 +24,7 @@ const ENABLED_GATE = { read: () => ({ status: "enabled", password: "pw", source:
 
 const temporary = [];
 function temp(prefix) {
-  const value = mkdtempSync(join(tmpdir(), prefix));
+  const value = tempDir(prefix);
   temporary.push(value);
   return value;
 }

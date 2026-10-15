@@ -2,6 +2,7 @@
 // validation, AllowedRoots cwd authorization, trust gating of project themes,
 // fixed sanitized 400/404/503 errors (no path/raw content leaks), capability
 // advertisement (mounted-only, degraded-safe) and gate/LAN auth ordering.
+import { tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
@@ -29,7 +30,7 @@ const temporary = [];
 function temp(prefix) {
   // macOS keeps /var as a symlink to /private/var; AllowedRoots canonicalizes
   // to the realpath, so expectations use the canonical form from the start.
-  const value = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  const value = tempDir(prefix);
   temporary.push(value);
   return value;
 }

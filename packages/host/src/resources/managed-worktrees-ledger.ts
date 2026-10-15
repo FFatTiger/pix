@@ -34,7 +34,8 @@
  * not route-mounted and not wired into production boot yet.
  */
 import { randomUUID } from "node:crypto";
-import { isAbsolute, relative, resolve, sep, join, dirname } from "node:path";
+import { resolve, join, dirname } from "node:path";
+import { pathWithin, samePath } from "./path-canonical.js";
 import {
   hasControlChar,
   isAbsoluteCanonicalShape,
@@ -183,8 +184,11 @@ const MAX_WORKTREE_ID_LENGTH = 128;
 const MIN_WORKTREE_ID_LENGTH = 8;
 
 function isWithin(root: string, target: string): boolean {
-  const child = relative(root, target);
-  return child === "" || (!child.startsWith(`..${sep}`) && child !== ".." && !isAbsolute(child));
+  // pathWithin folds NTFS case. The previous `relative` + exact string check
+  // rejected a real child whose only difference was case (`C:\Users\runneradmin`
+  // vs the short/long form realpath returned), and the ledger then classified
+  // a record it had just written as MANAGED_SPARSE.
+  return pathWithin(root, target);
 }
 
 /** Map a shared-lease error code to the managed-worktrees ledger error code. */
@@ -321,7 +325,9 @@ function parseManagedRecord(
   //  - `base === `${repoRoot}-worktrees`` (exact repository-linked base).
   //  - path strictly inside base.
   //  - adminDir inside commonDir (linked-worktree admin dir).
-  if (dirname(commonDir) !== repoRoot) return "sparse";
+  // dirname on win32 rewrites the drive and each component's case, so an
+  // exact `!==` rejects the path this ledger just stored.
+  if (!samePath(dirname(commonDir), repoRoot)) return "sparse";
   if (base !== `${resolve(repoRoot)}-worktrees`) return "sparse";
   if (!isWithin(base, path) || path === base) return "sparse";
   if (!isWithin(commonDir, adminDir)) return "sparse";

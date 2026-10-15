@@ -1,3 +1,4 @@
+import { CANON_TMP as CANON_TMP_LONG, tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { delimiter } from "node:path";
@@ -25,9 +26,9 @@ import {
 const temporary = [];
 // Canonicalize temp roots: ensurePixHostDir refuses intermediate path symlinks
 // (macOS `/var` → `/private/var`). Callers must pass canonical absolute hostDir.
-const CANON_TMP = realpathSync(tmpdir());
+const CANON_TMP = CANON_TMP_LONG;
 function temp(prefix) {
-  const value = mkdtempSync(join(CANON_TMP, prefix));
+  const value = tempDir(prefix);
   temporary.push(value);
   return value;
 }
@@ -290,7 +291,11 @@ test("resolver: RPC error ⇒ degraded capabilities + one sanitized log line", a
  */
 function startFakeRpc(helloVersion) {
   return new Promise((resolve) => {
-    const socketPath = join(CANON_TMP, `pix-fake-rpc-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+    // win32 refuses listen() on a filesystem path (EACCES). A named pipe is
+    // the endpoint shape production uses; the name only has to be unique.
+    const socketPath = process.platform === "win32"
+      ? `\\\\.\\pipe\\pix-fake-rpc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      : join(CANON_TMP, `pix-fake-rpc-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
     const server = createServer((socket) => {
       socket.setNoDelay(true);
       let authenticated = false;

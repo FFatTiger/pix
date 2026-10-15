@@ -1,3 +1,4 @@
+import { tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -19,9 +20,9 @@ import {
 const DISABLED_GATE = { read: () => ({ status: "disabled", source: "test" }) };
 const temporary = [];
 function temp(prefix) {
-  const value = mkdtempSync(join(tmpdir(), prefix));
+  const value = tempDir(prefix);
   temporary.push(value);
-  return realpathSync(value);
+  return value;
 }
 afterEach(() => {
   while (temporary.length) rmSync(temporary.pop(), { recursive: true, force: true });
@@ -162,7 +163,7 @@ test("history_only: leaf symlink escape is not authorized even when the lexical 
   const link = join(root, "escape");
   symlinkSync(outside, link, "dir");
   const roots = await createAllowedRootService({ roots: [root] });
-  assert.ok(roots.roots().includes(root));
+  assert.equal(roots.roots().some((candidate) => candidate.toLowerCase() === root.toLowerCase()), true);
   assert.notEqual(link, root, "leaf symlink must not be the registered root path");
   const access = await classifyWorkspaceAccess(roots, { cwd: link, projectRoot: link });
   assert.deepEqual(access, { state: "history_only", reason: "symlink_escape" });
@@ -177,7 +178,8 @@ test("history_only: leaf symlink escape is not authorized even when the lexical 
 test("unavailable: exact registered root replaced by a symlink is identity replacement, not history_only", async () => {
   const root = temp("pi-ws-root-sym-");
   const roots = await createAllowedRootService({ roots: [root] });
-  assert.deepEqual(roots.roots(), [root]);
+  assert.equal(roots.roots().length, 1);
+  assert.equal(roots.roots()[0].toLowerCase(), root.toLowerCase());
   const parked = `${root}-parked`;
   temporary.push(parked);
   renameSync(root, parked);

@@ -160,7 +160,11 @@ wine /opt/node-win/node.exe /srv/pix/packages/cli/bin/pix.mjs down --all
 6. 崩溃恢复：`wine taskkill /f /pid <daemon>` 后 `pix start` 是否恢复。
 7. 路径：`PIX_ALLOWED_ROOTS` 大小写变体、`\\?\` 前缀（realpath 返回值）下 files/git 路由是否 403。
 
-**Windows CI 工作流**：`.github/workflows/windows.yml`（npm ci → build → typecheck → 各包 test → 冒烟脚本 `tests/windows-smoke.mjs`：起 sessiond、RPC ping、创建+停止一个会话（真实 worker spawn）、`pix down --all`、Host health 探测）。
+**Windows CI 工作流**：`.github/workflows/windows.yml`。`build` job 做一次 npm ci、build、typecheck，把工作区打成 7z（保留 npm 的 junction）上传；每个 workspace 一个并行 `test` job，脚本测试和启动冒烟各自一个 job。任一失败则整体失败（`needs: build`）。每个 job 有 `timeout-minutes`；`scripts/run-node-test.mjs` 默认给 `node --test` 加 `--test-timeout=120000`，一个挂住的用例只失败自己的进程。冒烟脚本 `tests/windows-smoke.mjs`：起 sessiond、RPC ping、创建+停止一个会话（真实 worker spawn）、`pix down --all`、Host health 探测。
+
+**8.3 短路径**：GitHub 的 `os.tmpdir()` 是 `C:\Users\RUNNER~1\…`，而 `fs.realpath` 展开成长名 `C:\Users\runneradmin\…`。local-authority 的最终比较和 canonical 前缀都先走 `realpath.native` 展开成长名再比较（大小写仍由 compare key 折叠）。Host 的 `canonicalizeRealpath` 只去 `\\?\` 前缀并 resolve，不再把存储路径转成小写；大小写折叠只发生在 `pathKey`。
+
+**换行**：`.gitattributes` 固定 `* text=auto eol=lf`。客户端样式测试用 `cssRule()` 查找规则，选择器和 `{` 之间的 CRLF 不影响匹配。
 
 ## 已知残留（文档化，不改）
 

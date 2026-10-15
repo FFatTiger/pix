@@ -1,3 +1,4 @@
+import { CANON_TMP as CANON_TMP_LONG, tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { execFileSync } from "node:child_process";
@@ -22,8 +23,8 @@ import {
 const temporary = [];
 const gate = { config: { read: () => ({ status: "disabled", source: "test" }) } };
 const managedLeases = [];
-const CANON_TMP = realpathSync(tmpdir());
-function temp(prefix) { const value = mkdtempSync(join(tmpdir(), prefix)); temporary.push(value); return value; }
+const CANON_TMP = CANON_TMP_LONG;
+function temp(prefix) { const value = tempDir(prefix); temporary.push(value); return value; }
 afterEach(() => {
   while (managedLeases.length) void managedLeases.pop().close().catch(() => {});
   while (temporary.length) rmSync(temporary.pop(), { recursive: true, force: true });

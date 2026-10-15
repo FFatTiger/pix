@@ -26,13 +26,14 @@ export function stripExtendedPrefix(value: string): string {
 }
 
 /**
- * Normalize a filesystem-reported path (realpath output) into the canonical
- * key space: extended prefixes stripped; on win32 also resolved and folded to
- * lowercase. POSIX: the exact input (frozen).
+ * Normalize a filesystem-reported path (realpath output) into the form that
+ * is stored and returned: extended prefixes stripped, win32 separators
+ * resolved. Case is preserved — NTFS folding belongs to {@link pathKey}, not
+ * to the path callers stat, display, and persist. POSIX: the exact input.
  */
 export function canonicalizeRealpath(value: string, platform: PathPlatform = process.platform): string {
   if (!isWin(platform)) return value;
-  return win32.resolve(stripExtendedPrefix(value)).toLowerCase();
+  return win32.resolve(stripExtendedPrefix(value));
 }
 
 /**
@@ -41,7 +42,8 @@ export function canonicalizeRealpath(value: string, platform: PathPlatform = pro
  * separators on win32; POSIX keys stay exact.
  */
 export function pathKey(value: string, platform: PathPlatform = process.platform): string {
-  return canonicalizeRealpath(value, platform);
+  const canonical = canonicalizeRealpath(value, platform);
+  return isWin(platform) ? canonical.toLowerCase() : canonical;
 }
 
 /** True when both paths name the same file (case/separator/prefix tolerant). */

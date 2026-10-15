@@ -32,7 +32,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, resolve } from "node:path";
+import { pathWithin, samePath } from "./path-canonical.js";
 import { HttpError } from "../errors.js";
 import {
   registerManagedAuthorizedRoot,
@@ -116,8 +117,7 @@ export function createManagedWorktreesService(deps: ManagedWorktreesDeps): Manag
 }
 
 function isWithin(root: string, target: string): boolean {
-  const child = relative(root, target);
-  return child === "" || (!child.startsWith(`..${sep}`) && child !== ".." && !isAbsolute(child));
+  return pathWithin(root, target);
 }
 
 function maxOutput(deps: ManagedWorktreesDeps): number {
@@ -234,7 +234,7 @@ export async function captureManagedWorktreeEvidence(
   const base = `${resolve(repoRoot)}-worktrees`;
 
   // Containment invariants (same as the ledger schema).
-  if (dirname(commonDir) !== repoRoot) {
+  if (!samePath(dirname(commonDir), repoRoot)) {
     throw new HttpError(400, "UNSAFE_WORKTREE_BASE", "Worktree common dir must sit directly under the repository root");
   }
   if (!isWithin(base, canonical) || canonical === base) {
