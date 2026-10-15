@@ -54,7 +54,13 @@ export async function readInstanceLockStrict(paths: SessiondPaths): Promise<Inst
   try {
     info = await lstat(paths.lockFile);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+    const code = (error as NodeJS.ErrnoException).code;
+    // ENOENT: the lock file is absent (a parent directory may still exist).
+    // ENOTDIR: a parent component is a file, so no lock can exist here either
+    // — still "nothing is running". Any other failure (EACCES, EPERM, EIO,
+    // and the win32 codes libuv reports for an unreadable path) means the
+    // directory cannot be proven empty, so spawning over it is unsafe.
+    if (code === "ENOENT" || code === "ENOTDIR") return { kind: "missing" };
     return { kind: "unsafe", reason: "sessiond lock file is not readable" };
   }
   if (info.isSymbolicLink() || !info.isFile()) {

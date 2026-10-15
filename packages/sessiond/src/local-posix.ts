@@ -254,7 +254,14 @@ export async function ensureSessiondPrivateDirectoryWithFs(
       try {
         info = await fs.lstat(current);
       } catch (error) {
-        if (errnoCode(error) !== "ENOENT") {
+        const code = errnoCode(error);
+        // ENOENT / ENOTDIR: the component (or a parent of it) is not a
+        // directory, so creation is the next step. mkdir then fails closed as
+        // NOT_DIRECTORY when a parent is a file. A permission or IO failure is
+        // not "missing" and stays unsafe. Win32 libuv does not always report
+        // "parent is a file" as ENOTDIR, so any other code also starts
+        // creation and lets mkdir classify it.
+        if (code === "EACCES" || code === "EPERM" || code === "EIO") {
           throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
         }
         creating = true;
