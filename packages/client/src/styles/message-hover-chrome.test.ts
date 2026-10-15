@@ -86,8 +86,10 @@ describe("message hover chrome ownership and accessibility", () => {
     expect(adapter).not.toContain("--font-sans:");
     expect(main).not.toContain("ia-writer-quattro");
     expect(packageJson).not.toContain("ia-writer-quattro");
-    expect(globals).not.toMatch(/font-weight:\s*(?:400|500|600|650|700);/);
-    expect(adapter).not.toMatch(/font-weight:\s*(?:400|500|600|650|700);/);
+    // The scale is the only legal numeric weights. 550 is the settings-row
+    // emphasis that sits between regular (500) and medium (600).
+    expect(globals).not.toMatch(/font-weight:\s*(?!(?:var\(--text-weight-|500|550|600|700)\b)\d+/);
+    expect(adapter).not.toMatch(/font-weight:\s*(?!(?:var\(--text-weight-|500|550|600|700)\b)\d+/);
   });
 
   it("owns interruptible disclosure motion and a bounded scroll region for Codex groups", () => {
