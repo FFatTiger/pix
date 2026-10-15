@@ -139,23 +139,24 @@ function curatedIdForExactPath(value: string): CuratedPluginId | undefined {
   return undefined;
 }
 
-const NODE_MODULES_PATTERN = /(?:^|\/)node_modules\//;
+const NODE_MODULES_PATTERN = /(?:^|[\\/])node_modules[\\/]/;
 
 /**
  * Curated identity by INSTALL PATH: any extension living under a
  * `node_modules/<curated package name>/` tree is that curated plugin — this is
  * how the user's separately installed copy (for example the global
  * `npm:pi-smart-compact` in their own settings.json `packages`) is recognized
- * even though its path differs from the adapter-bundled root. Forks or renamed
- * copies under a different package name never match.
+ * even though its path differs from the adapter-bundled root. Both POSIX and
+ * Windows separators are recognized (`resolve()` emits backslashes on win32).
+ * Forks or renamed copies under a different package name never match.
  */
 function curatedIdForPackagePath(value: string): CuratedPluginId | undefined {
   const resolved = resolve(value);
   if (!NODE_MODULES_PATTERN.test(resolved)) return undefined;
   for (const root of bundledPluginRoots()) {
-    const inner = `node_modules/${root.packageName}/`;
-    const index = resolved.indexOf(inner);
-    if (index !== -1) return root.id;
+    const innerPosix = `node_modules/${root.packageName}/`;
+    const innerWin = `node_modules\\${root.packageName}\\`;
+    if (resolved.includes(innerPosix) || resolved.includes(innerWin)) return root.id;
   }
   return undefined;
 }

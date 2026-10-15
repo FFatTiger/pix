@@ -71,6 +71,40 @@ describe("curated plugin loader filter", () => {
     assert.deepEqual(filtered.extensions.map((item) => item.resolvedPath), [smart.entry]);
   });
 
+  it("recognizes a windows-separator install path the same way (node_modules\\pkg\\)", () => {
+    const roots = bundledPluginRoots();
+    const smart = roots.find((item) => item.id === "smart_compact")!;
+    // resolve() on win32 emits backslash-separated paths; the same global-copy
+    // recognition must hold (drive-relative spelling keeps the backslashes).
+    const winCopy = "C:\\Users\\x\\.pi\\agent\\npm\\node_modules\\pi-smart-compact\\dist\\index.js";
+    const filtered = filterCuratedExtensions({
+      extensions: [
+        { path: smart.entry, resolvedPath: smart.entry },
+        { path: winCopy, resolvedPath: winCopy },
+      ],
+      errors: [],
+      runtime: null,
+    }, new Set(["subagents", "todo", "ask_user_question", "smart_compact"]));
+    assert.deepEqual(filtered.extensions.map((item) => item.resolvedPath), [smart.entry]);
+
+    // Disabled removes the windows-path copy too.
+    const dropped = filterCuratedExtensions({
+      extensions: [{ path: winCopy, resolvedPath: winCopy }],
+      errors: [],
+      runtime: null,
+    }, new Set(["subagents", "todo", "ask_user_question"]));
+    assert.deepEqual(dropped.extensions, []);
+
+    // A fork under a different package name (windows separators) never matches.
+    const winFork = "C:\\Users\\x\\.pi\\agent\\npm\\node_modules\\my-smart-compact-fork\\dist\\index.js";
+    const untouched = filterCuratedExtensions({
+      extensions: [{ path: winFork, resolvedPath: winFork }],
+      errors: [],
+      runtime: null,
+    }, new Set());
+    assert.deepEqual(untouched.extensions.map((item) => item.resolvedPath), [winFork]);
+  });
+
   it("drops smart-compact entirely when the capability is disabled (global copy removed too)", () => {
     const roots = bundledPluginRoots();
     const smart = roots.find((item) => item.id === "smart_compact")!;
