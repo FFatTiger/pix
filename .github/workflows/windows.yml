@@ -31,7 +31,7 @@ jobs:
           # workspaces; tar -h follows them and would duplicate the tree.
           # 7-Zip stores junctions as junctions, so the extract recreates
           # the same layout the build just verified.
-          & "C:\Program Files\7-Zip\7z.exe" a -snl -mx=1 workspace.7z . -xr!.git
+          & "C:\Program Files\7-Zip\7z.exe" a -snl -mx=1 workspace.7z . '-xr!.git'
       - uses: actions/upload-artifact@v4
         with:
           name: windows-workspace
@@ -67,7 +67,7 @@ jobs:
       - name: Restore the built workspace
         shell: pwsh
         run: |
-          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z -o. -y
+          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z '-o.' -y
           Remove-Item workspace.7z
       # Per-test timeout is the runner default (scripts/run-node-test.mjs,
       # 120s). npm would not forward a bare --test-timeout to that runner.
@@ -88,7 +88,7 @@ jobs:
       - name: Restore the built workspace
         shell: pwsh
         run: |
-          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z -o. -y
+          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z '-o.' -y
           Remove-Item workspace.7z
       # Through npm: the release-package tests require npm_execpath.
       - name: Script tests
@@ -108,7 +108,7 @@ jobs:
       - name: Restore the built workspace
         shell: pwsh
         run: |
-          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z -o. -y
+          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z '-o.' -y
           Remove-Item workspace.7z
       - name: Startup smoke (real sessiond over a named pipe + host)
         run: node tests/windows-smoke.mjs
