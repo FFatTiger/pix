@@ -16,7 +16,7 @@ Pix 目前只在 macOS / Linux 上运行。本文是 Windows (win32) 适配的**
 
 | 项 | 现状 / 问题 | 改法 | 状态 |
 |---|---|---|---|
-| 公共端点 | `local.ts sessiondPaths()` 已有 win32 分支：`\\.\pipe\pix-sessiond-<dir 的 hex 前 24>`；Unix 为 `<dir>/sessiond.sock` | 保留。管道名对目录确定性稳定（96 bit hash 足够防撞）。注意：目录字符串大小写不同会产生不同管道名——CLI/daemon 都经 `resolveRuntimeDir()`（`join(homedir(),…)`）派生，同一机器上拼写一致 | ✅（已有）|
+| 公共端点 | `local.ts sessiondPaths()` win32 分支：`\\.\pipe\pix-sessiond-<sha256(规范化目录 + "\0" + 用户名)前 32 hex>`（`windowsSessiondPipeName`，win32.resolve 规范化，`os.userInfo().username` 兜底 env）；Unix 为 `<dir>/sessiond.sock` | 管道名对 (目录, 用户) 确定性稳定（128 bit hash）。两个本地账号即使派生出同一运行目录也各自命名空间；同名管道若被他人创建，listen 报 EADDRINUSE、connect 报 EACCES，可在 net 层检测。注意：目录字符串大小写不同仍会产生不同管道名——CLI/daemon 都经 `resolveRuntimeDir()`（`join(homedir(),…)`）派生，同一机器上拼写一致；从旧管道名升级需先停旧 daemon（实例锁会如实报 conflict） | ✅ |
 | 管道与 `net.connect`/`server.listen` | `rpc.ts` 把 endpoint 直接传 `createConnection` / `server.listen`；Node 对 `\\.\pipe\` 前缀自动走命名管道 | 无需改 | ✅（已有）|
 | 私有别名 socket / 硬链接发布 | Unix 用 `pixsd-<token>.sock` + `link()` 原子发布；win32 分支已全部 no-op（`needsUnixSocketPublication()` 等） | 保留。Windows 直接绑公共管道名；实例唯一性由实例锁保证 | ✅（已有）|
 | `sun_path` 长度 / 残留 socket 清理 | 仅在 `needsUnixSocketPublication()` 时检查/清理，win32 跳过 | 无需改；管道随进程消失，无残留文件 | ✅（已有）|

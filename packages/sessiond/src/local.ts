@@ -1,8 +1,9 @@
 import { constants } from "node:fs";
 import { chmod, link, lstat, open, readdir, readFile, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { basename, dirname, join } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { basename, dirname, join, win32 } from "node:path";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { userInfo } from "node:os";
 import { isPidAlive as sharedIsPidAlive } from "@fffattiger/pix-local-authority/state";
 import { SessiondError } from "./errors.js";
 import {
@@ -99,10 +100,40 @@ export async function instanceAlive(paths: SessiondPaths): Promise<boolean> {
   return lock !== undefined && pidAlive(lock.pid);
 }
 
+/**
+ * Deterministic Windows named-pipe name for one sessiond directory and user:
+ * `pix-sessiond-<first 32 hex of sha256(normalized dir + "\0" + username)>`.
+ * The username rides in the hash so two local accounts deriving the same
+ * runtime directory never share a pipe; a same-name pipe created by ANOTHER
+ * user makes our `server.listen` fail (name taken) and any connect EACCES —
+ * detectable at the net layer, documented residual: with distinct usernames
+ * a cross-user collision needs the identical directory hash too.
+ */
+export function windowsSessiondPipeName(directory: string, username: string): string {
+  // win32 resolution explicitly: the name must normalize identically no
+  // matter which platform computes it (backslash folding, trailing separators).
+  const digest = createHash("sha256").update(`${win32.resolve(directory)}\0${username}`).digest("hex");
+  return `\\\\.\\pipe\\pix-sessiond-${digest.slice(0, 32)}`;
+}
+
+/** Best-effort local user identity for the pipe namespace (never a secret). */
+function sessiondPipeUsername(): string {
+  try {
+    const info = userInfo();
+    if (typeof info.username === "string" && info.username.length > 0) return info.username;
+  } catch {
+    // userInfo() throws when the account cannot be resolved; env is the fallback.
+  }
+  const fromEnv = process.env.USERNAME ?? process.env.USER;
+  return typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : "unknown";
+}
+
 export function sessiondPaths(directory: string): SessiondPaths {
   return {
     directory,
-    endpoint: process.platform === "win32" ? `\\\\.\\pipe\\pix-sessiond-${Buffer.from(directory).toString("hex").slice(0, 24)}` : join(directory, "sessiond.sock"),
+    endpoint: process.platform === "win32"
+      ? windowsSessiondPipeName(directory, sessiondPipeUsername())
+      : join(directory, "sessiond.sock"),
     lockFile: join(directory, "sessiond.lock"),
     secretFile: join(directory, "sessiond.secret"),
   };
