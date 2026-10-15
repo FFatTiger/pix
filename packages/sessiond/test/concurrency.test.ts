@@ -352,7 +352,7 @@ function liveRevision(service: SessiondService, sessionId: string, epoch: string
   return revision;
 }
 
-test("Phase 4A.0.1 submitTurn: a global running change stales create cursor; same operation repairs once and dispatches once", async () => {
+test("Phase 4A.0.1 submitTurn: a global running change never stales the create cursor; a conversation event does; same operation repairs once and dispatches once", async () => {
   const { service, workers } = makeService({}, (input) => ({ snapshot: promptCapSnapshot(input.sessionId), commandDelayMs: 40 }));
   const createdA = await service.create({ createRequestId: "create-a", cwd: "/a", projectRoot: "/a" });
   const staleRevision = createdA.lastEventId;
@@ -364,12 +364,38 @@ test("Phase 4A.0.1 submitTurn: a global running change stales create cursor; sam
   const currentRevision = liveRevision(service, createdA.sessionId, createdA.epoch);
   assert.ok(currentRevision > staleRevision, `expected B's running change to advance A (${staleRevision} -> ${currentRevision})`);
 
-  const request = {
+  // The running-set broadcast is side-channel: A's fence stays valid at the
+  // pre-broadcast cursor, so the submit is admitted directly.
+  const direct = await service.prepareSubmitTurn({
     sessionId: createdA.sessionId,
     expectedEpoch: createdA.epoch,
     expectedRevision: staleRevision,
     prompt: "same payload",
     operationId: "op-created-seed-repair",
+    activationOverrides: { thinkingLevel: "high" as const },
+  });
+  assert.equal(direct.result.status, "accepted", "a global running change must not stale A's revision fence");
+  const terminal = deferred<void>();
+  await direct.flushTo((push) => {
+    if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve();
+  });
+  await terminal.promise;
+  direct.close();
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1);
+
+  // A CONVERSATION event on A (queue mutation) advances the fence floor: the
+  // pre-event cursor is now a genuine lost update and conflicts closed.
+  const queuedRevision = liveRevision(service, createdA.sessionId, createdA.epoch);
+  workers.workers[0]!.emitEvent({ type: "queue_update", sessionId: createdA.sessionId, steering: [], followUp: [] });
+  const conversationRevision = liveRevision(service, createdA.sessionId, createdA.epoch);
+  assert.ok(conversationRevision > queuedRevision, "a conversation event must advance the journal");
+
+  const request = {
+    sessionId: createdA.sessionId,
+    expectedEpoch: createdA.epoch,
+    expectedRevision: queuedRevision,
+    prompt: "same payload",
+    operationId: "op-created-seed-repair-2",
     activationOverrides: { thinkingLevel: "high" as const },
   };
   const stale = await service.submitTurn(request);
@@ -377,16 +403,17 @@ test("Phase 4A.0.1 submitTurn: a global running change stales create cursor; sam
   if (stale.status === "rejected") {
     assert.equal(stale.delivery, "not_delivered");
     assert.equal(stale.error.code, "conflict");
+    assert.equal(stale.error.message, "session revision changed");
     assert.equal(stale.epoch, createdA.epoch);
-    assert.equal(stale.revision, currentRevision);
+    assert.equal(stale.revision, conversationRevision);
   }
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 0, "stale admission must not reach A's Worker");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "stale admission must not reach A's Worker");
 
   assert.equal(stale.status, "rejected");
   if (stale.status !== "rejected" || stale.revision === undefined) throw new Error("expected authoritative repair revision");
   const repaired = await service.submitTurn({ ...request, expectedRevision: stale.revision });
   assert.equal(repaired.status, "accepted");
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "same operation/payload repair dispatches exactly once");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "same operation/payload repair dispatches exactly once");
   await service.shutdown();
 });
 
@@ -481,6 +508,60 @@ test("Phase 3 submitTurn: stale epoch / missing fence rejects without touching t
     assert.equal(noFence.error.code, "conflict");
   }
   assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 0, "a missing epoch fence on a live session must never reach the Worker");
+  await service.shutdown();
+});
+
+test("Phase 3 submitTurn: side-channel events never stale the revision fence; conversation events and future revisions still conflict", async () => {
+  const { service, workers } = makeService({}, { commandDelayMs: 40, snapshot: promptCapSnapshot() });
+  const activated = await service.activate("s");
+  const worker = workers.workers[0]!;
+  const revision = liveRevision(service, "s", activated.epoch);
+
+  // Background subagent output + todo churn streams past the client's cursor —
+  // exactly the production Pixie shape (main turn done, children still writing).
+  worker.emitEvent({ type: "subagent_delta", sessionId: "s", childSessionId: "child-1", partial: { role: "assistant", content: [{ type: "text", text: "working" }] }, done: false });
+  worker.emitEvent({ type: "subagent_delta", sessionId: "s", childSessionId: "child-2", partial: { role: "assistant", content: [{ type: "text", text: "also working" }] }, done: false });
+  worker.emitEvent({ type: "todo_changed", sessionId: "s", todo: { revision: 1, items: [{ id: 1, subject: "chore", blockedBy: [], status: "in_progress" }] } });
+  const churnedRevision = liveRevision(service, "s", activated.epoch);
+  assert.ok(churnedRevision > revision, "side-channel events must append to the journal");
+
+  const accepted = await service.prepareSubmitTurn({
+    sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision,
+    prompt: "through the churn", operationId: "op-side-channel-fence",
+  });
+  assert.equal(accepted.result.status, "accepted", "a cursor staled only by side-channel events stays current");
+  const terminal = deferred<void>();
+  await accepted.flushTo((push) => {
+    if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve();
+  });
+  await terminal.promise;
+  accepted.close();
+
+  // A conversation event (agent_start) advances the fence floor: the older
+  // cursor is a genuine lost update again.
+  const conversationBase = liveRevision(service, "s", activated.epoch);
+  worker.emitEvent({ type: "agent_start", sessionId: "s" });
+  const afterConversation = liveRevision(service, "s", activated.epoch);
+  assert.ok(afterConversation > conversationBase, "a conversation event must advance the journal");
+  const stale = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: conversationBase, prompt: "stale now", operationId: "op-stale-conversation" });
+  assert.equal(stale.status, "rejected");
+  if (stale.status === "rejected") {
+    assert.equal(stale.delivery, "not_delivered");
+    assert.equal(stale.error.code, "conflict");
+    assert.equal(stale.error.message, "session revision changed");
+    assert.equal(stale.epoch, activated.epoch);
+    assert.equal(stale.revision, afterConversation);
+  }
+
+  // A revision past the journal head is always a conflict.
+  const future = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: afterConversation + 1, prompt: "from the future", operationId: "op-future" });
+  assert.equal(future.status, "rejected");
+  if (future.status === "rejected") {
+    assert.equal(future.delivery, "not_delivered");
+    assert.equal(future.error.code, "conflict");
+    assert.equal(future.error.message, "session revision changed");
+  }
+  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "only the admitted turn ever dispatches");
   await service.shutdown();
 });
 
