@@ -20,7 +20,8 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - name: Script tests
-        run: node scripts/run-node-test.mjs "scripts/**/*.test.mjs" "tests/e2e/helpers/*.test.mjs"
+        # Through npm: the release-package tests require npm_execpath.
+        run: npm run test:scripts
       - name: Workspace unit tests
         run: node scripts/ci-run-workspace-tests.mjs test
       - name: Startup smoke (real sessiond over a named pipe + host)

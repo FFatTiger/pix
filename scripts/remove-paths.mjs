@@ -98,8 +98,8 @@ export function resolveTarget(cwd, input) {
   // hide that a drive root (or a path off one) was the reason for refusal.
   if (DRIVE_PATH.test(input)) {
     // A bare drive root is both a drive path and a filesystem root.
-    const kind = DRIVE_ROOT.test(input) ? "absolute drive path / root path" : "absolute drive path";
-    throw new Error(`${kind} ${JSON.stringify(input)} is outside the working directory`);
+    const kind = DRIVE_ROOT.test(input) ? "drive path, root path" : "drive path";
+    throw new Error(`absolute path ${JSON.stringify(input)} (${kind}) is outside the working directory`);
   }
   if (UNC_ROOT.test(input)) {
     throw new Error(`UNC root ${JSON.stringify(input)} is outside the working directory`);
