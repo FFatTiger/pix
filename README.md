@@ -34,6 +34,10 @@ pix status   # sessiond / host health
 pix down --all
 ```
 
+### Windows (preview)
+
+pix runs on Windows 10/11 with the same commands (`npm install -g @fffattiger/pix-cli`, then `pix start` in PowerShell or Windows Terminal). The session daemon uses a per-user named pipe instead of a Unix socket and keeps its state under your user profile. Windows support is a preview in 0.3.0: startup is verified on real Windows runners, while parts of the unit-test suite are still being hardened for Windows. See [docs/windows.md](docs/windows.md).
+
 ## How it works
 
 ```
