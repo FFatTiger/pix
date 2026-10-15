@@ -1293,7 +1293,8 @@ async function scenarioSubmitTurnBlocked(stack, projectDir) {
     // Phase 4A.0.1 reachability: create's cursor is exact at completion but is
     // not a reservation. Starting B changes the global running set, appending
     // the Protocol-v2 compatibility event to A's journal while A has ZERO
-    // Browser attach. The stale admission returns the authority repair cursor.
+    // Browser attach. That broadcast is a side-channel event, so it never
+    // stales the fence: the create cursor is still current and admits.
     assert.equal(client.messages.some((message) => message.type === "snapshot" && message.payload?.sessionId === sessionId), false);
     await client.create({
       cwd: projectDir,
@@ -1301,19 +1302,10 @@ async function scenarioSubmitTurnBlocked(stack, projectDir) {
       createRequestId: `cr-submit-revision-advance-${Date.now()}`,
     });
     const operationId = `op-submit-${Date.now()}`;
-    const logicalTurn = { prompt: "__block__ atomic turn", operationId, expectedEpoch: epoch };
-    const stale = await client.submitTurn(sessionId, { ...logicalTurn, expectedRevision: created.lastEventId });
-    assert.equal(stale.payload.status, "rejected", JSON.stringify(stale.payload));
-    assert.equal(stale.payload.delivery, "not_delivered", JSON.stringify(stale.payload));
-    assert.equal(stale.payload.error.code, "conflict", JSON.stringify(stale.payload));
-    assert.equal(stale.payload.epoch, epoch);
-    assert.ok(stale.payload.revision > created.lastEventId, JSON.stringify(stale.payload));
-
-    // Retry the SAME operation/payload with only expectedRevision replaced.
-    // It is accepted once; no Browser attach occurred before this admission.
-    const submit = await client.submitTurn(sessionId, { ...logicalTurn, expectedRevision: stale.payload.revision });
+    const submit = await client.submitTurn(sessionId, { prompt: "__block__ atomic turn", operationId, expectedEpoch: epoch, expectedRevision: created.lastEventId });
     assert.equal(submit.payload.status, "accepted", JSON.stringify(submit.payload));
     assert.equal(submit.payload.operationId, operationId);
+    assert.ok(submit.payload.revision > created.lastEventId, JSON.stringify(submit.payload));
     assert.equal(client.messages.some((message) => message.type === "snapshot" && message.payload?.sessionId === sessionId), false);
 
     // Browser observation attaches only AFTER admission, using the returned

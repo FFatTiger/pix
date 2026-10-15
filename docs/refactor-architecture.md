@@ -60,6 +60,13 @@ Pi 防腐层（ACL）
 8. `pix-sessiond` 是 Session **唯一权威**；Web 只做代理与附着（attach）
 9. 只读浏览历史 → **0 Worker**（含 `SessionCatalogPort.readSessionTree` 的分支树投影：纯持久化 JSONL 只读投影，0 Worker，不激活 runtime）
 
+### 附件统一存储（attachments store）冻结语义
+
+- 所有输入框附件（粘贴/拖入/+ 选择的图片与文件）统一存入 `<home>/.pi/pix/attachments`（env `PIX_ATTACHMENTS_DIR` 覆盖，必须是真实目录）：图片由 sessiond 在 submitTurn / prompt / steer / follow_up 权威路径上按内容哈希落盘（`<sha256-16>.<ext>`，同哈希复用），文件由 Host `POST /v1/attachments` 以 `<时间戳>-<随机>-<清洗后原名>` 落盘；无 sessionId 的首发上传进 `unfiled` 暂存（daemon 定期清扫，默认 14 天）。
+- marker 行由 protocol 单一定义：`[Attached image saved at: /abs/path]` / `[Attached file saved at: /abs/path]`，追加在用户消息末尾；模型同时仍能看到内联图片。客户端气泡隐藏 marker（显示缩略图/附件 chip），复制、编辑回填、分支导出均剔除。
+- 磁盘原语唯一在 `local-authority`：0700/0600、原子写、scope/根符号链接 fail-closed（写入、清扫、删除三个面都不跟随）。会话删除时一并删除该会话 scope 目录（尽力而为，不阻断删除）。
+- `/v1/files` 项目上传仍归 ExplorerPanel；输入框永不写入用户项目目录。能力 token `attachments.upload` 随 seam 挂载声明，与 sessiond 无关。
+
 ### 会话分支树（BranchNavigator 切片）冻结语义
 
 - `SessionCatalogPort.readSessionTree(sessionId)` 返回规范化 `SessionTree`：节点仅携带 entryId、父子链接、规范化 kind（`user|assistant|toolResult|bashExecution|custom|system`）与安全截断的单行预览 label（≤40 码元，含脱敏）；线性链压缩进 `skippedEntryIds`，仅保留根/分叉点/叶子。绝不暴露 SDK TreeNode、raw path、raw message、thinking/tool 原文。
@@ -568,7 +575,7 @@ packages/
 
 - 记忆是全局设置（settings.json `pixMemoryProvider`：`local` | `lore` | `off`），
   归「设置 → Agent → 记忆」页，不是 pix-builtins 能力开关；两个后端均为 vendor tgz
-  捆绑（pi-memory 0.4.2、@local/lore-pi-extension 1.5.0 = GitHub Release lore-pi.zip），
+  捆绑（pi-memory 0.4.2、@local/lore-pi-extension 1.5.1 = GitHub Release lore-pi.zip），
   统一 curated 加载与防重复加载（同 smart_compact 规则；记忆插件另按家族工具面识别，
   覆盖用户自装的 ~/.lore/pi 软链副本）。互斥出结构保证：`memoryEnabledPlugins(provider)`
   只启用其一，bindExtensions 后另有启动期断言（memory_read 与 lore_get_node 不得同时

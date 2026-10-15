@@ -6,12 +6,13 @@
  * walks raw JSONL or all branches, and never snapshots live runtime state.
  */
 
-import type {
-  AgentMessage,
-  ImageContent,
-  SessionContext,
-  SessionEntry,
-  UserContent,
+import {
+  splitAttachedMarkerLines,
+  type AgentMessage,
+  type ImageContent,
+  type SessionContext,
+  type SessionEntry,
+  type UserContent,
 } from "@fffattiger/pix-protocol";
 
 export const VISIBLE_BRANCH_FORMAT = "pix-visible-branch" as const;
@@ -316,13 +317,14 @@ function imagePlaceholder(image: ImageContent): VisibleBranchImagePlaceholder {
   return placeholder;
 }
 
-function normalizeUserContent(content: UserContent): VisibleBranchContentBlock[] {
+function normalizeUserContent(content: UserContent, stripAttachmentMarkers = false): VisibleBranchContentBlock[] {
+  const textOf = (text: string) => (stripAttachmentMarkers ? splitAttachedMarkerLines(text).text : text);
   if (typeof content === "string") {
-    return [{ type: "text", text: content }];
+    return [{ type: "text", text: textOf(content) }];
   }
   return content.map((block) => {
     if (block.type === "text") {
-      return { type: "text", text: block.text };
+      return { type: "text", text: textOf(block.text) };
     }
     return imagePlaceholder(block);
   });
@@ -385,7 +387,7 @@ function projectEntry(entry: SessionEntry): VisibleBranchEntry {
       const out: VisibleBranchUserEntry = {
         ...base,
         role: "user",
-        content: normalizeUserContent(message.content),
+        content: normalizeUserContent(message.content, true),
       };
       if (timestamp !== undefined) out.timestamp = timestamp;
       return out;

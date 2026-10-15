@@ -10,7 +10,13 @@ import {
   isBrowserImageFile,
   prepareBrowserImage,
 } from "@/lib/image-attachments";
-import { MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_INPUT_BASE64_LENGTH } from "@fffattiger/pix-protocol";
+import {
+  MAX_IMAGE_ATTACHMENTS,
+  MAX_IMAGE_INPUT_BASE64_LENGTH,
+  appendAttachedMarkerLines,
+  formatAttachedFileMarkerLine,
+  splitAttachedMarkerLines,
+} from "@fffattiger/pix-protocol";
 import type { TextContent, UserMessage } from "@/lib/chat-view-model";
 import {
   buildEntriesFromFiles, buildAtInsertText, buildFileAtMentionsText, extractAtQuery, filterFileEntries,
@@ -145,9 +151,11 @@ interface Props {
   searchFiles?: (cwd: string, query: string) => Promise<{ matches?: FileIndexEntry[] }>;
   /** Skill catalog for slash-palette dormancy ("listSkills"); null = unavailable. */
   listSkills?: (cwd: string) => Promise<SkillDormancyResponse | null>;
-  /** Upload selected or dropped files into cwd ("upload"); resolves to cwd-relative
-   *  mention names. Throws Error on failure (message is surfaced verbatim). */
-  uploadFiles?: (files: File[], cwd: string) => Promise<string[]>;
+  /** Upload one non-image attachment ("attachments.upload"). Resolves to the
+   *  stored absolute path. Throws on failure (surfaced as attachFileFailed). */
+  uploadAttachment?: (file: File, sessionId?: string) => Promise<{ path: string; name: string }>;
+  /** Current session id; omitted for a not-yet-created session (server stages unfiled). */
+  attachmentScopeId?: string;
   /** Mention-highlight validity snapshot (source useFileIndex); null = unknown. */
   fileIndexSnapshot?: ChatFileIndexSnapshot | null;
   /** Mention-highlight skill names (source useSkillNames); null = unknown. */
@@ -408,7 +416,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   listFiles,
   searchFiles,
   listSkills,
-  uploadFiles,
+  uploadAttachment,
+  attachmentScopeId,
   fileIndexSnapshot,
   skillNames,
 }: Props, ref) {
@@ -673,7 +682,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         pendingFilesRef.current.length,
       )) return;
 
-      setValue(getUserMessageText(message));
+      setValue(splitAttachedMarkerLines(getUserMessageText(message)).text);
       setAtQuery(null);
       setHistoryMenuOpen(false);
       setAttachedImages((prev) => {
@@ -786,50 +795,32 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     updatePendingFiles((current) => [...current, ...items]);
   }, [updatePendingFiles]);
 
-  /** Stage dropped/picked non-image files as visible chips. Desktop resolves
-   *  each File's absolute path via the Electron bridge and references
-   *  in-project files in place (zero-copy); anything outside cwd is offered a
-   *  copy into the project, uploaded only when the user later sends. Plain
-   *  browsers have no path API, so files stage as uploads. */
+  /** Stage dropped/picked non-image files as visible chips. Desktop in-project
+   *  files stay zero-copy references; everything else (outside the project,
+   *  unresolvable paths, browser drops, the + picker) stages as an attachment
+   *  upload with no confirm dialog. Upload happens on send. */
   const processFileMentions = useCallback((files: File[]): boolean => {
     if (!files.length || !cwd) return false;
     const nextId = nextPendingFileId;
     const getPathForFile = window.piDesktop?.getPathForFile;
     if (getPathForFile) {
       const staged: PendingFile[] = [];
-      const outside: File[] = [];
       for (const file of files) {
         const absPath = getPathForFile(file);
-        if (!absPath) {
-          if (uploadFiles) staged.push({ id: nextId(), name: file.name, kind: "upload", file });
-          continue;
-        }
-        const { mentions, rejected } = toCwdRelativeMentions([absPath], cwd);
-        if (mentions[0]) {
-          staged.push({ id: nextId(), name: file.name, kind: "reference", mentionPath: mentions[0] });
-        } else if (rejected.length && uploadFiles) {
-          outside.push(file);
-        }
-      }
-      if (outside.length) {
-        const copyOutside = window.confirm(
-          outside.length === 1
-            ? t("desktop.dropOutsideProjectConfirm", { name: outside[0]!.name })
-            : t("desktop.dropOutsideProjectConfirmMany", { count: outside.length }),
-        );
-        if (copyOutside) {
-          for (const file of outside) {
-            staged.push({ id: nextId(), name: file.name, kind: "upload", file });
-          }
+        const mention = absPath ? toCwdRelativeMentions([absPath], cwd).mentions[0] : undefined;
+        if (mention) {
+          staged.push({ id: nextId(), name: file.name, kind: "reference", mentionPath: mention });
+        } else if (uploadAttachment) {
+          staged.push({ id: nextId(), name: file.name, kind: "upload", file });
         }
       }
       stagePendingFiles(staged);
       return staged.length > 0;
     }
-    if (!uploadFiles) return false;
+    if (!uploadAttachment) return false;
     stagePendingFiles(files.map((file) => ({ id: nextId(), name: file.name, kind: "upload" as const, file })));
     return true;
-  }, [cwd, stagePendingFiles, t, uploadFiles]);
+  }, [cwd, stagePendingFiles, uploadAttachment]);
 
   /** Insert "@" at the caret and open the @ file menu (shared by the Ctrl+I
    *  shortcut and the + toolbar menu's file entry). */
@@ -1052,29 +1043,25 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     };
   }, []);
 
-  const resolvePendingFileMentions = useCallback(async (files: PendingFile[]): Promise<string[]> => {
+  const resolvePendingFileMentions = useCallback(async (files: PendingFile[]): Promise<{ mentions: string[]; markerLines: string[] }> => {
     const mentions: string[] = [];
-    const uploadables: File[] = [];
+    const markerLines: string[] = [];
     for (const pending of files) {
       if (pending.kind === "reference" && pending.mentionPath) {
         mentions.push(pending.mentionPath);
         continue;
       }
       if (pending.kind === "upload" && pending.file) {
-        uploadables.push(pending.file);
+        if (!uploadAttachment) throw new Error("file upload unavailable");
+        const uploaded = await uploadAttachment(pending.file, attachmentScopeId);
+        if (!uploaded?.path) throw new Error("incomplete file upload");
+        markerLines.push(formatAttachedFileMarkerLine(uploaded.path));
         continue;
       }
       throw new Error("invalid pending file");
     }
-    if (uploadables.length === 0) return mentions;
-    if (!cwd || !uploadFiles) throw new Error("file upload unavailable");
-    const uploaded = await uploadFiles(uploadables, cwd);
-    if (!Array.isArray(uploaded) || uploaded.length !== uploadables.length) {
-      throw new Error("incomplete file upload");
-    }
-    mentions.push(...uploaded);
-    return mentions;
-  }, [cwd, uploadFiles]);
+    return { mentions, markerLines };
+  }, [attachmentScopeId, uploadAttachment]);
 
   const beginFileSubmission = useCallback((): FileSubmissionToken | null => {
     const identityRevision = composerIdentityRef.current.revision;
@@ -1110,9 +1097,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     updatePendingFiles((current) => current.filter((file) => !submittedIds.has(file.id)));
   }, [updatePendingFiles]);
 
-  const commitUploadedMentionsToDraft = useCallback((mentions: string[], files: PendingFile[]): void => {
-    if (mentions.length === 0) return;
-    setValue((current) => appendMentionText(current, mentions));
+  const commitUploadedMentionsToDraft = useCallback((mentions: string[], markerLines: string[], files: PendingFile[]): void => {
+    if (mentions.length === 0 && markerLines.length === 0) return;
+    setValue((current) => appendAttachedMarkerLines(appendMentionText(current, mentions), markerLines));
     setAtQuery(null);
     removeSubmittedFiles(files);
   }, [removeSubmittedFiles]);
@@ -1177,21 +1164,22 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!token) return;
     markSubmittingFiles(files, true);
     try {
-      let mentions: string[];
+      let mentions: string[] = [];
+      let markerLines: string[] = [];
       try {
-        mentions = files.length ? await resolvePendingFileMentions(files) : [];
+        if (files.length) ({ mentions, markerLines } = await resolvePendingFileMentions(files));
       } catch {
         if (isFileSubmissionCurrent(token)) setFileAttachmentError(t("desktop.attachFileFailed"));
         return;
       }
       if (!isFileSubmissionCurrent(token)) return;
-      const message = appendMentionText(msg, mentions);
-      const rawValue = mentions.length ? appendMentionText(value, mentions) : value;
+      const message = appendAttachedMarkerLines(appendMentionText(msg, mentions), markerLines);
+      const rawValue = appendAttachedMarkerLines(appendMentionText(value, mentions), markerLines);
       let accepted: boolean;
       try {
         accepted = onSend(message, images.length ? images : undefined, { rawValue });
       } catch {
-        commitUploadedMentionsToDraft(mentions, files);
+        commitUploadedMentionsToDraft(mentions, markerLines, files);
         setFileAttachmentError(t("desktop.sendFailed"));
         return;
       }
@@ -1199,7 +1187,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         settleAcceptedSubmission({ value, images, files });
         return;
       }
-      commitUploadedMentionsToDraft(mentions, files);
+      commitUploadedMentionsToDraft(mentions, markerLines, files);
     } finally {
       if (mountedRef.current) markSubmittingFiles(files, false);
       finishFileSubmission(token);
@@ -1471,15 +1459,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!token) return;
     markSubmittingFiles(files, true);
     try {
-      let mentions: string[];
+      let mentions: string[] = [];
+      let markerLines: string[] = [];
       try {
-        mentions = files.length ? await resolvePendingFileMentions(files) : [];
+        if (files.length) ({ mentions, markerLines } = await resolvePendingFileMentions(files));
       } catch {
         if (isFileSubmissionCurrent(token)) setFileAttachmentError(t("desktop.attachFileFailed"));
         return;
       }
       if (!isFileSubmissionCurrent(token)) return;
-      const message = appendMentionText(msg, mentions);
+      const message = appendAttachedMarkerLines(appendMentionText(msg, mentions), markerLines);
       let delivered = false;
       try {
         if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
@@ -1493,12 +1482,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           delivered = true;
         }
       } catch {
-        commitUploadedMentionsToDraft(mentions, files);
+        commitUploadedMentionsToDraft(mentions, markerLines, files);
         setFileAttachmentError(t("desktop.sendFailed"));
         return;
       }
       if (!delivered) {
-        commitUploadedMentionsToDraft(mentions, files);
+        commitUploadedMentionsToDraft(mentions, markerLines, files);
         return;
       }
       settleAcceptedSubmission({ value, images: imagesSnapshot, files });
@@ -2570,7 +2559,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     >
                       {t("desktop.attachFileReference")}
                     </MenuItem>
-                    {uploadFiles && (
+                    {uploadAttachment && (
                       <MenuItem
                         icon={<UploadSimpleIcon size={14} weight="regular" aria-hidden="true" />}
                         disabled={!cwd}

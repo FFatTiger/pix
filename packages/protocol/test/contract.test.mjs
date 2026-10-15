@@ -112,6 +112,7 @@ describe("capabilities", () => {
       "files.write",
       "files.watch",
       "files.upload",
+      "attachments.upload",
       "git",
       "worktree",
       "worktree.write",

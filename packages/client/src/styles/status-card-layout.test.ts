@@ -82,11 +82,19 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-capsule")).toContain("background: var(--bg-secondary)");
     expect(rule(css, ".subagent-activity-capsule")).toContain("box-shadow: 0 -3px 8px -4px");
     expect(rule(css, ".subagent-activity-capsule")).toContain("margin-left: 0");
+    // The tab sits inset on the composer's straight top edge (past the 12px
+    // corner plus the 8px fillet) and fillets on both sides; the composer
+    // keeps all four rounded corners.
     expect(rule(css, ".subagent-activity-capsule::before,\n.subagent-activity-capsule::after")).toBeDefined();
+    expect(rule(css, ".status-card-shell")).toContain("margin-left: 20px");
+    expect(css).not.toContain("border-top-left-radius: 0");
     // Rest / hover / focus all come from the composer variables, so the tab
     // never paints its own fill or focus color.
     expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("background: var(--composer-bg)");
     expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("border-color: var(--composer-ring)");
+    // Focus: the ring is a border (not an outer box-shadow), so the tab, which
+    // overlaps the shell's top border by 1px, hides it exactly at the seam.
+    expect(css).toContain(".chat-input-shell:focus-within,\n.chat-input-shell.is-streaming:focus-within {\n  border-color: var(--composer-ring);\n  box-shadow: 0 8px 28px -12px");
     // Long titles ellipsize inside the label span.
     expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents")).toContain("font-variant-numeric: tabular-nums");
@@ -117,14 +125,14 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 100%");
   });
 
-  it("caps the mobile card at min(340px, viewport - 44px)", () => {
+  it("caps the mobile card at min(340px, viewport - 92px)", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
     const mobileStart = css.indexOf("@media (max-width: 640px)", css.indexOf(".subagent-transcript"));
     expect(mobileStart).toBeGreaterThanOrEqual(0);
     const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf(".status-card-panel", mobileStart)) + 1);
-    expect(rule(mobile, ".status-card-panel")).toContain("width: min(340px, calc(100vw - 44px))");
-    expect(rule(mobile, ".status-card-panel")).toContain("max-width: calc(100vw - 44px)");
+    expect(rule(mobile, ".status-card-panel")).toContain("width: min(340px, calc(100vw - 92px))");
+    expect(rule(mobile, ".status-card-panel")).toContain("max-width: calc(100vw - 92px)");
   });
 
   it("replaces the desktop pane tabs with the icon rail (mobile keeps tabs)", () => {

@@ -13,6 +13,18 @@ class ResizeObserverStub {
 
 type InputProps = Partial<ComponentPropsWithRef<typeof ChatInput>>;
 
+const STORED = { path: "/store/notes.txt", name: "notes.txt" };
+
+function uploadOk(result: { path: string; name: string } | { path: string; name: string }[] = STORED) {
+  const results = Array.isArray(result) ? result : [result];
+  let index = 0;
+  return vi.fn(async () => {
+    const next = results[index] ?? results[results.length - 1]!;
+    index += 1;
+    return next;
+  });
+}
+
 function inputTree(props: InputProps = {}) {
   return (
     <I18nProvider>
@@ -96,33 +108,34 @@ describe("ChatInput pending file attachments", () => {
   });
 
   it("shows a chip from the picker and does not upload until send", async () => {
-    const uploadFiles = vi.fn().mockResolvedValue(["notes.txt"]);
-    const view = renderInput({ uploadFiles });
+    const uploadAttachment = uploadOk();
+    const view = renderInput({ uploadAttachment });
     const file = new File(["hello"], "notes.txt", { type: "text/plain" });
     pickFiles(view, [file]);
 
     expect(await screen.findByText("notes.txt")).toBeTruthy();
-    expect(uploadFiles).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
   });
 
   it("removes a pending chip without sending", async () => {
-    const uploadFiles = vi.fn();
-    const view = renderInput({ uploadFiles });
+    const uploadAttachment = vi.fn();
+    const view = renderInput({ uploadAttachment });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
     expect(await screen.findByText("notes.txt")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Remove file" }));
     expect(screen.queryByText("notes.txt")).toBeNull();
-    expect(uploadFiles).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
   });
 
-  it("uploads on send and appends the exact Unicode mention", async () => {
+  it("uploads on send and appends the stored-path marker", async () => {
     const nfdName = "\u00b0u\u0301_,.txt";
     expect(nfdName).not.toBe(nfdName.normalize("NFC"));
-    const uploadFiles = vi.fn().mockImplementation(async (files: File[]) => files.map((file) => file.name));
+    const stored = { path: `/store/${nfdName}`, name: nfdName };
+    const uploadAttachment = uploadOk(stored);
     const onSend = vi.fn().mockReturnValue(true);
-    const view = renderInput({ uploadFiles, onSend });
+    const view = renderInput({ uploadAttachment, attachmentScopeId: "session-1", onSend });
     const file = new File(["hello"], nfdName, { type: "text/plain" });
     pickFiles(view, [file]);
     expect(await screen.findByText(nfdName)).toBeTruthy();
@@ -130,37 +143,38 @@ describe("ChatInput pending file attachments", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "please read" } });
     fireEvent.click(screen.getByLabelText("Send message"));
 
-    await waitFor(() => expect(uploadFiles).toHaveBeenCalledWith([file], "/project"));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledWith(file, "session-1"));
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
-    expect(onSend.mock.calls[0]![0]).toBe(`please read @${nfdName} `);
+    expect(onSend.mock.calls[0]![0]).toBe(`please read\n\n[Attached file saved at: /store/${nfdName}]`);
     expect(onSend.mock.calls[0]![0]).not.toContain(nfdName.normalize("NFC"));
     expect(screen.queryByText(nfdName)).toBeNull();
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
   });
 
-  it("converts uploaded files into mention text when send returns false", async () => {
-    const uploadFiles = vi.fn().mockResolvedValue(["notes.txt"]);
+  it("writes the marker into the draft when send returns false", async () => {
+    const uploadAttachment = uploadOk();
     const onSend = vi.fn().mockReturnValue(false);
-    const view = renderInput({ uploadFiles, onSend });
+    const view = renderInput({ uploadAttachment, onSend });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "retry me" } });
     fireEvent.click(screen.getByLabelText("Send message"));
 
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith("retry me @notes.txt ", undefined, { rawValue: "retry me @notes.txt " }));
+    const marked = "retry me\n\n[Attached file saved at: /store/notes.txt]";
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(marked, undefined, { rawValue: marked }));
     expect(screen.queryByText("notes.txt")).toBeNull();
-    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("retry me @notes.txt ");
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(marked);
 
     onSend.mockReturnValue(true);
     fireEvent.click(screen.getByLabelText("Send message"));
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
-    expect(uploadFiles).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[1]![0]).toBe("retry me @notes.txt");
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[1]![0]).toBe(marked);
   });
 
   it("keeps the chip and text when upload is rejected", async () => {
-    const uploadFiles = vi.fn().mockRejectedValue(new Error("nope"));
+    const uploadAttachment = vi.fn().mockRejectedValue(new Error("nope"));
     const onSend = vi.fn();
-    const view = renderInput({ uploadFiles, onSend });
+    const view = renderInput({ uploadAttachment, onSend });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "keep me" } });
     fireEvent.click(screen.getByLabelText("Send message"));
@@ -171,10 +185,10 @@ describe("ChatInput pending file attachments", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("keeps the chip when the upload result is incomplete", async () => {
-    const uploadFiles = vi.fn().mockResolvedValue([]);
+  it("keeps the chip when the upload result has no path", async () => {
+    const uploadAttachment = vi.fn().mockResolvedValue({ path: "", name: "notes.txt" });
     const onSend = vi.fn();
-    const view = renderInput({ uploadFiles, onSend });
+    const view = renderInput({ uploadAttachment, onSend });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
     fireEvent.click(screen.getByLabelText("Send message"));
 
@@ -183,34 +197,34 @@ describe("ChatInput pending file attachments", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("converts uploaded files to mention text when the send callback throws", async () => {
-    const uploadFiles = vi.fn().mockResolvedValue(["notes.txt"]);
+  it("writes the marker into the draft when the send callback throws", async () => {
+    const uploadAttachment = uploadOk();
     const onSend = vi.fn(() => { throw new Error("send failed"); });
-    const view = renderInput({ uploadFiles, onSend });
+    const view = renderInput({ uploadAttachment, onSend });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "retry" } });
     fireEvent.click(screen.getByLabelText("Send message"));
 
     expect(await screen.findByRole("alert")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("notes.txt")).toBeNull());
-    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("retry @notes.txt ");
-    expect(uploadFiles).toHaveBeenCalledTimes(1);
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("retry\n\n[Attached file saved at: /store/notes.txt]");
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
   });
 
   it("stages a pasted non-image file without uploading", async () => {
-    const uploadFiles = vi.fn();
-    renderInput({ uploadFiles });
+    const uploadAttachment = vi.fn();
+    renderInput({ uploadAttachment });
     const file = new File(["hello"], "notes.txt", { type: "text/plain" });
     const event = pasteFiles([file]);
 
     expect(event.defaultPrevented).toBe(true);
     expect(await screen.findByText("notes.txt")).toBeTruthy();
-    expect(uploadFiles).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
   });
 
   it("leaves text-only paste native", () => {
-    renderInput({ uploadFiles: vi.fn() });
+    renderInput({ uploadAttachment: vi.fn() });
     const event = pasteFiles([], { items: [{ kind: "string", type: "text/plain", getAsFile: () => null }] });
     expect(event.defaultPrevented).toBe(false);
     expect(screen.queryByRole("button", { name: "Remove file" })).toBeNull();
@@ -235,33 +249,33 @@ describe("ChatInput pending file attachments", () => {
   });
 
   it("keeps image paste on the image path", async () => {
-    const uploadFiles = vi.fn();
-    renderInput({ uploadFiles });
+    const uploadAttachment = vi.fn();
+    renderInput({ uploadAttachment });
     const file = new File(["fake"], "photo.png", { type: "image/png" });
     const event = pasteFiles([file]);
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() => expect(screen.getByRole("button", { name: "Remove image" })).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Remove file" })).toBeNull();
-    expect(uploadFiles).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
   });
 
   it("restores pending files when switching away from and back to a draft", async () => {
-    const uploadFiles = vi.fn();
-    const view = renderInput({ uploadFiles, draftKey: "files-draft-a" });
+    const uploadAttachment = vi.fn();
+    const view = renderInput({ uploadAttachment, draftKey: "files-draft-a" });
     pickFiles(view, [new File(["a"], "a.txt", { type: "text/plain" })]);
     expect(await screen.findByText("a.txt")).toBeTruthy();
 
-    view.rerender(inputTree({ uploadFiles, draftKey: "files-draft-b" }));
+    view.rerender(inputTree({ uploadAttachment, draftKey: "files-draft-b" }));
     await waitFor(() => expect(screen.queryByText("a.txt")).toBeNull());
-    view.rerender(inputTree({ uploadFiles, draftKey: "files-draft-a" }));
+    view.rerender(inputTree({ uploadAttachment, draftKey: "files-draft-a" }));
     expect(await screen.findByText("a.txt")).toBeTruthy();
-    expect(uploadFiles).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
   });
 
   it("migrates newer pending files through new-session promotion and remount", async () => {
-    const uploadFiles = vi.fn();
+    const uploadAttachment = vi.fn();
     const inputRef = createRef<ChatInputHandle>();
-    const view = renderInput({ uploadFiles, draftKey: "files-home-draft", ref: inputRef });
+    const view = renderInput({ uploadAttachment, draftKey: "files-home-draft", ref: inputRef });
     pickFiles(view, [new File(["new"], "newer.txt", { type: "text/plain" })]);
     expect(await screen.findByText("newer.txt")).toBeTruthy();
 
@@ -269,38 +283,38 @@ describe("ChatInput pending file attachments", () => {
     expect(screen.queryByText("newer.txt")).toBeNull();
     view.unmount();
 
-    renderInput({ uploadFiles, draftKey: "files-real-session" });
+    renderInput({ uploadAttachment, draftKey: "files-real-session" });
     expect(await screen.findByText("newer.txt")).toBeTruthy();
-    expect(uploadFiles).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
   });
 
   it("locks submitted chips while their upload is in flight", async () => {
-    const upload = deferred<string[]>();
-    const uploadFiles = vi.fn(() => upload.promise);
+    const upload = deferred<{ path: string; name: string }>();
+    const uploadAttachment = vi.fn(() => upload.promise);
     const onSend = vi.fn().mockReturnValue(true);
-    const view = renderInput({ uploadFiles, onSend, draftKey: "files-locked-draft" });
+    const view = renderInput({ uploadAttachment, onSend, draftKey: "files-locked-draft" });
     pickFiles(view, [new File(["a"], "locked.txt", { type: "text/plain" })]);
     fireEvent.click(screen.getByLabelText("Send message"));
-    await waitFor(() => expect(uploadFiles).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
 
     const remove = screen.getByRole("button", { name: "Remove file" }) as HTMLButtonElement;
     expect(remove.disabled).toBe(true);
     fireEvent.click(remove);
     expect(screen.getByText("locked.txt")).toBeTruthy();
 
-    await act(async () => { upload.resolve(["locked.txt"]); await upload.promise; });
+    await act(async () => { upload.resolve({ path: "/store/locked.txt", name: "locked.txt" }); await upload.promise; });
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
   });
 
   it("drops a late upload result after switching drafts", async () => {
-    const upload = deferred<string[]>();
-    const uploadFiles = vi.fn(() => upload.promise);
+    const upload = deferred<{ path: string; name: string }>();
+    const uploadAttachment = vi.fn(() => upload.promise);
     const onSend = vi.fn().mockReturnValue(true);
-    const view = renderInput({ uploadFiles, onSend, draftKey: "session-a" });
+    const view = renderInput({ uploadAttachment, onSend, draftKey: "session-a" });
     pickFiles(view, [new File(["a"], "a.txt", { type: "text/plain" })]);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "old draft" } });
     fireEvent.click(screen.getByLabelText("Send message"));
-    await waitFor(() => expect(uploadFiles).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
 
     view.rerender(
       <I18nProvider>
@@ -310,45 +324,45 @@ describe("ChatInput pending file attachments", () => {
           isStreaming={false}
           cwd="/project-b"
           draftKey="session-b"
-          uploadFiles={uploadFiles}
+          uploadAttachment={uploadAttachment}
         />
       </I18nProvider>,
     );
     await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(""));
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "new draft" } });
 
-    await act(async () => { upload.resolve(["a.txt"]); await upload.promise; });
+    await act(async () => { upload.resolve({ path: "/store/a.txt", name: "a.txt" }); await upload.promise; });
     await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("new draft"));
     expect(onSend).not.toHaveBeenCalled();
   });
 
   it("drops a late upload result after the composer unmounts", async () => {
-    const upload = deferred<string[]>();
-    const uploadFiles = vi.fn(() => upload.promise);
+    const upload = deferred<{ path: string; name: string }>();
+    const uploadAttachment = vi.fn(() => upload.promise);
     const onSend = vi.fn().mockReturnValue(true);
-    const view = renderInput({ uploadFiles, onSend, draftKey: "files-unmount-draft" });
+    const view = renderInput({ uploadAttachment, onSend, draftKey: "files-unmount-draft" });
     pickFiles(view, [new File(["a"], "a.txt", { type: "text/plain" })]);
     fireEvent.click(screen.getByLabelText("Send message"));
-    await waitFor(() => expect(uploadFiles).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
     view.unmount();
 
-    await act(async () => { upload.resolve(["a.txt"]); await upload.promise; });
+    await act(async () => { upload.resolve({ path: "/store/a.txt", name: "a.txt" }); await upload.promise; });
     expect(onSend).not.toHaveBeenCalled();
   });
 
   it("clears only the submitted files when a newer file is staged during upload", async () => {
-    const upload = deferred<string[]>();
-    const uploadFiles = vi.fn(() => upload.promise);
+    const upload = deferred<{ path: string; name: string }>();
+    const uploadAttachment = vi.fn(() => upload.promise);
     const onSend = vi.fn().mockReturnValue(true);
-    const view = renderInput({ uploadFiles, onSend, draftKey: "files-newer-draft" });
+    const view = renderInput({ uploadAttachment, onSend, draftKey: "files-newer-draft" });
     pickFiles(view, [new File(["a"], "first.txt", { type: "text/plain" })]);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "send first" } });
     fireEvent.click(screen.getByLabelText("Send message"));
-    await waitFor(() => expect(uploadFiles).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
 
     pickFiles(view, [new File(["b"], "second.txt", { type: "text/plain" })]);
     expect(await screen.findByText("second.txt")).toBeTruthy();
-    await act(async () => { upload.resolve(["first.txt"]); await upload.promise; });
+    await act(async () => { upload.resolve({ path: "/store/first.txt", name: "first.txt" }); await upload.promise; });
 
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByText("first.txt")).toBeNull());
@@ -357,10 +371,10 @@ describe("ChatInput pending file attachments", () => {
   });
 
   it("uploads a staged file before a streaming slash follow-up", async () => {
-    const uploadFiles = vi.fn().mockResolvedValue(["notes.txt"]);
+    const uploadAttachment = uploadOk();
     const onPromptWithStreamingBehavior = vi.fn();
     const view = renderInput({
-      uploadFiles,
+      uploadAttachment,
       isStreaming: true,
       onFollowUp: vi.fn(),
       onPromptWithStreamingBehavior,
@@ -369,30 +383,30 @@ describe("ChatInput pending file attachments", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "/skill:test" } });
     fireEvent.click(screen.getByLabelText("Follow-up"));
 
-    await waitFor(() => expect(uploadFiles).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onPromptWithStreamingBehavior).toHaveBeenCalledWith(
-      "/skill:test @notes.txt ",
+      "/skill:test\n\n[Attached file saved at: /store/notes.txt]",
       "followUp",
       undefined,
     ));
   });
 
   it("uploads a staged file before a streaming follow-up", async () => {
-    const uploadFiles = vi.fn().mockResolvedValue(["notes.txt"]);
+    const uploadAttachment = uploadOk();
     const onFollowUp = vi.fn();
     const view = renderInput({
-      uploadFiles,
+      uploadAttachment,
       isStreaming: true,
       onFollowUp,
       onSteer: vi.fn(),
     });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
     expect(await screen.findByText("notes.txt")).toBeTruthy();
-    expect(uploadFiles).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByLabelText("Follow-up"));
-    await waitFor(() => expect(uploadFiles).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(onFollowUp).toHaveBeenCalledWith("@notes.txt ", undefined));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onFollowUp).toHaveBeenCalledWith("[Attached file saved at: /store/notes.txt]", undefined));
     expect(screen.queryByText("notes.txt")).toBeNull();
   });
 
@@ -408,6 +422,37 @@ describe("ChatInput pending file attachments", () => {
     fireEvent.change(textarea, { target: { value: "during run" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(expected === "steer" ? onSteer : onFollowUp).toHaveBeenCalledWith("during run", undefined);
+  });
+
+  it("references an in-project desktop file and uploads one outside the project", async () => {
+    const uploadAttachment = uploadOk({ path: "/store/outside.txt", name: "outside.txt" });
+    const onSend = vi.fn().mockReturnValue(true);
+    vi.stubGlobal("piDesktop", {
+      getPathForFile: (file: File) => file.name === "inside.txt" ? "/project/src/inside.txt" : "/other/outside.txt",
+    });
+    const view = renderInput({ uploadAttachment, onSend });
+    const inside = new File(["in"], "inside.txt", { type: "text/plain" });
+    const outside = new File(["out"], "outside.txt", { type: "text/plain" });
+    pickFiles(view, [inside, outside]);
+    expect(await screen.findByText("inside.txt")).toBeTruthy();
+    expect(screen.getByText("outside.txt")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Send message"));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
+    expect(uploadAttachment).toHaveBeenCalledWith(outside, undefined);
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("@src/inside.txt \n\n[Attached file saved at: /store/outside.txt]");
+  });
+
+  it("uploads a new-session attachment with an undefined scope", async () => {
+    const uploadAttachment = uploadOk();
+    const onSend = vi.fn().mockReturnValue(true);
+    const view = renderInput({ uploadAttachment, onSend });
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    pickFiles(view, [file]);
+    fireEvent.click(screen.getByLabelText("Send message"));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledWith(file, undefined));
+    await waitFor(() => expect(onSend.mock.calls[0]![0]).toBe("[Attached file saved at: /store/notes.txt]"));
   });
 
   it("keeps existing images when overlapping picker batches would exceed the count", async () => {

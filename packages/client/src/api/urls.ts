@@ -97,6 +97,10 @@ export const urls = {
     config: () => resource("models/config"),
     discover: () => resource("models/discover"),
   },
+  attachments: {
+    /** POST /v1/attachments — one file. Omit sessionId to stage under unfiled. */
+    upload: (sessionId?: string) => resource("attachments", sessionId ? { sessionId } : undefined),
+  },
   files: {
     resource: (path: string, op?: FilesOperation) => resource("files", { path, op }),
     /**

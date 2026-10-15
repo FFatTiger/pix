@@ -21,6 +21,7 @@ import { createRuntimeWsRoute } from "./ws/guard.js";
 import { consoleLogger } from "./logger.js";
 import type { GateDeps, HostDeps, HostLogger } from "./types.js";
 import { registerFileRoutes } from "./routes/files.js";
+import { registerAttachmentRoutes } from "./routes/attachments.js";
 import { registerFileIndexRoutes } from "./routes/file-index.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerWorktreeRoutes } from "./routes/worktrees.js";
@@ -145,6 +146,11 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
     registerCatalogRoutes(app, deps.catalogs);
     // D3B-R6: read-only theme catalog routes; no-op without the themes seam.
     registerThemeRoutes(app, deps.catalogs);
+  }
+  if (deps.attachments) {
+    registerAttachmentRoutes(app, {
+      ...(deps.attachments.limits ? { limits: deps.attachments.limits } : {}),
+    });
   }
   if (deps.resources) {
     registerFileRoutes(app, { roots: deps.resources.allowedRoots, ...(deps.resources.limits ? { limits: deps.resources.limits } : {}), ...(deps.resources.defaultCwd ? { defaultCwd: deps.resources.defaultCwd } : {}), ...(deps.resources.defaultCwdFactory ? { defaultCwdFactory: deps.resources.defaultCwdFactory } : {}) });

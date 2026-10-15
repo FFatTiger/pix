@@ -41,6 +41,18 @@ const STATE_EXPORTS = [
   "releaseLifetimeLock",
   // backend factory
   "createPosixSecureStateBackend",
+  // attachments store primitives
+  "ATTACHMENTS_DIR_ENV",
+  "UNFILED_ATTACHMENTS_SCOPE",
+  "attachmentScopeExists",
+  "attachmentScopePath",
+  "formatAttachmentFileName",
+  "isSafeAttachmentScope",
+  "removeAttachmentScope",
+  "resolveAttachmentsRoot",
+  "sanitizeAttachmentFileName",
+  "sweepStaleUnfiledAttachments",
+  "writeAttachmentFile",
 ].sort();
 
 test("state surface: exact export set (no raw fs/os APIs leaked)", async () => {

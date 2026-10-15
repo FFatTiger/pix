@@ -504,8 +504,6 @@ export const zhCNLocale = {
     "desktop.attachImageCount": "一条消息最多只能附带 {count} 张图片",
     "desktop.attachImageTotalTooLarge": "这些图片合计过大，请将总大小控制在 {limit} 个字符以内。",
     "desktop.dropToAdd": "拖入以添加",
-    "desktop.dropOutsideProjectConfirm": "将\u201c{name}\u201d复制到项目内以便引用？",
-    "desktop.dropOutsideProjectConfirmMany": "将项目外的 {count} 个文件复制到项目内以便引用？",
     "desktop.attachContext": "添加上下文",
     "desktop.attachFileReference": "引用文件",
     "desktop.insertFileMention": "将文件引用插入聊天",

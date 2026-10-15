@@ -31,6 +31,7 @@ import {
   type SessiondPrivateDirectory,
 } from "../local-posix.js";
 import { LocalAuthorityError, type LocalAuthorityCode } from "@fffattiger/pix-local-authority/state";
+import { createSessiondAttachmentStore, type SessiondAttachmentStore } from "../attachments.js";
 import type { WorkerProcessFactory } from "../worker.js";
 import {
   createProductionWorkerProcessFactory,
@@ -93,6 +94,13 @@ export interface DaemonOptions {
    * can deliver a signal mid-bootstrap. Has no effect in production.
    */
   __testStartupDelayMs?: number;
+  /**
+   * Inline-image store. Defaults to the env-rooted production store
+   * (`PIX_ATTACHMENTS_DIR`, else `~/.pi/pix/attachments`). `null` leaves the
+   * feature inert (unit harnesses). A provided store is used as-is, including
+   * its own sweep.
+   */
+  attachments?: SessiondAttachmentStore | null;
 }
 
 /**
@@ -133,6 +141,12 @@ export interface DaemonHandle {
   readonly diagnostics: DaemonDiagnostics;
   /** Idempotent tear-down: owned-public → server → service → private → lock. */
   shutdown(): Promise<void>;
+  /**
+   * @internal The attachments store this daemon wired (production or override).
+   * `null` only when the caller disabled the feature. Tests assert the
+   * production composition does not leave it inert.
+   */
+  readonly attachments: SessiondAttachmentStore | null;
 }
 
 /**
@@ -245,6 +259,8 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
   // disabled (fail-closed tests observe a fixed unavailable for offline rename).
   const mutation = options.sessionMutation === undefined ? defaultPorts.mutation : options.sessionMutation;
   if (mutation) deps.sessionMutation = mutation;
+  // `undefined` → env-rooted production store; `null` → inert (tests).
+  deps.attachments = options.attachments === undefined ? createSessiondAttachmentStore() : options.attachments;
   return deps;
 }
 
@@ -296,6 +312,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   let server: SessiondRpcServer | undefined;
   let publication: OwnedSocketPublication | undefined;
   let privatePath: string | undefined;
+  let attachmentsSweep: ReturnType<typeof setInterval> | undefined;
   // Daemon-owned shutdown transition. Defined before the RPC server so the
   // shutdown authority can be wired in: `system.shutdown` ACKs its response to
   // the client FIRST, then calls `initiateShutdown`, which begins this
@@ -315,6 +332,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       //    is still our socket inode; a replaced public/lock is left alone
       //    (the incident fix).
       if (publication) await releaseOwnedPublicEndpoint(paths, publication).catch(() => {});
+      if (attachmentsSweep) clearInterval(attachmentsSweep);
       // 2) server → service teardown (libuv unlinks the private path).
       for (const step of teardown.splice(0).reverse()) await step().catch(() => {});
       // 3) Defensive residue removal of our own private path.
@@ -348,6 +366,18 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     }
     const secret = await loadOrCreateLocalSecret(paths, {}, privateDir);
     const dependencies = buildDependencies(directory, options);
+    const attachments = dependencies.attachments ?? null;
+    if (attachments) {
+      const UNFILED_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+      const sweep = (): void => {
+        void attachments.sweepStaleUnfiled().catch((error: unknown) => {
+          console.error(`[sessiond] unfiled attachment sweep failed: ${error instanceof Error ? error.message : "unknown"}`);
+        });
+      };
+      sweep();
+      attachmentsSweep = setInterval(sweep, UNFILED_SWEEP_INTERVAL_MS);
+      attachmentsSweep.unref();
+    }
     // Build/reconcile the disposable materialized browse index BEFORE the RPC
     // endpoint is published. After this boundary numbered page requests perform
     // SQLite-only reads (zero readdir/lstat/JSONL/Git work).
@@ -404,10 +434,12 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       closed,
       shutdown,
       diagnostics,
+      attachments,
     };
   } catch (error) {
     // Startup rollback must never leave our own published paths behind.
     if (publication) await releaseOwnedPublicEndpoint(paths, publication).catch(() => {});
+    if (attachmentsSweep) clearInterval(attachmentsSweep);
     for (const step of teardown.splice(0).reverse()) await step().catch(() => {});
     if (privatePath) await removeOwnedPrivateSocket(privatePath).catch(() => {});
     await lock.release().catch(() => {});

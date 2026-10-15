@@ -252,6 +252,11 @@ export async function runHost(
     // D3A-1 production resource services: files/git/watch/upload + worktree
     // safety (busy preflight + mutation guard wired from the shared adapter).
     resources: production.deps,
+    // Input-box attachment store (POST /v1/attachments). Same upload limits as
+    // the files routes; the store itself is outside AllowedRoots.
+    attachments: {
+      ...(production.deps.limits ? { limits: production.deps.limits } : {}),
+    },
     // D3B-R1B: read-only catalogs (models/auth/skills/plugins/commands/trust).
     // Catalog capability tokens stay advertised even when sessiond is down.
     catalogs,

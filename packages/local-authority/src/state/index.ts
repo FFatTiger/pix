@@ -27,6 +27,20 @@ export {
   createPosixSecureStateBackend,
 } from "./posix.js";
 export {
+  ATTACHMENTS_DIR_ENV,
+  UNFILED_ATTACHMENTS_SCOPE,
+  attachmentScopeExists,
+  attachmentScopePath,
+  formatAttachmentFileName,
+  isSafeAttachmentScope,
+  removeAttachmentScope,
+  resolveAttachmentsRoot,
+  sanitizeAttachmentFileName,
+  sweepStaleUnfiledAttachments,
+  writeAttachmentFile,
+  type AttachmentFileWrite,
+} from "./attachments.js";
+export {
   canonicalCompareKey,
   decomposeAbsolutePath,
   securePathApi,

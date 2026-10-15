@@ -2402,11 +2402,14 @@ span.linenumber {
 
 .status-card-shell {
   position: relative;
+  /* Tab and card sit past the composer's 12px corner radius plus the 8px
+     fillet, so both fillets land on its straight top edge. */
+  margin-left: 20px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   min-width: 0;
-  max-width: 100%;
+  max-width: calc(100% - 20px);
   /* Keep the pill clear of the composer's top-right floating controls. */
   padding-right: var(--composer-floating-controls-reserve);
 }
@@ -2535,7 +2538,9 @@ span.linenumber {
   font-size: 12px;
 }
 
-/* Concave fillets where the tab meets the composer, so the edge flows out. */
+/* Concave fillets where the tab meets the composer, so the edge flows out on
+   both sides. The tab sits inset on the composer's straight top edge (see
+   .status-card-shell), so the composer keeps all four rounded corners. */
 .subagent-activity-capsule::before,
 .subagent-activity-capsule::after {
   content: "";
@@ -3138,9 +3143,11 @@ span.linenumber {
 
 @media (max-width: 640px) {
   .status-card-panel {
-    /* Row padding (2 x 16px) + tab inset (12px) keep the card on screen. */
-    width: min(340px, calc(100vw - 44px));
-    max-width: calc(100vw - 44px);
+    /* The card grows out of the tab, so it stays left: 16px row padding +
+       20px tab inset on the left, and twice that inset (40px) to the
+       composer's right edge, so the asymmetry reads as intended. */
+    width: min(340px, calc(100vw - 92px));
+    max-width: calc(100vw - 92px);
   }
 }
 
@@ -4237,18 +4244,22 @@ button.assistant-entry-chip:focus-visible { outline: 2px solid color-mix(in srgb
 .chat-input-shell.is-streaming,
 .chat-input-shell:focus-within,
 .chat-input-shell.is-streaming:focus-within { border-color: transparent; }
+/* The 1px focus ring is a border on the shell (and on the status tab), so the
+   tab, which overlaps the shell's top border by 1px, covers the ring exactly
+   where the two pieces join. */
 .chat-input-shell:focus-within,
 .chat-input-shell.is-streaming:focus-within {
-  box-shadow: 0 0 0 1px var(--composer-ring), 0 8px 28px -12px rgba(0, 0, 0, 0.22);
+  border-color: var(--composer-ring);
+  box-shadow: 0 8px 28px -12px rgba(0, 0, 0, 0.22);
 }
 .dark .chat-input-shell:focus-within,
 .dark .chat-input-shell.is-streaming:focus-within {
-  box-shadow: 0 0 0 1px var(--composer-ring), 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
 }
 
-/* Status tab + fillets + card: one material with the composer. The focus ring
-   runs along the tab's top and both sides (and through the concave fillets);
-   the seam against the composer stays open, so the two read as one shape. */
+/* Status tab + right fillet + card: one material with the composer. The ring
+   runs along the tab's top and both sides and through the right fillet; the
+   seam against the composer stays open, so the two read as one shape. */
 .subagent-activity-capsule,
 .subagent-activity-capsule:hover {
   border-color: var(--composer-ring);
@@ -4266,10 +4277,15 @@ button.assistant-entry-chip:focus-visible { outline: 2px solid color-mix(in srgb
   border: 1px solid var(--composer-ring);
   border-bottom: 0;
   background: var(--composer-bg);
-  box-shadow: 0 -6px 18px -10px color-mix(in srgb, #000 22%, transparent);
+  box-shadow: none;
 }
-.dark .status-card-panel {
-  box-shadow: 0 -8px 22px -10px rgba(0, 0, 0, 0.6);
+.conversation-container:has(.subagent-activity-card[data-open="true"]) .chat-input-shell:focus-within,
+.conversation-container:has(.subagent-activity-card[data-open="true"]) .chat-input-shell.is-streaming:focus-within {
+  box-shadow: 0 10px 28px -14px rgba(0, 0, 0, 0.22);
+}
+.dark .conversation-container:has(.subagent-activity-card[data-open="true"]) .chat-input-shell:focus-within,
+.dark .conversation-container:has(.subagent-activity-card[data-open="true"]) .chat-input-shell.is-streaming:focus-within {
+  box-shadow: 0 12px 30px -14px rgba(0, 0, 0, 0.6);
 }
 
 /* Settings lists and cards: filled rows instead of outlined boxes. */

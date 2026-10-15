@@ -51,6 +51,17 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
   const sdkRoot = join(standalone, "node_modules", "@earendil-works", "pi-coding-agent");
   const sdk = readJson(join(sdkRoot, "package.json"));
   if (sdk.name !== "@earendil-works/pi-coding-agent" || sdk.version !== "1.0.0") throw new Error("remove the SDK 1.0.0 shrinkwrap bridge before upgrading");
+  // Dropping that shrinkwrap must not let the SDK's dependencies float to
+  // newer registry releases (pi-codemode 1.2.0 broke SDK 1.0.0's imports):
+  // pin each to the exact version the verified standalone tree resolves from
+  // the SDK, i.e. what its shrinkwrap installed.
+  function sdkPinned(name, version) {
+    for (const base of [join(sdkRoot, "node_modules"), join(standalone, "node_modules")]) {
+      const installed = join(base, name, "package.json");
+      if (existsSync(installed)) return readJson(installed).version;
+    }
+    return version;
+  }
   const require = createRequire(resolveNpmInvocation().args[0]);
   const { valid, satisfies } = require("semver");
   const runtime = readdirSync(scope).map((directory) => {
@@ -65,7 +76,6 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
   const bundled = new Set(bundledDependencies);
   const dependencies = {};
   const optionalDependencies = {};
-  const peerDependencies = {};
   function validate(name, version) {
     if (typeof version !== "string" || /^(?:file:|link:|workspace:)/.test(version)) throw new Error(`unresolved local dependency: ${name}`);
   }
@@ -89,15 +99,21 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
           if (typeof version !== "string" || (!version.startsWith("file:") && version !== pluginManifest.version)) throw new Error("bundled plugin does not match the runtime dependency");
           version = pluginManifest.version;
         }
+        if (manifest === sdk && section !== "peerDependencies" && !bundled.has(name)) version = sdkPinned(name, version);
         validate(name, version);
         if (bundled.has(name)) {
           internal[name] = version;
           depend(name, version);
         } else if (section === "peerDependencies") {
-          if (peerDependencies[name] !== undefined && peerDependencies[name] !== version) throw new Error(`conflicting runtime peer: ${name}`);
-          peerDependencies[name] = version;
-          const meta = manifest.peerDependenciesMeta?.[name];
-          if (!dependencies[name] && !meta?.optional) depend(name, readJson(join(standalone, "node_modules", name, "package.json")).version);
+          // Pix supplies one copy of each shared peer, so every bundled
+          // plugin's declared range must accept that copy (ranges may differ
+          // between plugins; the installed version decides).
+          if (manifest.peerDependenciesMeta?.[name]?.optional) continue;
+          const installedManifest = join(standalone, "node_modules", name, "package.json");
+          const installed = existsSync(installedManifest) ? readJson(installedManifest).version : dependencies[name];
+          if (installed === undefined) throw new Error(`missing runtime peer: ${name}`);
+          if (valid(installed) && !satisfies(installed, version, { includePrerelease: true })) throw new Error(`conflicting runtime peer: ${name}`);
+          if (!dependencies[name]) depend(name, installed);
         } else if (section === "optionalDependencies") {
           if (optionalDependencies[name] !== undefined && optionalDependencies[name] !== version) throw new Error(`conflicting optional dependency: ${name}`);
           optionalDependencies[name] = version;

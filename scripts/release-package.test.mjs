@@ -77,6 +77,24 @@ test("registry package bundles Pix and patched plugin while declaring external d
   assert.equal(JSON.parse(readFileSync(join(source, "node_modules/@fffattiger/pix-pi-sdk-adapter/package.json"), "utf8")).dependencies["pi-claude-subagents"], "file:../../vendor/pinned.tgz");
 });
 
+test("SDK dependencies are pinned to the versions its tree resolved, not their ranges", (t) => {
+  const { source, destination, put } = fixture(t);
+  put("node_modules/@earendil-works/pi-coding-agent/package.json", { name: "@earendil-works/pi-coding-agent", version: "1.0.0", dependencies: { "@earendil-works/pi-tui": "^1.0.0", "@earendil-works/pi-codemode": "^1.0.0", chalk: "6.0.0", typebox: "1.1.38" } });
+  put("node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-codemode/package.json", { name: "@earendil-works/pi-codemode", version: "1.0.0" });
+  const manifest = createRegistryPackage(source, destination, {});
+  assert.equal(manifest.dependencies["@earendil-works/pi-codemode"], "1.0.0");
+  assert.equal(manifest.dependencies.chalk, "6.0.0");
+});
+
+test("bundled plugins may declare different ranges for one shared peer the installed copy satisfies", (t) => {
+  const { source, destination, put } = fixture(t);
+  put("node_modules/@earendil-works/pi-tui/package.json", { name: "@earendil-works/pi-tui", version: "1.0.0" });
+  put("node_modules/pi-memory/package.json", { name: "pi-memory", version: "0.4.2", peerDependencies: { "@earendil-works/pi-tui": ">=0.81.1" } });
+  assert.equal(createRegistryPackage(source, destination, {}).dependencies["@earendil-works/pi-tui"], "1.0.0");
+  put("node_modules/pi-memory/package.json", { name: "pi-memory", version: "0.4.2", peerDependencies: { "@earendil-works/pi-tui": ">=2" } });
+  assert.throws(() => createRegistryPackage(source, destination, {}), /conflicting runtime peer: @earendil-works\/pi-tui/);
+});
+
 test("invalid versions and dependency conflicts fail before creating a registry stage", (t) => {
   const { source, destination, put } = fixture(t);
   put("node_modules/@fffattiger/pix-host/package.json", { name: "@fffattiger/pix-host", version: "0.1.0" });
