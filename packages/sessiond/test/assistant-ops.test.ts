@@ -298,6 +298,79 @@ test("chain cap rejects the 4th auto continuation and a user turn resets it", as
   env.authority.dispose();
 });
 
+test("auto-action cap: at most 3 notification-triggered actions across ALL targets; a user turn resets it", async () => {
+  const env = harness();
+  // Deliver one completion notification so the assistant is in autonomous mode.
+  const seed = makeRecord("seed", "/repos/seed", { running: true });
+  env.surface.records.set("seed", seed);
+  env.surface.exists.add("seed");
+  await send(env, "seed-send", { kind: "send", targetSessionId: "seed", message: "seed", delivery: "follow_up", waitMinutes: 0 });
+  env.surface.records.delete("seed");
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  assert.match(env.surface.submits.at(-1)?.input.prompt ?? "", /id: seed/, "the seed settled into a notification");
+
+  // Three auto actions across three DIFFERENT targets pass (each target's own
+  // chain count is 1, so only the assistant-wide budget is being spent).
+  for (const name of ["a", "b", "c"]) {
+    env.surface.records.set(name, makeRecord(name, `/repos/${name}`));
+    env.surface.exists.add(name);
+    env.assistant.operationId = `auto-${name}`;
+    const frame = payload(await send(env, `auto-${name}`, { kind: "send", targetSessionId: name, message: "go", delivery: "follow_up", waitMinutes: 0 }));
+    assert.equal(frame.ok, true, `auto send to ${name} admitted`);
+  }
+  // The fourth notification-triggered action is blocked by the global cap,
+  // even though target "d" itself never delivered a notification.
+  env.surface.records.set("d", makeRecord("d", "/repos/d"));
+  env.surface.exists.add("d");
+  env.assistant.operationId = "auto-d";
+  const blocked = payload(await send(env, "auto-d", { kind: "send", targetSessionId: "d", message: "nope", delivery: "follow_up", waitMinutes: 0 }));
+  assert.equal(blocked.ok, false);
+  assert.match((blocked.error as { message: string }).message, /自动动作/);
+
+  // A user turn in the assistant resets the whole auto budget.
+  env.authority.noteRpcSubmitTurn("assistant");
+  await wait(20);
+  env.assistant.operationId = "auto-d2";
+  const allowed = payload(await send(env, "auto-d2", { kind: "send", targetSessionId: "d", message: "again", delivery: "follow_up", waitMinutes: 0 }));
+  assert.equal(allowed.ok, true);
+  env.authority.dispose();
+});
+
+test("auto-action cap also bounds creates fired after a notification", async () => {
+  const env = harness();
+  const seed = makeRecord("seed", "/repos/seed", { running: true });
+  env.surface.records.set("seed", seed);
+  env.surface.exists.add("seed");
+  await send(env, "seed-send", { kind: "send", targetSessionId: "seed", message: "seed", delivery: "follow_up", waitMinutes: 0 });
+  env.surface.records.delete("seed");
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  assert.match(env.surface.submits.at(-1)?.input.prompt ?? "", /id: seed/);
+
+  for (let index = 0; index < 3; index += 1) {
+    env.surface.createSessionId = `made-${index}`;
+    env.assistant.operationId = `c-${index}`;
+    const frame = payload(await send(env, `c-${index}`, { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+    assert.equal(frame.ok, true, `auto create ${index} admitted`);
+  }
+  env.surface.createSessionId = "made-3";
+  env.assistant.operationId = "c-3";
+  const blocked = payload(await send(env, "c-3", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+  assert.equal(blocked.ok, false);
+  assert.match((blocked.error as { message: string }).message, /自动动作/);
+
+  // Without a delivered notification, creates are user-driven and not counted.
+  env.authority.noteRpcSubmitTurn("assistant");
+  await wait(20);
+  env.assistant.operationId = "c-4";
+  const userDriven = payload(await send(env, "c-4", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+  assert.equal(userDriven.ok, true);
+  env.authority.dispose();
+});
+
 test("routing: idle is fenced submit, busy is a command at the target epoch, missing record cold-opens, missing capability fails closed", async () => {
   const env = harness();
   const idle = makeRecord("idle", "/repos/app", { lastEventId: 7 });
@@ -392,7 +465,11 @@ test("settlement: completed, failed, stopped, waiting_user, crashed, and the idl
   assert.match(completed, /最后回复: done/);
   assert.match(completed, /写过的文件: main\.ts/);
 
-  // Failed tail.
+  // Failed tail. (A user turn precedes each new delegation: after a delivered
+  // notification the assistant is in autonomous mode and the global auto-action
+  // cap would otherwise consume this scenario's budget.)
+  env.authority.noteRpcSubmitTurn("assistant");
+  await wait(20);
   const failedTarget = makeRecord("failed", "/repos/app", { running: true, lastEventId: 1 });
   env.surface.records.set("failed", failedTarget);
   env.surface.exists.add("failed");
@@ -410,6 +487,8 @@ test("settlement: completed, failed, stopped, waiting_user, crashed, and the idl
   assert.match(env.surface.submits.at(-1)?.input.prompt ?? "", /错误: 模型报错/);
 
   // Record deleted → stopped.
+  env.authority.noteRpcSubmitTurn("assistant");
+  await wait(20);
   const stoppedTarget = makeRecord("stopped", "/repos/app", { running: true });
   env.surface.records.set("stopped", stoppedTarget);
   env.surface.exists.add("stopped");
@@ -422,6 +501,8 @@ test("settlement: completed, failed, stopped, waiting_user, crashed, and the idl
   assert.match(env.surface.submits.at(-1)?.input.prompt ?? "", /结果: 已停止/);
 
   // pending extension UI settles immediately, even while the turn still looks busy.
+  env.authority.noteRpcSubmitTurn("assistant");
+  await wait(20);
   const waiting = makeRecord("waiting", "/repos/app", { running: true, pendingUi: 1, lastEventId: 1 });
   env.surface.records.set("waiting", waiting);
   env.surface.exists.add("waiting");
@@ -433,6 +514,8 @@ test("settlement: completed, failed, stopped, waiting_user, crashed, and the idl
   assert.equal(completion?.payload.outcome, "waiting_user");
 
   // Crashed record.
+  env.authority.noteRpcSubmitTurn("assistant");
+  await wait(20);
   const crashed = makeRecord("crashed", "/repos/app", { running: true, status: "ready" });
   env.surface.records.set("crashed", crashed);
   env.surface.exists.add("crashed");

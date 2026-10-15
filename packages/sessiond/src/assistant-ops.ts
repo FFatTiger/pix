@@ -41,6 +41,8 @@ const LEDGER_VERSION = 1;
 const LEDGER_CAP = 200;
 const QUOTA = { send: 5, create: 3, stop: 5 } as const;
 const CHAIN_CAP = 3;
+/** Auto actions (send/create) per assistant since its last USER turn. */
+const AUTO_ACTION_CAP = 3;
 const SUMMARY_CHARS = 120;
 const LAST_TEXT_CHARS = 400;
 const WRITTEN_FILE_CAP = 8;
@@ -130,6 +132,10 @@ interface ChainTarget {
 
 interface Chain {
   lastUserTurnAt: number;
+  /** Notification-triggered actions (send + create) since the last user turn. */
+  autoTotal: number;
+  /** Last time ANY completion notification was delivered to this assistant. */
+  lastNotifyAt: number;
   targets: Record<string, ChainTarget>;
 }
 
@@ -310,11 +316,24 @@ export class AssistantOpsAuthority {
       this.releaseQuota(record, "send");
       return fail("send", chainLimitError());
     }
+    // Any action after a delivered notification also spends the assistant-wide
+    // auto-action budget, so a burst of notifications cannot fan out into an
+    // unbounded autonomous chain across many targets.
+    const auto = this.autoPending(record.sessionId);
+    if (auto) {
+      const autoError = this.reserveAutoAction(record.sessionId);
+      if (autoError) {
+        this.releaseQuota(record, "send");
+        if (continuing) this.releaseChain(record.sessionId, op.targetSessionId);
+        return fail("send", autoError);
+      }
+    }
     const message = marked(op.message);
     const routed = await this.routePrompt(target, op.targetSessionId, message, op.delivery);
     if (!routed.ok) {
       this.releaseQuota(record, "send");
       if (continuing) this.releaseChain(record.sessionId, op.targetSessionId);
+      if (auto) this.releaseAutoAction(record.sessionId);
       return fail("send", routed.error);
     }
     const delegationId = this.registerDelegation(record, {
@@ -345,6 +364,16 @@ export class AssistantOpsAuthority {
     // pass the cap); every failure path below gives the slot back.
     const quota = this.reserveQuota(record, "create");
     if (quota) return fail("create", quota);
+    // A create fired off the back of a delivered notification spends the same
+    // assistant-wide auto-action budget as a continuation send.
+    const auto = this.autoPending(record.sessionId);
+    if (auto) {
+      const autoError = this.reserveAutoAction(record.sessionId);
+      if (autoError) {
+        this.releaseQuota(record, "create");
+        return fail("create", autoError);
+      }
+    }
     let created: RuntimeCreateResult;
     try {
       created = await this.surface.create({
@@ -357,16 +386,19 @@ export class AssistantOpsAuthority {
       });
     } catch (error) {
       this.releaseQuota(record, "create");
+      if (auto) this.releaseAutoAction(record.sessionId);
       return fail("create", mapThrown(error));
     }
     const target = this.surface.getRecord(created.sessionId);
     if (target && isAssistantWorkspacePath(target.cwd, this.homedir)) {
       this.releaseQuota(record, "create");
+      if (auto) this.releaseAutoAction(record.sessionId);
       return fail("create", { code: "invalid_input", message: "不能以助手工作区中的会话为目标", retryable: false });
     }
     const routed = await this.routePrompt(target, created.sessionId, marked(op.message), "follow_up");
     if (!routed.ok) {
       this.releaseQuota(record, "create");
+      if (auto) this.releaseAutoAction(record.sessionId);
       return fail("create", routed.error);
     }
     const delegationId = this.registerDelegation(record, {
@@ -504,6 +536,36 @@ export class AssistantOpsAuthority {
   }
 
   /**
+   * True when ANY completion notification was delivered after the assistant's
+   * last user turn: actions now are notification-triggered (autonomous), not
+   * direct answers to the user.
+   */
+  private autoPending(assistantId: string): boolean {
+    const chain = this.chains.get(assistantId);
+    return chain !== undefined && chain.lastNotifyAt > chain.lastUserTurnAt;
+  }
+
+  /**
+   * Reserve one assistant-wide auto action before it executes, so overlapping
+   * ops cannot both pass the cap. Returns the rejection error at the cap.
+   */
+  private reserveAutoAction(assistantId: string): OpError | undefined {
+    const chain = this.chainFor(assistantId);
+    if (chain.autoTotal >= AUTO_ACTION_CAP) return autoActionLimitError();
+    chain.autoTotal += 1;
+    this.persist();
+    return undefined;
+  }
+
+  /** Give an auto-action reservation back when the op it counted did not land. */
+  private releaseAutoAction(assistantId: string): void {
+    const chain = this.chains.get(assistantId);
+    if (!chain || chain.autoTotal < 1) return;
+    chain.autoTotal -= 1;
+    this.persist();
+  }
+
+  /**
    * Reserve one automatic continuation before the send, so overlapping ops
    * cannot both pass the cap. A user turn newer than the last notification
    * for this target starts the count over at 1. Returns false at the cap.
@@ -529,7 +591,7 @@ export class AssistantOpsAuthority {
   private chainFor(assistantId: string): Chain {
     const existing = this.chains.get(assistantId);
     if (existing) return existing;
-    const created: Chain = { lastUserTurnAt: 0, targets: {} };
+    const created: Chain = { lastUserTurnAt: 0, autoTotal: 0, lastNotifyAt: 0, targets: {} };
     this.chains.set(assistantId, created);
     return created;
   }
@@ -546,7 +608,9 @@ export class AssistantOpsAuthority {
       }
     }
     if (!assistant) return;
-    this.chainFor(sessionId).lastUserTurnAt = this.now();
+    const chain = this.chainFor(sessionId);
+    chain.lastUserTurnAt = this.now();
+    chain.autoTotal = 0;
     this.persist();
   }
 
@@ -793,6 +857,7 @@ export class AssistantOpsAuthority {
         const delivered = await this.deliverNotification(assistantId, items);
         if (delivered) {
           const chain = this.chainFor(assistantId);
+          chain.lastNotifyAt = this.now();
           for (const item of items) {
             const prior = chain.targets[item.targetSessionId] ?? { autoCount: 0, lastNotifyAt: 0 };
             chain.targets[item.targetSessionId] = { autoCount: prior.autoCount, lastNotifyAt: this.now() };
@@ -900,7 +965,14 @@ export class AssistantOpsAuthority {
       return false;
     }
     this.delegations = parsed.delegations.slice(0, LEDGER_CAP);
-    this.chains = new Map(Object.entries(parsed.chains));
+    // Additive chain counters (autoTotal / chain-level lastNotifyAt) default to
+    // zero on ledgers persisted before they existed — never a rejection.
+    this.chains = new Map(Object.entries(parsed.chains).map(([assistantId, chain]) => [assistantId, {
+      lastUserTurnAt: chain.lastUserTurnAt,
+      autoTotal: nonNegativeNumber(chain.autoTotal),
+      lastNotifyAt: nonNegativeNumber(chain.lastNotifyAt),
+      targets: chain.targets,
+    }]));
     for (const delegation of this.delegations) {
       if (delegation.state !== "wait") continue;
       // The worker that was waiting is gone across a restart. The work
@@ -956,6 +1028,14 @@ function chainLimitError(): OpError {
   return {
     code: "invalid_input",
     message: "对同一会话的自动接续已达上限（3 次）。请先把结果汇报给用户，等用户回复后再继续安排。",
+    retryable: false,
+  };
+}
+
+function autoActionLimitError(): OpError {
+  return {
+    code: "invalid_input",
+    message: "自上次用户发言以来，由完成通知触发的自动动作（send/create）已达上限（3 次）。请先把当前结果汇报给用户，等用户回复后再继续。",
     retryable: false,
   };
 }
@@ -1057,4 +1137,8 @@ function isNotifyItem(value: unknown): value is NotifyItem {
   return typeof row.delegationId === "string" && typeof row.assistantSessionId === "string"
     && typeof row.targetSessionId === "string" && typeof row.targetTitle === "string" && typeof row.targetCwd === "string"
     && typeof row.outcome === "string" && typeof row.attempts === "number";
+}
+
+function nonNegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
