@@ -8,7 +8,7 @@ import {
   validateCapabilityRegistry,
 } from "./capability-registry.js";
 import { BUILT_IN_CAPABILITY_IDS, defaultBuiltInCapabilities } from "./built-in-capabilities.js";
-import { MEMORY_PROVIDERS } from "./settings-config.js";
+import { MEMORY_PROVIDERS, type MemoryProvider } from "./settings-config.js";
 import { RUNTIME_CAPABILITIES } from "./capabilities.js";
 
 describe("capability registry shape", () => {
@@ -68,7 +68,7 @@ describe("capability registry shape", () => {
   });
 
   it("memory prompt sections cover the on providers and omit off", () => {
-    const sections = memoryCapabilityRegistryEntry().assistantPromptSections;
+    const sections: Partial<Record<MemoryProvider, string>> = memoryCapabilityRegistryEntry().assistantPromptSections;
     for (const provider of MEMORY_PROVIDERS) {
       if (provider === "off") assert.equal(sections[provider], undefined);
       else assert.equal(typeof sections[provider], "string", `missing prompt section for ${provider}`);
@@ -89,7 +89,7 @@ describe("capability registry shape", () => {
         owners.set(name, entry.id);
       }
       for (const name of entry.hiddenTools) {
-        assert.equal(entry.tools.includes(name), false, `${entry.id} lists ${name} as both tool and hiddenTool`);
+        assert.equal((entry.tools as readonly string[]).includes(name), false, `${entry.id} lists ${name} as both tool and hiddenTool`);
       }
     }
   });
