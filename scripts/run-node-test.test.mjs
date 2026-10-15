@@ -196,6 +196,7 @@ test("main forwards node test flags before the explicit file list", () => {
     assert.equal(invocation.command, process.execPath);
     assert.deepEqual(invocation.args, [
       "--test",
+      "--test-timeout=120000",
       "--test-name-pattern=focused",
       "--test-concurrency=1",
       testFile,
@@ -221,7 +222,7 @@ test("main dedupes across overlapping patterns and forwards the merged list", ()
       },
     });
     assert.equal(code, 0);
-    assert.deepEqual(args, ["--test", testFile]);
+    assert.deepEqual(args, ["--test", "--test-timeout=120000", testFile]);
   } finally {
     cleanup(root);
   }

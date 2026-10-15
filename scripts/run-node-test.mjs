@@ -198,12 +198,20 @@ export function main(argv = process.argv.slice(2), options = {}) {
 
   const spawnSyncImpl = options.spawnSyncImpl ?? spawnSync;
   const killImpl = options.killImpl ?? process.kill;
+  // A single stuck test (a child that never exits, a watcher that never
+  // fires) must fail this process instead of holding the CI job until the
+  // job timeout cancels every later package. Callers can still pass their
+  // own --test-timeout=; the default only fills the gap.
+  const DEFAULT_TEST_TIMEOUT_MS = 120_000;
+  const withTimeout = flags.some((flag) => flag.startsWith("--test-timeout="))
+    ? flags
+    : [`--test-timeout=${DEFAULT_TEST_TIMEOUT_MS}`, ...flags];
   // Strip NODE_TEST_CONTEXT so a nested invocation (this runner started from
   // inside a test) still runs as a fresh top-level test runner instead of
   // silently skipping the file list and exiting 0 — a false green.
   const env = { ...(options.env ?? process.env) };
   delete env.NODE_TEST_CONTEXT;
-  const result = spawnSyncImpl(process.execPath, ["--test", ...flags, ...files], {
+  const result = spawnSyncImpl(process.execPath, ["--test", ...withTimeout, ...files], {
     cwd,
     stdio: options.stdio ?? "inherit",
     env,

@@ -1,5 +1,10 @@
 name: windows
 
+# One build, then every workspace test in its own job so a hung package
+# cannot hide or delay the others. `needs: build` makes the workflow fail
+# when any job fails. Each test job is capped; node --test also caps a
+# single test so a stuck case fails that job instead of waiting it out.
+
 on:
   workflow_dispatch:
   push:
@@ -7,9 +12,9 @@ on:
   pull_request:
 
 jobs:
-  windows:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,10 +24,91 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run typecheck
+      - name: Pack the installed workspace for the test jobs
+        shell: pwsh
+        run: |
+          # node_modules is ~1GB and full of junctions npm creates for
+          # workspaces; tar -h follows them and would duplicate the tree.
+          # 7-Zip stores junctions as junctions, so the extract recreates
+          # the same layout the build just verified.
+          & "C:\Program Files\7-Zip\7z.exe" a -snl -mx=1 workspace.7z . -xr!.git
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-workspace
+          path: workspace.7z
+          retention-days: 1
+
+  test:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: "@fffattiger/pix-agent-worker"
+          - package: "@fffattiger/pix-cli"
+          - package: "@fffattiger/pix-client"
+          - package: "@fffattiger/pix-cross-package-contract-tests"
+          - package: "@fffattiger/pix-host"
+          - package: "@fffattiger/pix-local-authority"
+          - package: "@fffattiger/pix-pi-sdk-adapter"
+          - package: "@fffattiger/pix-protocol"
+          - package: "@fffattiger/pix-runtime-contract-tests"
+          - package: "@fffattiger/pix-runtime-core"
+          - package: "@fffattiger/pix-sessiond"
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-workspace
+      - name: Restore the built workspace
+        shell: pwsh
+        run: |
+          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z -o. -y
+          Remove-Item workspace.7z
+      # Per-test timeout is the runner default (scripts/run-node-test.mjs,
+      # 120s). npm would not forward a bare --test-timeout to that runner.
+      - name: Unit tests
+        run: npm test --workspace "${{ matrix.package }}"
+
+  scripts:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-workspace
+      - name: Restore the built workspace
+        shell: pwsh
+        run: |
+          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z -o. -y
+          Remove-Item workspace.7z
+      # Through npm: the release-package tests require npm_execpath.
       - name: Script tests
-        # Through npm: the release-package tests require npm_execpath.
         run: npm run test:scripts
-      - name: Workspace unit tests
-        run: node scripts/ci-run-workspace-tests.mjs test
+
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-workspace
+      - name: Restore the built workspace
+        shell: pwsh
+        run: |
+          & "C:\Program Files\7-Zip\7z.exe" x workspace.7z -o. -y
+          Remove-Item workspace.7z
       - name: Startup smoke (real sessiond over a named pipe + host)
         run: node tests/windows-smoke.mjs
