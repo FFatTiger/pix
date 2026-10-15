@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { SlashCommandInfo, ThinkingLevel } from "@fffattiger/pix-protocol";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
@@ -44,6 +44,13 @@ import {
   type ContextCatalogModel,
 } from "@/components/chat/chat-runtime-view";
 import type { BuiltinSlashCommandResult, QueuedMessages as QueuedMessagesView } from "@/lib/chat-view-model";
+
+export interface ComposerHandle {
+  /** Clear the queue and put every queued message back into the input. */
+  recallQueue: () => void;
+  /** Steer one queued message now and re-queue the rest in order. */
+  steerQueued: (index: number) => void;
+}
 import type { FileIndexEntry } from "@/lib/file-fuzzy";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
 import type { SessionTreeNode } from "@/lib/chat-view-model";
@@ -198,7 +205,7 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
   return history;
 }
 
-export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, projectRoots, onProjectChange, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, selectedSessionHasTitle, placeholder }: ComposerProps) {
+export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, projectRoots, onProjectChange, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, selectedSessionHasTitle, placeholder }, ref) {
   // Exact selected runtime: AppShell (and standalone mounts) pass the URL/
   // selected session as a prop. Never a facade "current holder" — a detached
   // selected session stays history-only until a send activates it. Home/
@@ -1022,6 +1029,61 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
       .catch(() => undefined);
   }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent]);
 
+  // The protocol can only clear the WHOLE queue, so steering one queued
+  // message clears it, steers the chosen message, and re-queues the rest in
+  // their original order. If the turn ended between the click and the clear
+  // (steer is no longer admitted), the chosen message goes out as an ordinary
+  // prompt and the rest stay queued — nothing is dropped or sent twice.
+  const steerOneInFlightRef = useRef(false);
+  const handleSteerQueued = useCallback((index: number) => {
+    if (!liveWorkspaceEnabled || !hasQueue || !hasSteer || !exact) return;
+    if (steerOneInFlightRef.current) return;
+    const all = queuedMessages ? [...queuedMessages.steering, ...queuedMessages.followUp] : [];
+    const chosen = all[index];
+    if (chosen === undefined || chosen.trim().length === 0) return;
+    const rest = all.filter((_, itemIndex) => itemIndex !== index);
+    steerOneInFlightRef.current = true;
+    void exact
+      .clearQueue()
+      .then(async () => {
+        if (!isCurrent()) return;
+        const running = exact.snapshot?.state.isStreaming === true || exact.snapshot?.state.isPromptRunning === true;
+        try {
+          if (running) await exact.steer(chosen);
+          else {
+            // The turn ended before the click landed. Send through the same
+            // path as an ordinary message, so it still goes out.
+            await exact.sendPromptToSession(chosen);
+          }
+        } catch (cause) {
+          // The chosen message never left. Put the whole queue back instead
+          // of re-queuing the others and losing it.
+          if (isCurrent() && isDefiniteFailure(cause)) restoreDraft([chosen, ...rest].join("\n"));
+          return;
+        }
+        if (!isCurrent()) return;
+        const requeued: string[] = [];
+        for (const message of rest) {
+          try {
+            await exact.followUp(message);
+            requeued.push(message);
+          } catch (cause) {
+            if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(rest.slice(requeued.length).join("\n"));
+            return;
+          }
+        }
+      })
+      .catch((cause: unknown) => {
+        if (isCurrent() && isDefiniteFailure(cause)) restoreDraft([chosen, ...rest].join("\n"));
+      })
+      .finally(() => { steerOneInFlightRef.current = false; });
+  }, [liveWorkspaceEnabled, hasQueue, hasSteer, hasFollowUp, queuedMessages, exact, isCurrent, isDefiniteFailure, restoreDraft]);
+
+  useImperativeHandle(ref, () => ({
+    recallQueue: handleRecallQueue,
+    steerQueued: handleSteerQueued,
+  }), [handleRecallQueue, handleSteerQueued]);
+
   const handleBuiltinCommand = useCallback(
     async (message: string): Promise<BuiltinSlashCommandResult> => {
       const [raw] = message.split(/\s+/);
@@ -1178,9 +1240,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         {...(liveWorkspaceEnabled && thinkingChangeInteractive ? { onThinkingLevelChange: handleThinkingLevelChange } : {})}
         availableThinkingLevels={null}
         retryInfo={null}
-        queuedMessages={queuedMessages}
         inputHistory={inputHistory}
-        {...(liveWorkspaceEnabled && hasQueue ? { onRecallQueue: handleRecallQueue } : {})}
         {...(slashCommands === undefined ? {} : { slashCommands })}
         slashCommandsLoading={false}
         onLoadSlashCommands={loadSlashCommands}
@@ -1226,4 +1286,4 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
       ) : null}
     </div>
   );
-}
+});

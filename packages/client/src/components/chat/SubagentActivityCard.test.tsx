@@ -40,6 +40,9 @@ function renderCard(
       <SubagentActivityCard
         activities={props.activities ?? [RUNNING, COMPLETED]}
         todos={props.todos ?? TODOS}
+        {...(props.queuedMessages === undefined ? {} : { queuedMessages: props.queuedMessages })}
+        {...(props.onSteerQueued === undefined ? {} : { onSteerQueued: props.onSteerQueued })}
+        {...(props.onRecallQueue === undefined ? {} : { onRecallQueue: props.onRecallQueue })}
         onOpenActivity={onOpenActivity}
         onOpenDirectory={onOpenDirectory}
       />
@@ -53,13 +56,50 @@ describe("SubagentActivityCard", () => {
     cleanup();
   });
 
-  it("stays absent when the selected session has no todos or agent activity", () => {
+  it("stays absent when the selected session has no todos, agent activity, or queued messages", () => {
     const { container } = render(
       <I18nProvider>
         <SubagentActivityCard activities={[]} todos={[]} onOpenActivity={() => undefined} onOpenDirectory={() => undefined} />
       </I18nProvider>,
     );
     expect(container.firstChild).toBeNull();
+  });
+
+  it("shows the capsule for queued messages alone and lists them in the card", () => {
+    const onSteerQueued = vi.fn();
+    const onRecallQueue = vi.fn();
+    renderCard({
+      activities: [],
+      todos: [],
+      queuedMessages: { steering: ["steer me now"], followUp: ["after this turn"] },
+      onSteerQueued,
+      onRecallQueue,
+    });
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    expect(capsule.textContent).toContain("2 queued");
+    expect(capsule.querySelector(".status-capsule-queue")).toBeNull();
+
+    fireEvent.click(capsule);
+    const section = screen.getByTestId("status-queue-section");
+    expect(within(section).getByText("Queued")).toBeTruthy();
+    expect(within(section).getByText("steer me now")).toBeTruthy();
+    expect(within(section).getByText("after this turn")).toBeTruthy();
+
+    fireEvent.click(within(section).getByText("steer me now"));
+    expect(within(section).getByText("steer me now").className).toContain("is-expanded");
+
+    fireEvent.click(within(section).getAllByRole("button", { name: "Steer this message now" })[1]!);
+    expect(onSteerQueued).toHaveBeenCalledWith(1);
+    fireEvent.click(within(section).getByRole("button", { name: "Recall to input" }));
+    expect(onRecallQueue).toHaveBeenCalledOnce();
+  });
+
+  it("counts queued messages beside the todo and agent counts", () => {
+    renderCard({ queuedMessages: { steering: [], followUp: ["later"] } });
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    const queue = within(capsule).getByText("1 queued");
+    expect(queue.className).toBe("status-capsule-queue");
+    expect(capsule.textContent).toContain("Ship the panel");
   });
 
   it("summarizes the first in-progress todo ahead of pending, completed, and agent counts", () => {

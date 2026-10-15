@@ -97,9 +97,10 @@ describe("status card composer-strip layout", () => {
     expect(css).toContain(".chat-input-shell:focus-within,\n.chat-input-shell.is-streaming:focus-within {\n  border-color: var(--composer-ring);\n  box-shadow: 0 8px 28px -12px");
     // Long titles ellipsize inside the label span.
     expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
-    expect(rule(css, ".status-capsule-count,\n.status-capsule-agents")).toContain("font-variant-numeric: tabular-nums");
+    expect(rule(css, ".status-capsule-count,\n.status-capsule-agents,\n.status-capsule-queue")).toContain("font-variant-numeric: tabular-nums");
     expect(card).toContain("status-capsule-count");
     expect(card).toContain("status-capsule-agents");
+    expect(card).toContain("status-capsule-queue");
     // Mounted directly above the composer inside the session column.
     expect(shell.indexOf("<SubagentActivityCard")).toBeGreaterThan(shell.indexOf("<Composer"));
     expect(shell).toContain("key={`status:${viewSessionId}`}");
@@ -112,7 +113,7 @@ describe("status card composer-strip layout", () => {
 
     // One shared variable sizes the reserve (footprint derivation lives next
     // to its definition); the pill row consumes exactly that variable.
-    expect(css).toContain("--composer-floating-controls-reserve: 160px");
+    expect(css).toContain("--composer-floating-controls-reserve: 72px");
     expect(rule(css, ".status-card-shell")).toContain("padding-right: var(--composer-floating-controls-reserve)");
     // The floating group really sits at the composer's top-right (ChatInput),
     // so the reserve is the single knob keeping the two apart.

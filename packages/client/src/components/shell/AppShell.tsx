@@ -13,7 +13,8 @@ import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { SubagentActivityCard } from "@/components/chat/SubagentActivityCard";
 import { SubagentPanel } from "@/components/chat/SubagentPanel";
-import { Composer } from "@/components/shell/Composer";
+import { Composer, type ComposerHandle } from "@/components/shell/Composer";
+import { toQueuedMessagesView } from "@/components/chat/chat-runtime-view";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { AppTitleBar, RightPaneToggle } from "@/components/shell/AppTitleBar";
 import { SettingsModal, type SettingsTab } from "@/components/shell/SettingsModal";
@@ -684,6 +685,11 @@ export function AppShell({ search }: AppShellProps) {
   const canSideChat = selectionMatchesLive
     && activeRuntime?.capabilities?.capabilities.includes("runtime.side_chat") === true;
   const rightPaneAvailable = canFiles || canAgents || canSideChat;
+  const composerRef = useRef<ComposerHandle>(null);
+  const queuedMessages = useMemo(
+    () => (selectionMatchesLive ? toQueuedMessagesView(activeRuntime?.snapshot?.state.queuedMessages) : null),
+    [selectionMatchesLive, activeRuntime?.snapshot?.state.queuedMessages],
+  );
   const subagentActivity = useSubagentActivity({
     sessionId: viewSessionId,
     enabled: canBrowseSessions && viewSessionId !== null,
@@ -1461,12 +1467,16 @@ export function AppShell({ search }: AppShellProps) {
                     key={`status:${viewSessionId}`}
                     activities={subagentActivity.activities}
                     todos={subagentActivity.todos}
+                    queuedMessages={queuedMessages}
+                    onSteerQueued={(index) => composerRef.current?.steerQueued(index)}
+                    onRecallQueue={() => composerRef.current?.recallQueue()}
                     onOpenActivity={handleOpenSubagentActivity}
                     onOpenDirectory={() => openSubagentPanel(null)}
                   />
                 )}
                 {isAssistantView && assistantInfo === undefined ? null : (
                   <Composer
+                    ref={composerRef}
                     live={selectionMatchesLive}
                     textareaRef={composerTextareaRef}
                     onCreateSession={isAssistantView ? handleCreateAssistantSession : handleCreateSession}
