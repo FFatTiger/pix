@@ -198,7 +198,7 @@ describe("ToolsConfig", () => {
     });
     mount(fetchMock);
 
-    const unknown = await screen.findByRole("switch", { name: "mcp_custom" });
+    const unknown = await screen.findByRole("switch", { name: "Saved tool: mcp_custom" });
     expect(unknown.getAttribute("aria-checked")).toBe("true");
     expect(toolSwitch("Read files").getAttribute("aria-checked")).toBe("true");
     expect(toolSwitch("Run commands").getAttribute("aria-checked")).toBe("false");
