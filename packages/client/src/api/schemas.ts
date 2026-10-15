@@ -190,6 +190,13 @@ export const UploadCheckResponseSchema = z.strictObject({
   nonReplaceable: z.array(z.string()),
 });
 export type UploadCheckResponse = z.infer<typeof UploadCheckResponseSchema>;
+/** POST /v1/attachments — one stored file. path/name are non-empty; size is a non-negative safe int. */
+export const AttachmentUploadResponseSchema = z.strictObject({
+  path: z.string().min(1),
+  name: z.string().min(1),
+  size: z.number().int().nonnegative().safe(),
+});
+export type AttachmentUploadResponse = z.infer<typeof AttachmentUploadResponseSchema>;
 /**
  * SSE `change` event payload of GET /v1/files/watch?path= (live on the Host).
  * Loose: the viewer only reads `size` when present.

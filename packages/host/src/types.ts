@@ -49,6 +49,7 @@ export type HostCapability =
   | "files.write"
   | "files.watch"
   | "files.upload"
+  | "attachments.upload"
   | "git"
   | "worktree"
   | "worktree.write"
@@ -73,6 +74,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "files.write",
   "files.watch",
   "files.upload",
+  "attachments.upload",
   "git",
   "worktree",
   "worktree.write",
@@ -224,7 +226,7 @@ export interface GateDeps {
 // Host deps
 // ---------------------------------------------------------------------------
 
-import type { MutationGuard, ResourceDeps } from "./resources/types.js";
+import type { MutationGuard, ResourceDeps, ResourceLimits } from "./resources/types.js";
 import type { AllowedRootService } from "./resources/allowed-roots.js";
 import type { AssistantLatestClient } from "./routes/assistant.js";
 
@@ -618,6 +620,16 @@ export interface HostDeps {
     cwd: string;
     /** Narrow sessiond-backed latest-session lookup. */
     client: AssistantLatestClient;
+  };
+  /**
+   * Pix attachments store upload (POST /v1/attachments). Omitted ⇒ the route
+   * is not mounted and `attachments.upload` is never advertised. The store
+   * lives outside every project and does not use AllowedRoots; the token is
+   * sessiond-independent (host-owned), so once this seam is present it stays
+   * advertised in both the full and degraded projections.
+   */
+  attachments?: {
+    limits?: ResourceLimits;
   };
   /** H0B seam: injected runtime protocol WS handler. */
   runtimeWs?: RuntimeWsSeam;

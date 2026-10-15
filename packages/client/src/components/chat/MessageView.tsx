@@ -18,6 +18,8 @@ import type { WrittenFile } from "@/lib/turn-written-files";
 import { isEditToolName } from "@/lib/tool-names";
 import { AssistantNoticeCard } from "./AssistantNoticeCard";
 import { assistantUserMessageKind, stripAssistantMarker } from "@/lib/assistant-message";
+import { splitAttachedMarkerLines } from "@fffattiger/pix-protocol";
+import { getFileIcon } from "./FileIcons";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { ArrowBendDownRightIcon } from "@phosphor-icons/react/ArrowBendDownRight";
 import { CloudArrowDownIcon } from "@phosphor-icons/react/CloudArrowDown";
@@ -472,12 +474,14 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   // Sent-by-assistant messages drop the marker line (and the blank line
   // after it) for both display and copy. Notices keep the raw text for copy.
   const content = assistantKind === "sent" ? stripAssistantMarker(rawContent) : rawContent;
+  const attachmentSplit = splitAttachedMarkerLines(content);
+  const displayText = attachmentSplit.text;
 
   // The SDK expands /skill:name into a <skill> block before storing the
   // message; render that as a styled token instead of dumping the raw skill
   // source into the bubble. Hovering the token reveals the skill's file path
   // and description.
-  const skillBlock = content ? parseSkillBlock(content) : null;
+  const skillBlock = displayText ? parseSkillBlock(displayText) : null;
 
   // pix adapter: validity lookups for @file mentions and /skill: tokens are
   // injected view-model props (the source read a project-context data hook).
@@ -489,7 +493,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   // command rather than the raw `<skill>` envelope stored by the SDK.
   const editTarget = skillBlock
     ? replaceUserMessageText(message, `/skill:${skillBlock.name}${skillBlock.args ? ` ${skillBlock.args}` : ""}`)
-    : message;
+    : replaceUserMessageText(message, displayText);
 
   const imageBlocks: ImageContent[] =
     typeof message.content === "string"
@@ -501,7 +505,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   const canNavigate = !!prevAssistantEntryId && !!onNavigate;
 
   const copyContent = () => {
-    copyText(assistantKind === "notice" ? rawContent : content).then(() => {
+    copyText(assistantKind === "notice" ? rawContent : displayText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
@@ -518,8 +522,37 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
         <>
       <div className="chat-user-bubble-wrap">
         <div className="chat-user-bubble">
+          {attachmentSplit.files.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: displayText ? 8 : 0 }}>
+              {attachmentSplit.files.map((path) => {
+                const name = path.split(/[/\\]/).pop() || path;
+                return (
+                  <span
+                    key={path}
+                    title={name}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      maxWidth: 180,
+                      padding: "2px 8px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-secondary)",
+                      color: "var(--text-dim)",
+                      fontSize: 12,
+                      lineHeight: "16px",
+                    }}
+                  >
+                    {getFileIcon(name, 12)}
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
           {imageBlocks.length > 0 && (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: content ? 8 : 0 }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: displayText ? 8 : 0 }}>
               {imageBlocks.map((img, i) => {
                 // lib/types.ts ImageContent uses {source:{type,data,media_type,url}}
                 // pi-ai on-disk format uses flat {data, mimeType} — handle both
@@ -545,7 +578,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
               })}
             </div>
           )}
-          {content && (skillBlock ? (
+          {displayText && (skillBlock ? (
             <div className="chat-user-skill">
               <span
                 ref={skillTokenRef}
@@ -560,7 +593,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
               )}
             </div>
           ) : (
-            <SafeMarkdownBody className="markdown-user-message" {...markdownMentionProps}>{content}</SafeMarkdownBody>
+            <SafeMarkdownBody className="markdown-user-message" {...markdownMentionProps}>{displayText}</SafeMarkdownBody>
           ))}
         </div>
 

@@ -504,8 +504,6 @@ export const enLocale = {
     "desktop.attachImageCount": "A message can include at most {count} images",
     "desktop.attachImageTotalTooLarge": "These photos together are too large. Keep the total under {limit} characters.",
     "desktop.dropToAdd": "Drop to add",
-    "desktop.dropOutsideProjectConfirm": "Copy \"{name}\" into the project so it can be referenced?",
-    "desktop.dropOutsideProjectConfirmMany": "Copy {count} files outside the project into it so they can be referenced?",
     "desktop.attachContext": "Add context",
     "desktop.attachFileReference": "Reference file",
     "desktop.insertFileMention": "Insert file mention into chat",

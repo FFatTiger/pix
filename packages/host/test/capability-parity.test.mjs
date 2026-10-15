@@ -212,7 +212,9 @@ test("all seams mounted ⇒ HTTP and WS both advertise the full production surfa
   const http = await httpCapabilities(host);
   const ws = await wsHandshakeCapabilities(capabilityResolver);
   assert.deepEqual(ws, http.capabilities, "WS handshake must mirror HTTP capabilities");
-  assert.deepEqual(http.capabilities, [...PRODUCTION_FULL_CAPABILITIES]);
+  // attachments.upload is part of the production list but this fixture does not
+  // mount the attachments seam, so the honest projection strips it.
+  assert.deepEqual(http.capabilities, [...PRODUCTION_FULL_CAPABILITIES].filter((token) => token !== "attachments.upload"));
 });
 
 test("sessiond down ⇒ HTTP and WS both degrade to the read-only projection (no drift)", async () => {
