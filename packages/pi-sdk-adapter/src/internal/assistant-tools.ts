@@ -517,39 +517,54 @@ export function parseWorkspaceRootsEnv(env: NodeJS.ProcessEnv = process.env): st
 
 /** Validate an absolute-path create_session target (existing dir + roots + trust). */
 export function resolveAbsoluteProjectTarget(raw: string): { cwd: string } | { error: string } {
-  const trimmed = raw.trim();
-  if (trimmed === "" || !isAbsolute(trimmed)) return { error: `不是绝对路径：${concise(trimmed, 120)}` };
-  let info;
-  try {
-    info = statSync(trimmed);
-  } catch {
-    return { error: `目录不存在：${trimmed}` };
-  }
-  if (!info.isDirectory()) return { error: `不是目录：${trimmed}` };
-  let real: string;
-  try {
-    real = realpathSync(trimmed);
-  } catch {
-    return { error: `目录无法解析：${trimmed}` };
-  }
-  const roots = parseWorkspaceRootsEnv();
-  // realpath the boundaries too: on macOS `os.tmpdir()` is `/var/folders/...`
-  // while the target realpath resolves through the `/var` → `/private/var`
-  // symlink, and a lexical comparison would reject every temp root.
-  const boundaries = (roots ?? [homedir()]).flatMap((root) => {
-    try { return [realpathSync(root)]; } catch { return []; }
-  });
-  if (!boundaries.some((root) => isWithinRoot(real, root))) {
-    return {
-      error: roots === null
-        ? `路径在用户主目录之外，Pix 不会在那里新建会话：${real}`
-        : `路径不在 Pix 允许的根目录内，无法新建会话：${real}`,
-    };
-  }
-  if (hasTrustRequiringProjectResources(real) && new ProjectTrustStore(getAgentDir()).get(real) !== true) {
-    return { error: `项目 ${basename(real)} 含需要信任的项目级配置，尚未被信任；请先在 Pix 里打开并信任该项目。` };
-  }
-  return { cwd: real };
+  return createAssistantCreateTargetResolver()(raw);
+}
+
+/**
+ * Build the create-target validator with an injectable environment and agent
+ * dir, so sessiond can run the SAME rules server-side (allowed roots +
+ * project trust) instead of relying on the worker-side tool filter alone.
+ */
+export function createAssistantCreateTargetResolver(
+  options: { env?: NodeJS.ProcessEnv; agentDir?: string } = {},
+): (raw: string) => { cwd: string } | { error: string } {
+  const env = options.env ?? process.env;
+  const agentDir = options.agentDir ?? getAgentDir();
+  return (raw: string) => {
+    const trimmed = raw.trim();
+    if (trimmed === "" || !isAbsolute(trimmed)) return { error: `不是绝对路径：${concise(trimmed, 120)}` };
+    let info;
+    try {
+      info = statSync(trimmed);
+    } catch {
+      return { error: `目录不存在：${trimmed}` };
+    }
+    if (!info.isDirectory()) return { error: `不是目录：${trimmed}` };
+    let real: string;
+    try {
+      real = realpathSync(trimmed);
+    } catch {
+      return { error: `目录无法解析：${trimmed}` };
+    }
+    const roots = parseWorkspaceRootsEnv(env);
+    // realpath the boundaries too: on macOS `os.tmpdir()` is `/var/folders/...`
+    // while the target realpath resolves through the `/var` → `/private/var`
+    // symlink, and a lexical comparison would reject every temp root.
+    const boundaries = (roots ?? [homedir()]).flatMap((root) => {
+      try { return [realpathSync(root)]; } catch { return []; }
+    });
+    if (!boundaries.some((root) => isWithinRoot(real, root))) {
+      return {
+        error: roots === null
+          ? `路径在用户主目录之外，Pix 不会在那里新建会话：${real}`
+          : `路径不在 Pix 允许的根目录内，无法新建会话：${real}`,
+      };
+    }
+    if (hasTrustRequiringProjectResources(real) && new ProjectTrustStore(agentDir).get(real) !== true) {
+      return { error: `项目 ${basename(real)} 含需要信任的项目级配置，尚未被信任；请先在 Pix 里打开并信任该项目。` };
+    }
+    return { cwd: real };
+  };
 }
 
 

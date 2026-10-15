@@ -40,6 +40,7 @@ import { resolveRuntimeDir } from "./locator.js";
 import {
   createPiSdkSessionPorts,
 } from "@fffattiger/pix-pi-sdk-adapter/sessions";
+import { createAssistantCreateAuthorizer } from "@fffattiger/pix-pi-sdk-adapter/trust";
 
 /** Optional overrides for the daemon bootstrap. */
 export interface DaemonOptions {
@@ -211,6 +212,7 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
   // same shared store the catalog reads from (immediate title convergence).
   const defaultPorts = createPiSdkSessionPorts();
   const catalog = options.sessionCatalog === undefined ? defaultPorts.catalog : options.sessionCatalog;
+  const authorizeAssistantCreate = createAssistantCreateAuthorizer({ env: process.env });
   const deps: SessiondDependencies = {
     sessionLocator: options.sessionLocator ?? defaultPorts.locator,
     activationContext: options.activationContext ?? createCatalogActivationContext(catalog),
@@ -222,6 +224,17 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
     // round 5 redo). Single writer: the service itself. Tests inject
     // `workspaceState`/`null` through the dependencies override.
     workspaceState: new FileWorkspaceStateStore(directory),
+    // Sessiond-side authorization for assistant create_session cwds: the same
+    // allowed-roots + project-trust rules the UI create path enforces, fed by
+    // the adapter. The result shape is mapped onto the authority's guard type.
+    assistantCreateGuard: {
+      authorize: async (cwd: string) => {
+        const decision = authorizeAssistantCreate(cwd);
+        return decision.ok
+          ? { ok: true, cwd: decision.cwd }
+          : { ok: false, error: { code: "invalid_input", message: decision.message, retryable: false } };
+      },
+    },
   };
   if (catalog) deps.sessionCatalog = catalog;
   const projectCatalog = options.projectCatalog === undefined

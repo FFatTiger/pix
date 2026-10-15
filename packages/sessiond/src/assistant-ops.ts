@@ -83,7 +83,19 @@ export interface AssistantOpsSurface {
   readSessionContext?(sessionId: string, opts: { limit: number }): Promise<{
     entries: Array<{ message?: { role?: string; content?: string | Array<{ type?: string; text?: string }>; errorMessage?: string; stopReason?: string } }>;
   } | null>;
+  /**
+   * Sessiond-side authorization for an assistant create_session cwd: the same
+   * allowed-roots + project-trust rules the UI create path enforces, so the
+   * check does not depend on the worker-side tool filter alone. Absent in
+   * test harnesses; the production daemon composition always wires it.
+   */
+  authorizeCreateCwd?(cwd: string): Promise<AssistantCreateGuardResult>;
 }
+
+/** Result of the sessiond-side assistant-create cwd authorization. */
+export type AssistantCreateGuardResult =
+  | { ok: true; cwd: string }
+  | { ok: false; error: { code: "invalid_input" | "unavailable"; message: string; retryable: boolean } };
 
 export interface AssistantOpsOptions {
   surface: AssistantOpsSurface;
@@ -308,6 +320,13 @@ export class AssistantOpsAuthority {
       this.releaseQuota(record, "send");
       return fail("send", { code: "not_found", message: "session not found", retryable: false });
     }
+    // Cold target (no live record): the session header still names its cwd —
+    // an assistant-workspace conversation is never a valid target, cold or not.
+    const coldGuard = target === undefined ? await this.assistantWorkspaceHeader(op.targetSessionId) : false;
+    if (coldGuard) {
+      this.releaseQuota(record, "send");
+      return fail("send", { code: "invalid_input", message: "不能以助手工作区中的会话为目标", retryable: false });
+    }
     // Only a send that CONTINUES a just-delivered notification spends the
     // auto-continuation cap. A user-originated send (no notification since the
     // last user turn) is not a continuation and is not counted here.
@@ -359,6 +378,18 @@ export class AssistantOpsAuthority {
   private async executeCreate(record: AssistantOpsRecordView, op: Extract<WorkerAssistantOpPayload, { kind: "create" }>): Promise<OpResultBody> {
     if (!isDirectory(op.cwd)) {
       return fail("create", { code: "invalid_input", message: "cwd is not a directory", retryable: false });
+    }
+    // Sessiond-side authorization BEFORE creating anything: allowed roots +
+    // project trust, the same rules the UI create path enforces. Never rely
+    // on the worker-side tool filter alone.
+    if (this.surface.authorizeCreateCwd) {
+      let guard: AssistantCreateGuardResult;
+      try {
+        guard = await this.surface.authorizeCreateCwd(op.cwd);
+      } catch {
+        return fail("create", { code: "unavailable", message: "无法校验新建会话的项目路径", retryable: true });
+      }
+      if (!guard.ok) return fail("create", guard.error);
     }
     // Reserve first (parallel create_session calls in one turn must not both
     // pass the cap); every failure path below gives the slot back.
@@ -420,6 +451,8 @@ export class AssistantOpsAuthority {
   }
 
   private async executeStop(record: AssistantOpsRecordView, op: Extract<WorkerAssistantOpPayload, { kind: "stop" }>): Promise<OpResultBody> {
+    const guard = await this.guardManagedTarget(record, op.targetSessionId);
+    if (guard) return fail("stop", guard);
     const located = await this.surface.locate(op.targetSessionId);
     if (!located.exists && !this.surface.getRecord(op.targetSessionId)) {
       return fail("stop", { code: "not_found", message: "session not found", retryable: false });
@@ -436,6 +469,8 @@ export class AssistantOpsAuthority {
   }
 
   private async executeRename(record: AssistantOpsRecordView, op: Extract<WorkerAssistantOpPayload, { kind: "rename" }>): Promise<OpResultBody> {
+    const guard = await this.guardManagedTarget(record, op.targetSessionId);
+    if (guard) return fail("rename", guard);
     const located = await this.surface.locate(op.targetSessionId);
     if (!located.exists && !this.surface.getRecord(op.targetSessionId)) {
       return fail("rename", { code: "not_found", message: "session not found", retryable: false });
@@ -449,6 +484,37 @@ export class AssistantOpsAuthority {
       return { ok: true, kind: "rename", targetSessionId: renamed.sessionId, note: `已改名为「${renamed.name}」` };
     } catch (error) {
       return fail("rename", mapThrown(error));
+    }
+  }
+
+  /**
+   * Shared managed-target guard for stop/rename (and the send cold path):
+   * the assistant may never target ITSELF or any assistant-workspace
+   * conversation, whether the record is live or cold (header cwd).
+   */
+  private async guardManagedTarget(record: AssistantOpsRecordView, targetSessionId: string): Promise<OpError | undefined> {
+    if (targetSessionId === record.sessionId) {
+      return { code: "invalid_input", message: "不能以助手会话自身为目标", retryable: false };
+    }
+    const target = this.surface.getRecord(targetSessionId);
+    if (target !== undefined) {
+      return isAssistantWorkspacePath(target.cwd, this.homedir)
+        ? { code: "invalid_input", message: "不能以助手工作区中的会话为目标", retryable: false }
+        : undefined;
+    }
+    return (await this.assistantWorkspaceHeader(targetSessionId))
+      ? { code: "invalid_input", message: "不能以助手工作区中的会话为目标", retryable: false }
+      : undefined;
+  }
+
+  /** True when a COLD session's recorded cwd is the assistant workspace. */
+  private async assistantWorkspaceHeader(sessionId: string): Promise<boolean> {
+    if (!this.surface.readSessionHeader) return false;
+    try {
+      const header = await this.surface.readSessionHeader(sessionId);
+      return header?.cwd !== undefined && isAssistantWorkspacePath(header.cwd, this.homedir);
+    } catch {
+      return false;
     }
   }
 

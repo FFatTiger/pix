@@ -10,7 +10,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ASSISTANT_NOTIFY_MESSAGE_PREFIX, ASSISTANT_SENT_MESSAGE_PREFIX, type CorrelatedRuntimeCommandResult, type ProtocolError, type RuntimeCommand, type RuntimeCreateParams, type RuntimeCreateResult, type RuntimeSubmitTurnParams, type SubmitTurnAdmission } from "@fffattiger/pix-protocol";
 import { resolveAssistantWorkspaceDir } from "@fffattiger/pix-runtime-core";
-import { AssistantOpsAuthority, type AssistantOpsRecordView, type AssistantOpsSurface } from "../src/assistant-ops.js";
+import { AssistantOpsAuthority, type AssistantCreateGuardResult, type AssistantOpsRecordView, type AssistantOpsSurface } from "../src/assistant-ops.js";
 import { FileWorkspaceStateStore } from "../src/workspace-state.js";
 
 const HOME = "/Users/proxy";
@@ -46,6 +46,8 @@ class FakeSurface implements AssistantOpsSurface {
   contexts = new Map<string, Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }>; errorMessage?: string }>>();
   submitError: ProtocolError | undefined;
   createError: unknown;
+  /** When set, authorizeCreateCwd returns/throws it; default allows. */
+  createGuard: AssistantCreateGuardResult | "throw" | undefined;
   commandOk = true;
   commandError: ProtocolError = { code: "session_busy", message: "busy", retryable: true };
   createSessionId = "created-1";
@@ -89,6 +91,10 @@ class FakeSurface implements AssistantOpsSurface {
   }
   async locate(sessionId: string) { return { exists: this.exists.has(sessionId) || this.records.has(sessionId) }; }
   async readSessionHeader(sessionId: string) { return this.headers.has(sessionId) ? this.headers.get(sessionId)! : null; }
+  async authorizeCreateCwd(cwd: string): Promise<AssistantCreateGuardResult> {
+    if (this.createGuard === "throw") throw new Error("guard exploded");
+    return this.createGuard ?? { ok: true, cwd };
+  }
   async readSessionContext(sessionId: string) {
     const entries = this.contexts.get(sessionId);
     return entries === undefined ? null : { entries: entries.map((message) => ({ message })) };
@@ -368,6 +374,75 @@ test("auto-action cap also bounds creates fired after a notification", async () 
   env.assistant.operationId = "c-4";
   const userDriven = payload(await send(env, "c-4", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
   assert.equal(userDriven.ok, true);
+  env.authority.dispose();
+});
+
+test("send to a cold assistant-workspace session is rejected via its header cwd", async () => {
+  const env = harness();
+  env.surface.exists.add("cold-assistant");
+  env.surface.headers.set("cold-assistant", { title: "旧助手会话", cwd: ASSISTANT_CWD });
+  const frame = payload(await send(env, "s-cold", { kind: "send", targetSessionId: "cold-assistant", message: "hi", delivery: "follow_up", waitMinutes: 0 }));
+  assert.equal(frame.ok, false);
+  assert.match((frame.error as { message: string }).message, /助手工作区/);
+  assert.equal(env.surface.submits.length, 0, "nothing is sent to the cold assistant session");
+  // A cold NON-assistant session with a recorded header still routes normally.
+  env.surface.exists.add("cold-user");
+  env.surface.headers.set("cold-user", { title: "用户会话", cwd: "/repos/app" });
+  const okFrame = payload(await send(env, "s-cold-ok", { kind: "send", targetSessionId: "cold-user", message: "hi", delivery: "follow_up", waitMinutes: 0 }));
+  assert.equal(okFrame.ok, true);
+  env.authority.dispose();
+});
+
+test("stop and rename refuse self and assistant-workspace targets (live or cold)", async () => {
+  const env = harness();
+  const nested = makeRecord("nested", ASSISTANT_CWD);
+  env.surface.records.set("nested", nested);
+  env.surface.exists.add("nested");
+
+  const stopSelf = payload(await send(env, "stop-self", { kind: "stop", targetSessionId: "assistant" }));
+  assert.equal(stopSelf.ok, false);
+  assert.equal((stopSelf.error as { code: string }).code, "invalid_input");
+
+  const stopNested = payload(await send(env, "stop-nested", { kind: "stop", targetSessionId: "nested" }));
+  assert.equal(stopNested.ok, false);
+  assert.match((stopNested.error as { message: string }).message, /助手工作区/);
+
+  env.surface.exists.add("cold-assistant");
+  env.surface.headers.set("cold-assistant", { title: "旧助手会话", cwd: ASSISTANT_CWD });
+  const stopCold = payload(await send(env, "stop-cold", { kind: "stop", targetSessionId: "cold-assistant" }));
+  assert.equal(stopCold.ok, false);
+  assert.match((stopCold.error as { message: string }).message, /助手工作区/);
+  assert.equal(env.surface.stops.length, 0, "no stop reached the surface");
+
+  const renameSelf = payload(await send(env, "rename-self", { kind: "rename", targetSessionId: "assistant", name: "新名字" }));
+  assert.equal(renameSelf.ok, false);
+  assert.equal((renameSelf.error as { code: string }).code, "invalid_input");
+  const renameNested = payload(await send(env, "rename-nested", { kind: "rename", targetSessionId: "nested", name: "新名字" }));
+  assert.equal(renameNested.ok, false);
+  assert.match((renameNested.error as { message: string }).message, /助手工作区/);
+  assert.equal(env.surface.renames.length, 0, "no rename reached the surface");
+  env.authority.dispose();
+});
+
+test("create_session cwd is authorized sessiond-side before creating", async () => {
+  const env = harness();
+  env.assistant.operationId = "turn-guard";
+  env.surface.createGuard = { ok: false, error: { code: "invalid_input", message: "路径不在 Pix 允许的根目录内，无法新建会话", retryable: false } };
+  const rejected = payload(await send(env, "g1", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+  assert.equal(rejected.ok, false);
+  assert.match((rejected.error as { message: string }).message, /允许的根目录/);
+  assert.equal(env.surface.creates.length, 0, "the create never reached the surface");
+
+  env.surface.createGuard = "throw";
+  const blew = payload(await send(env, "g2", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+  assert.equal(blew.ok, false);
+  assert.equal((blew.error as { code: string }).code, "unavailable");
+  assert.equal(env.surface.creates.length, 0);
+
+  env.surface.createGuard = { ok: true, cwd: env.dir };
+  const allowed = payload(await send(env, "g3", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+  assert.equal(allowed.ok, true);
+  assert.equal(env.surface.creates.length, 1);
   env.authority.dispose();
 });
 

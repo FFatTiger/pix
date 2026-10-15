@@ -166,6 +166,13 @@ export interface SessiondDependencies {
    * goes through the workspace-state store; absent → nothing to import.
    */
   assistantDirectory?: string;
+  /**
+   * Sessiond-side create-cwd authorization for the assistant write channel:
+   * the same allowed-roots + project-trust rules the UI create path enforces
+   * (adapter-fed). The production daemon composition always wires it; unit
+   * harnesses may omit it.
+   */
+  assistantCreateGuard?: { authorize(cwd: string): Promise<import("./assistant-ops.js").AssistantCreateGuardResult> };
 }
 
 export interface PreparedAttachment {
@@ -3625,6 +3632,9 @@ export class SessiondService {
       stop: (sessionId: string, reason?: string) => this.stop(sessionId, reason),
       renameSession: (sessionId: string, name: string) => this.renameSession(sessionId, name),
       locate: async (sessionId: string) => ({ exists: (await this.locate(sessionId)).exists }),
+      ...(this.deps.assistantCreateGuard === undefined ? {} : {
+        authorizeCreateCwd: (cwd: string) => this.deps.assistantCreateGuard!.authorize(cwd),
+      }),
       readSessionHeader: async (sessionId: string) => {
         if (!this.deps.sessionCatalog) return null;
         try {

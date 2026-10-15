@@ -26,6 +26,7 @@ import type {
   TrustGateResult,
 } from "@fffattiger/pix-runtime-core";
 import { createPiSdkTrustStore, createPiSdkTrustMutationStore } from "../internal/trust-store.js";
+import { createAssistantCreateTargetResolver } from "../internal/assistant-tools.js";
 
 /**
  * Injectable read-only trust query store contract. The default implementation
@@ -155,4 +156,34 @@ export function createPiSdkTrustMutation(
           : { agentDir: storeOrOptions.agentDir },
       );
   return new PiSdkTrustMutation(store);
+}
+
+/** Options for the assistant create-target authorizer. */
+export interface AssistantCreateAuthorizerOptions {
+  /** Environment carrying PIX_ALLOWED_ROOTS (defaults to the process env). */
+  readonly env?: NodeJS.ProcessEnv;
+  /** Agent config directory for the project-trust store (defaults to the SDK agent dir). */
+  readonly agentDir?: string;
+}
+
+export type AssistantCreateAuthorization = { ok: true; cwd: string } | { ok: false; message: string };
+
+/**
+ * Authorize an assistant create_session cwd with the SAME rules the worker-side
+ * tool enforces (existing directory, inside PIX_ALLOWED_ROOTS — falling back to
+ * the user home — and project trust when the project ships trust-requiring
+ * resources). sessiond runs this SERVER-side before creating anything, so the
+ * guard no longer depends on the worker-side filter alone. The returned
+ * message is fixed user-facing copy; no secret or stack ever crosses.
+ */
+export function createAssistantCreateAuthorizer(
+  options: AssistantCreateAuthorizerOptions = {},
+): (cwd: string) => AssistantCreateAuthorization {
+  const resolve = createAssistantCreateTargetResolver(
+    options.env === undefined ? {} : { env: options.env },
+    );
+  return (cwd: string) => {
+    const result = resolve(cwd);
+    return "error" in result ? { ok: false, message: result.error } : { ok: true, cwd: result.cwd };
+  };
 }

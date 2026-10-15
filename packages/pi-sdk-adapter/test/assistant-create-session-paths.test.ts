@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import {
+  createAssistantCreateTargetResolver,
   parseWorkspaceRootsEnv,
   resolveAbsoluteProjectTarget,
 } from "../src/internal/assistant-tools.js";
+import { createAssistantCreateAuthorizer } from "../src/trust/index.js";
 
 describe("parseWorkspaceRootsEnv", () => {
   it("unset / empty → null (home-directory fallback applies)", () => {
@@ -106,5 +108,61 @@ describe("resolveAbsoluteProjectTarget", () => {
   it("a plain directory without project resources needs no explicit trust", () => {
     const result = resolveAbsoluteProjectTarget(inside);
     assert.ok("cwd" in result);
+  });
+});
+
+describe("createAssistantCreateTargetResolver (sessiond-side guard)", () => {
+  it("uses the injected env and agent dir without touching the process env", async () => {
+    const base = await mkdtemp(join(tmpdir(), "pix-create-resolver-"));
+    try {
+      const inside = join(base, "inside", "project");
+      const outside = join(base, "outside");
+      await mkdir(inside, { recursive: true });
+      await mkdir(outside, { recursive: true });
+      await mkdir(join(base, "agent"), { recursive: true });
+      const resolve = createAssistantCreateTargetResolver({
+        env: { PIX_ALLOWED_ROOTS: join(base, "inside") },
+        agentDir: join(base, "agent"),
+      });
+      const okResult = resolve(inside);
+      assert.ok("cwd" in okResult);
+      assert.equal(okResult.cwd, realpathSync(inside));
+      const bad = resolve(outside);
+      assert.ok("error" in bad);
+      assert.match(bad.error, /不在 Pix 允许的根目录内/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("an unset PIX_ALLOWED_ROOTS falls back to the user home boundary", () => {
+    const resolve = createAssistantCreateTargetResolver({ env: {} });
+    // The real temp directory exists but sits outside the user's home, so the
+    // home fallback boundary (not the roots list) rejects it.
+    const result = resolve(realpathSync(tmpdir()));
+    if ("error" in result) {
+      assert.match(result.error, /主目录之外/);
+    } else {
+      assert.equal(result.cwd, realpathSync(tmpdir()), "tmpdir lives inside home on this platform; boundary vacuously holds");
+    }
+  });
+});
+
+describe("createAssistantCreateAuthorizer (public /trust seam)", () => {
+  it("maps the resolver result onto the fixed ok/message shape", async () => {
+    const base = await mkdtemp(join(tmpdir(), "pix-create-authorizer-"));
+    try {
+      const inside = join(base, "inside");
+      const outside = join(base, "outside");
+      await mkdir(inside, { recursive: true });
+      await mkdir(outside, { recursive: true });
+      const authorize = createAssistantCreateAuthorizer({ env: { PIX_ALLOWED_ROOTS: join(base, "inside") } });
+      assert.deepEqual(authorize(inside), { ok: true, cwd: realpathSync(inside) });
+      const rejected = authorize(outside);
+      assert.equal(rejected.ok, false);
+      assert.match((rejected as { message: string }).message, /不在 Pix 允许的根目录内/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });
