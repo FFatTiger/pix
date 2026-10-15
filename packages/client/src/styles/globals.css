@@ -4241,22 +4241,17 @@ button.assistant-entry-chip:focus-visible { outline: 2px solid color-mix(in srgb
 .chat-input-shell.is-streaming,
 .chat-input-shell:focus-within,
 .chat-input-shell.is-streaming:focus-within { border-color: transparent; }
-/* The drop shadow belongs to the whole shape, not the composer box: while
-   a status tab is present the shell paints no shadow of its own, so nothing
-   crosses the seam. The 1px ring is painted as borders on both pieces. */
+/* The 1px focus ring is a border on the shell (and on the status tab), so the
+   tab, which overlaps the shell's top border by 1px, covers the ring exactly
+   where the two pieces join. */
 .chat-input-shell:focus-within,
 .chat-input-shell.is-streaming:focus-within {
+  border-color: var(--composer-ring);
   box-shadow: 0 8px 28px -12px rgba(0, 0, 0, 0.22);
 }
 .dark .chat-input-shell:focus-within,
 .dark .chat-input-shell.is-streaming:focus-within {
   box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
-}
-.conversation-container:has(.subagent-activity-card) .chat-input-shell:focus-within,
-.conversation-container:has(.subagent-activity-card) .chat-input-shell.is-streaming:focus-within {
-  border-color: var(--composer-ring);
-  border-top-color: transparent;
-  box-shadow: none;
 }
 
 /* Status tab + right fillet + card: one material with the composer. The ring

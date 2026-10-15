@@ -92,10 +92,9 @@ describe("status card composer-strip layout", () => {
     // never paints its own fill or focus color.
     expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("background: var(--composer-bg)");
     expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("border-color: var(--composer-ring)");
-    // Focus: the shell's ring must not cross the seam, and the ring continues
-    // down the composer's sides instead.
-    expect(rule(css, ".conversation-container:has(.subagent-activity-card) .chat-input-shell:focus-within,\n.conversation-container:has(.subagent-activity-card) .chat-input-shell.is-streaming:focus-within")).toContain("border-top-color: transparent");
-    expect(rule(css, ".conversation-container:has(.subagent-activity-card) .chat-input-shell:focus-within,\n.conversation-container:has(.subagent-activity-card) .chat-input-shell.is-streaming:focus-within")).toContain("box-shadow: none");
+    // Focus: the ring is a border (not an outer box-shadow), so the tab, which
+    // overlaps the shell's top border by 1px, hides it exactly at the seam.
+    expect(css).toContain(".chat-input-shell:focus-within,\n.chat-input-shell.is-streaming:focus-within {\n  border-color: var(--composer-ring);\n  box-shadow: 0 8px 28px -12px");
     // Long titles ellipsize inside the label span.
     expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents")).toContain("font-variant-numeric: tabular-nums");
