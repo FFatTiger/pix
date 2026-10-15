@@ -83,11 +83,18 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-capsule")).toContain("background: var(--bg-secondary)");
     expect(rule(css, ".subagent-activity-capsule")).toContain("box-shadow: 0 -3px 8px -4px");
     expect(rule(css, ".subagent-activity-capsule")).toContain("margin-left: 0");
-    expect(css).toContain(".subagent-activity-capsule::before,\n.subagent-activity-capsule::after {");
+    // The tab is flush with the composer on the left, so only the right side
+    // fillets; the composer's top-left corner is square under the tab.
+    expect(css).toContain(".subagent-activity-capsule::before { content: none; }");
+    expect(rule(css, ".subagent-activity-capsule::after")).toContain("right: -8px");
+    expect(rule(css, ".conversation-container:has(.subagent-activity-card) .chat-input-shell")).toContain("border-top-left-radius: 0");
     // Rest / hover / focus all come from the composer variables, so the tab
     // never paints its own fill or focus color.
     expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("background: var(--composer-bg)");
     expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("border-color: var(--composer-ring)");
+    // Focus: the ring is a border (not an outer box-shadow), so the tab, which
+    // overlaps the shell's top border by 1px, hides it exactly at the seam.
+    expect(css).toContain(".chat-input-shell:focus-within,\n.chat-input-shell.is-streaming:focus-within {\n  border-color: var(--composer-ring);\n  box-shadow: 0 8px 28px -12px");
     // Long titles ellipsize inside the label span.
     expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents")).toContain("font-variant-numeric: tabular-nums");
