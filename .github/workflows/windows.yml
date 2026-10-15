@@ -19,8 +19,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run typecheck
-      - name: Unit tests (per package)
-        run: npm test
-        continue-on-error: true
+      - name: Script tests
+        run: node scripts/run-node-test.mjs "scripts/**/*.test.mjs" "tests/e2e/helpers/*.test.mjs"
+      - name: Workspace unit tests
+        run: node scripts/ci-run-workspace-tests.mjs test
       - name: Startup smoke (real sessiond over a named pipe + host)
         run: node tests/windows-smoke.mjs
