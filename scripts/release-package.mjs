@@ -51,6 +51,17 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
   const sdkRoot = join(standalone, "node_modules", "@earendil-works", "pi-coding-agent");
   const sdk = readJson(join(sdkRoot, "package.json"));
   if (sdk.name !== "@earendil-works/pi-coding-agent" || sdk.version !== "1.0.0") throw new Error("remove the SDK 1.0.0 shrinkwrap bridge before upgrading");
+  // Dropping that shrinkwrap must not let the SDK's dependencies float to
+  // newer registry releases (pi-codemode 1.2.0 broke SDK 1.0.0's imports):
+  // pin each to the exact version the verified standalone tree resolves from
+  // the SDK, i.e. what its shrinkwrap installed.
+  function sdkPinned(name, version) {
+    for (const base of [join(sdkRoot, "node_modules"), join(standalone, "node_modules")]) {
+      const installed = join(base, name, "package.json");
+      if (existsSync(installed)) return readJson(installed).version;
+    }
+    return version;
+  }
   const require = createRequire(resolveNpmInvocation().args[0]);
   const { valid, satisfies } = require("semver");
   const runtime = readdirSync(scope).map((directory) => {
@@ -88,6 +99,7 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
           if (typeof version !== "string" || (!version.startsWith("file:") && version !== pluginManifest.version)) throw new Error("bundled plugin does not match the runtime dependency");
           version = pluginManifest.version;
         }
+        if (manifest === sdk && section !== "peerDependencies" && !bundled.has(name)) version = sdkPinned(name, version);
         validate(name, version);
         if (bundled.has(name)) {
           internal[name] = version;
