@@ -14,7 +14,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { createPosixSecureStateBackend } from "@fffattiger/pix-local-authority";
 import type { LoreConnectionMutation, LoreConnectionSnapshot, LoreTestOutcome, LoreTestRequest } from "@fffattiger/pix-runtime-core";
 
@@ -166,7 +166,7 @@ export async function saveLoreConnection(
 
   const loreHome = await canonicalLoreHomeDir(env);
   try {
-    await secureState.ensurePrivateDirectory(loreHome);
+    await ensureLoreStateDirectory(loreHome);
     await secureState.writeStateDocument(canonicalLoreConfigPath(loreHome), `${JSON.stringify(document, null, 2)}\n`, {
       maxBytes: LORE_CONFIG_MAX_BYTES,
     });
@@ -175,6 +175,29 @@ export async function saveLoreConnection(
     throw runtimeError("unavailable", "Lore connection could not be saved");
   }
   return detectLoreConnectionAt(loreHome, env);
+}
+
+/**
+ * Ensure the Lore state directory exists WITHOUT demanding 0700 on a
+ * directory Lore itself created (the official tooling ships 0755). Pix never
+ * owns or chmods ~/.lore: an EXISTING directory only has to be a real
+ * non-symlink directory owned by the current user (POSIX only); a MISSING
+ * one is created through the secure-state walk with its usual 0700. Privacy
+ * of the secret itself is enforced by config.json (0600, atomic, fsynced) in
+ * {@link secureState.writeStateDocument}.
+ */
+async function ensureLoreStateDirectory(home: string): Promise<void> {
+  const info = lstatSync(home, { throwIfNoEntry: false });
+  if (info !== undefined) {
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw runtimeError("invalid_input", "Lore state directory is not a directory");
+    }
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
+      throw runtimeError("unavailable", "Lore state directory is owned by another user");
+    }
+    return;
+  }
+  await secureState.ensurePrivateDirectory(home);
 }
 
 /** Connection facts read from one already-canonical home (post-save read-back). */

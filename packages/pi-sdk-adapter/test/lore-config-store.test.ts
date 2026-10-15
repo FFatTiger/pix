@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -105,6 +105,33 @@ describe("saveLoreConnection", () => {
       { env: baseEnv },
     );
     assert.equal(loopback.baseUrl, "http://127.0.0.1:18901");
+  });
+
+  it("accepts an existing 0755 Lore directory (Lore's own mode) and keeps config.json 0600", async () => {
+    await chmod(loreHome, 0o755);
+    const detected = await saveLoreConnection(
+      { baseUrl: "https://core.example", apiToken: "lm_t" },
+      { env: baseEnv },
+    );
+    assert.equal(detected.configured, true);
+    const dirInfo = await stat(loreHome);
+    assert.equal(dirInfo.mode & 0o777, 0o755, "an existing Lore directory is never chmodded by Pix");
+    const fileInfo = await stat(join(loreHome, "config.json"));
+    assert.equal(fileInfo.mode & 0o077, 0, "config.json stays owner-only");
+    // A follow-up save on the same 0755 directory still works.
+    const again = await saveLoreConnection({ baseUrl: "https://other.example", apiToken: "lm_t2" }, { env: baseEnv });
+    assert.equal(again.baseUrl, "https://other.example");
+  });
+
+  it("creates a missing Lore directory with 0700", async () => {
+    const freshHome = join(loreHome, "nested", "lore");
+    const detected = await saveLoreConnection(
+      { baseUrl: "https://core.example", apiToken: "lm_t" },
+      { env: { ...baseEnv, LORE_HOME: freshHome } },
+    );
+    assert.equal(detected.configured, true);
+    const dirInfo = await stat(freshHome);
+    assert.equal(dirInfo.mode & 0o777, 0o700);
   });
 
   it("rejects non-http(s) schemes and empty input", async () => {
