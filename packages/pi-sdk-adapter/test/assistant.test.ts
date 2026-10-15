@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { resolveAssistantWorkspaceDir } from "@fffattiger/pix-runtime-core";
 import {
@@ -47,8 +47,9 @@ const NOW = Date.now();
  * Linux /tmp are `session_only` workspaces by browse-kind policy, which would
  * hide them from project pages and break the regular-project assertions).
  */
-const PROJECT_DIR = "/repos/pix-assistant-demo";
-const QUANT_DIR = "/repos/quant";
+// resolve() so these stay absolute on win32, where a leading `/` is not.
+const PROJECT_DIR = resolve("/repos/pix-assistant-demo");
+const QUANT_DIR = resolve("/repos/quant");
 
 interface Fixture {
   root: string;
@@ -998,10 +999,12 @@ describe("assistant list_projects", () => {
   const seedProjectSessions = () => {
     // Two sessions in one project, one in another; plus a session_only dir
     // (system scratch) and the assistant's own dir which must never surface.
-    seedSession("/repos/pix", undefined, "pix one", "r1", NOW - 5_000);
-    seedSession("/repos/pix", undefined, "pix two", "r2", NOW - 1_000);
-    seedSession("/repos/quant", undefined, "quant one", "q1", NOW - 60_000);
-    seedSession("/tmp/scratch-session", undefined, "scratch", "s", NOW);
+    // `/repos` is not absolute on win32, so browseKind would not treat it as
+    // a project. resolve() keeps the POSIX path and makes a drive path on win32.
+    seedSession(resolve("/repos/pix"), undefined, "pix one", "r1", NOW - 5_000);
+    seedSession(resolve("/repos/pix"), undefined, "pix two", "r2", NOW - 1_000);
+    seedSession(resolve("/repos/quant"), undefined, "quant one", "q1", NOW - 60_000);
+    seedSession(resolve("/tmp/scratch-session"), undefined, "scratch", "s", NOW);
     seedSession(fixture.assistantDir, undefined, "assistant internal", "ai");
   };
 
@@ -1010,11 +1013,13 @@ describe("assistant list_projects", () => {
     const result = await runTool(collectTools(), "list_projects", {});
     assert.equal(result.isError, undefined);
     const text = result.content[0]!.text!;
+    const pix = resolve("/repos/pix");
+    const quant = resolve("/repos/quant");
     assert.match(text, /共 2 个项目/);
-    assert.match(text, /- pix｜\/repos\/pix｜2 个会话/);
-    assert.match(text, /quant｜\/repos\/quant｜1 个会话/);
+    assert.match(text, new RegExp(`- pix｜${pix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}｜2 个会话`));
+    assert.match(text, new RegExp(`quant｜${quant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}｜1 个会话`));
     // Most recently active project first.
-    assert.ok(text.indexOf("/repos/pix") < text.indexOf("/repos/quant"), "sorted by latest activity");
+    assert.ok(text.indexOf(pix) < text.indexOf(quant), "sorted by latest activity");
     assert.doesNotMatch(text, /scratch/);
     assert.doesNotMatch(text, /assistant internal/);
   });
@@ -1022,13 +1027,15 @@ describe("assistant list_projects", () => {
   it("running counts come only from the authoritative channel (busy counts, waitingUser does not)", async () => {
     seedProjectSessions();
     const channel = async () => [
-      { sessionId: "b1", cwd: "/repos/pix", state: "busy" as const },
-      { sessionId: "w1", cwd: "/repos/quant", state: "waitingUser" as const },
+      { sessionId: "b1", cwd: resolve("/repos/pix"), state: "busy" as const },
+      { sessionId: "w1", cwd: resolve("/repos/quant"), state: "waitingUser" as const },
     ];
     const result = await runTool(collectTools(channel), "list_projects", {});
     const text = result.content[0]!.text!;
-    assert.match(text, /pix｜\/repos\/pix｜2 个会话｜.*｜1 个运行中/);
-    assert.match(text, /quant｜\/repos\/quant｜1 个会话｜.*｜无运行中/);
+    const pix = resolve("/repos/pix").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const quant = resolve("/repos/quant").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(text, new RegExp(`pix｜${pix}｜2 个会话｜.*｜1 个运行中`));
+    assert.match(text, new RegExp(`quant｜${quant}｜1 个会话｜.*｜无运行中`));
   });
 
   it("without the status channel the running state is honestly unknown, never inferred", async () => {
@@ -1047,7 +1054,7 @@ describe("assistant list_projects", () => {
 
   it("filters by name or path and is bounded with a truncation note", async () => {
     for (let index = 0; index < 32; index += 1) {
-      seedSession(`/repos/bulk-${String(index).padStart(2, "0")}`, undefined, `bulk ${index}`, `b${index}`, NOW - index * 1_000);
+      seedSession(resolve(`/repos/bulk-${String(index).padStart(2, "0")}`), undefined, `bulk ${index}`, `b${index}`, NOW - index * 1_000);
     }
     const all = await runTool(collectTools(), "list_projects", {});
     const text = all.content[0]!.text!;
@@ -1057,7 +1064,7 @@ describe("assistant list_projects", () => {
 
     const byName = await runTool(collectTools(), "list_projects", { query: "bulk-07" });
     assert.match(byName.content[0]!.text!, /共 1 个项目/);
-    assert.match(byName.content[0]!.text!, /\/repos\/bulk-07/);
+    assert.match(byName.content[0]!.text!, new RegExp(resolve("/repos/bulk-07").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     const none = await runTool(collectTools(), "list_projects", { query: "no-such-project" });
     assert.match(none.content[0]!.text!, /没有匹配/);
   });

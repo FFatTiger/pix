@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import {
@@ -20,14 +20,19 @@ describe("parseWorkspaceRootsEnv", () => {
   });
 
   it("parses delimiter-separated absolute segments", () => {
+    // `/repos` is absolute on POSIX and relative on win32. Build both
+    // segments with the platform's own absolute form and its delimiter.
+    const first = resolve("/repos");
+    const second = resolve("/work");
     assert.deepEqual(
-      parseWorkspaceRootsEnv({ PIX_ALLOWED_ROOTS: `/repos${":"}/work` }),
-      ["/repos", "/work"],
+      parseWorkspaceRootsEnv({ PIX_ALLOWED_ROOTS: `${first}${delimiter}${second}` }),
+      [first, second],
     );
   });
 
   it("any relative segment fails closed to null", () => {
-    assert.equal(parseWorkspaceRootsEnv({ PIX_ALLOWED_ROOTS: "/repos:relative" }), null);
+    const root = resolve("/repos");
+    assert.equal(parseWorkspaceRootsEnv({ PIX_ALLOWED_ROOTS: `${root}${delimiter}relative` }), null);
   });
 });
 

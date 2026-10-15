@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantOpsChannel, WorkerAssistantCompletionPayload, WorkerAssistantOpResultPayload } from "@fffattiger/pix-protocol";
 import {
@@ -245,8 +245,10 @@ describe("assistant write tools", () => {
   });
 
   it("create_session resolves a project by basename and waits the same way", async () => {
-    seedSession("/repos/pix", "已有");
-    seedSession("/repos/other", "别的");
+    // resolve() makes these absolute on win32 too (`/repos` is relative there).
+    const pix = resolve("/repos/pix");
+    seedSession(pix, "已有");
+    seedSession(resolve("/repos/other"), "别的");
     const channel = fakeChannel({
       createResult: {
         ok: true, sessionId: "assistant", kind: "create", targetSessionId: "new-9",
@@ -265,11 +267,11 @@ describe("assistant write tools", () => {
     assert.match(result.content[0]!.text!, /结果: 出错/);
     assert.match(result.content[0]!.text!, /错误: 编译失败/);
     const created = channel.calls.find((call) => call.method === "create");
-    assert.deepEqual(created!.args[0], { cwd: "/repos/pix", message: "把登录修好", title: "修登录", waitMinutes: 0 });
+    assert.deepEqual(created!.args[0], { cwd: pix, message: "把登录修好", title: "修登录", waitMinutes: 0 });
   });
 
   it("create_session reports an unknown project without calling the channel", async () => {
-    seedSession("/repos/pix", "已有");
+    seedSession(resolve("/repos/pix"), "已有");
     const channel = fakeChannel();
     const result = await run(collect(channel), "create_session", { project: "ghost", message: "做" });
     assert.equal(result.isError, true);
