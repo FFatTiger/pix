@@ -2157,7 +2157,14 @@ export class SessiondService {
           return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "conflict", message: "live session submit requires an epoch fence", retryable: false }, record.epoch, record.journal.lastEventId);
         }
         if (input.expectedEpoch !== record.epoch) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "epoch_changed", message: "session epoch changed", retryable: false }, input.expectedEpoch, input.expectedRevision);
-        if (input.expectedRevision !== record.journal.lastEventId) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "conflict", message: "session revision changed", retryable: false }, record.epoch, record.journal.lastEventId);
+        // Revision fence window: a client cursor is current while it sits between
+        // the last CONVERSATION event and the journal head. Side-channel events
+        // appended after the cursor (subagent streams, todo/extension state,
+        // running-set broadcasts — SIDE_CHANNEL_EVENT_TYPES) cannot change what a
+        // submitted turn races against, so they never invalidate the fence. A
+        // revision past the head or older than the last conversation event is a
+        // genuine lost update → the same conflict as before.
+        if (input.expectedRevision === undefined || input.expectedRevision > record.journal.lastEventId || input.expectedRevision < record.journal.lastConversationEventId) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "conflict", message: "session revision changed", retryable: false }, record.epoch, record.journal.lastEventId);
       } else {
         if (input.expectedEpoch !== undefined || input.expectedRevision !== undefined) {
           return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "epoch_changed", message: "session is no longer active at the expected epoch", retryable: false }, input.expectedEpoch, input.expectedRevision);
