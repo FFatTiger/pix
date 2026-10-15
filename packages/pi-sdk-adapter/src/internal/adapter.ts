@@ -45,11 +45,13 @@ import {
   type SubagentProjection,
   type TodoProjection,
   type AgentMessage as CoreAgentMessage,
+  type NestedToolCalls,
   type StreamingAgentMessage as CoreStreamingAgentMessage,
 } from "@fffattiger/pix-runtime-core";
 import { win32 } from "node:path";
 import { mapDriverError, mapMessage, sanitizeValue } from "../mappers/index.js";
 import { redactText } from "./sanitize.js";
+import { captureNestedToolResult, mergeNestedResults, NestedResultsArchive } from "./nested-results.js";
 import type { DriverUiRequest, PiRuntimeDriver } from "./types.js";
 import {
   SideChatControllerError,
@@ -252,6 +254,8 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private sideChatLifecycleBusy = false;
   private completedToolCalls = new Set<string>();
   private pendingBashTerminals: PendingBashTerminal[] = [];
+  /** Adapter-collected nested-call results awaiting their parent tool result (bounded, FIFO). */
+  private nestedResults = new NestedResultsArchive();
   private thinkingPinned = false;
   private pinnedThinkingLevel: RuntimeState["thinkingLevel"] | undefined;
   private queued: QueuedMessages = { steering: [], followUp: [] };
@@ -1215,7 +1219,15 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     const sessionId = this.identity.sessionId;
     switch (type) {
       case "agent_start": this.emit({ type, sessionId }); return;
-      case "agent_end": this.clearPendingToolWrites(); this.emit({ type, sessionId }); return;
+      case "agent_end":
+        this.clearPendingToolWrites();
+        // Turn boundary: every committed parent toolResult already consumed
+        // its archive entry at message_end, so anything left belongs to a
+        // parent that will never commit (interrupted batch) — drop it instead
+        // of letting it leak into the next turn's FIFO window.
+        this.nestedResults.clear();
+        this.emit({ type, sessionId });
+        return;
       case "agent_settled": {
         // SDK _runAgentPrompt flushes queued same-turn bash messages before it
         // emits agent_settled, so their exact consecutive tail identities are
@@ -1276,10 +1288,37 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
             return;
           }
           if (role === "user" && this.promptRunning) this.activeTurnUserEntryId = committed.entryId;
+          // Nested results (codemode): the SDK's nestedCalls record carries no
+          // child outputs. Merge the adapter-collected archive (from child
+          // tool_execution_end events) into the published message so live
+          // consumers see each child's own result immediately, then persist
+          // the same bounded batch as a `pix-nested-results` custom entry so a
+          // reloaded session rebuilds it. The custom entry is display-only to
+          // the SDK (never model context, never compaction).
+          let published = message;
+          if (role === "toolResult") {
+            const toolMessage = message as unknown as { toolCallId?: string; nestedCalls?: NestedToolCalls } & Record<string, unknown>;
+            const parentToolCallId = typeof toolMessage.toolCallId === "string" ? toolMessage.toolCallId : undefined;
+            if (parentToolCallId !== undefined && this.nestedResults.has(parentToolCallId)) {
+              const payload = this.nestedResults.takePayload(parentToolCallId);
+              if (payload !== undefined && toolMessage.nestedCalls !== undefined) {
+                published = { ...toolMessage, nestedCalls: mergeNestedResults(toolMessage.nestedCalls, payload) } as unknown as typeof message;
+                if (this.driver.appendNestedResults !== undefined) {
+                  try {
+                    this.driver.appendNestedResults(payload);
+                  } catch {
+                    // Display-only persistence: the live merge above already
+                    // published the results; a failed append only costs
+                    // reload enrichment.
+                  }
+                }
+              }
+            }
+          }
           this.emit({
             type,
             sessionId,
-            message,
+            message: published,
             entryId: committed.entryId,
             ...(committed.parentEntryId === undefined ? {} : { parentEntryId: committed.parentEntryId }),
           });
@@ -1312,6 +1351,17 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         const toolCallId = String(raw.toolCallId ?? raw.id ?? "");
         if (this.completedToolCalls.has(toolCallId)) return;
         this.completedToolCalls.add(toolCallId);
+        // Nested-call capture: the SDK's nestedCalls record never carries
+        // results, so archive each child result here (bounded + redacted) for
+        // the parent tool-result message_end merge and the pix-nested-results
+        // custom entry.
+        if (typeof raw.parentToolCallId === "string" && raw.parentToolCallId) {
+          this.nestedResults.record(
+            raw.parentToolCallId,
+            toolCallId,
+            captureNestedToolResult(raw.result, raw.isError === true),
+          );
+        }
         const correlation = this.pendingToolWrites.get(toolCallId);
         this.pendingToolWrites.delete(toolCallId);
         const endToolName = typeof raw.toolName === "string" ? raw.toolName : undefined;
@@ -1559,6 +1609,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private clearToolCorrelations(): void {
     this.pendingToolWrites.clear();
     this.completedToolCalls.clear();
+    this.nestedResults.clear();
   }
 
   private reconcileQueue(

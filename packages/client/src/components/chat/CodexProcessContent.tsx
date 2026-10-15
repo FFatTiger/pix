@@ -15,7 +15,7 @@ import { TrashIcon } from "@phosphor-icons/react/Trash";
 import { WarningCircleIcon } from "@phosphor-icons/react/WarningCircle";
 import { MarkdownBody } from "./MarkdownBody";
 import { NestedToolCallSummary } from "./NestedToolCallSummary";
-import { NestedToolDetails } from "./NestedToolDetails";
+import { CodemodeScriptOutputRow, NestedToolDetails } from "./NestedToolDetails";
 import { DisclosureCollapse } from "./DisclosureCollapse";
 import { useI18n } from "@/hooks/useI18n";
 import type { ImageContent, ToolResultMessage } from "@/lib/chat-view-model";
@@ -723,14 +723,13 @@ function CodexToolGroup({ blocks, entries, cwd, onOpenFile, isStreaming }: {
             </div>
           ) : (
             <div className="codex-tool-group-items">
-              {entries.map((entry) => {
+              {entries.flatMap((entry) => {
                 if (entry.type === "toolCall") {
-                  return (
-                    <CodexToolRow
-                      key={entry.toolCallId}
-                      block={entry}
-                    />
-                  );
+                  // Each codemode batch's shared output follows the LAST child
+                  // of ITS OWN batch (adjacent batches merge into one group):
+                  // shown once per batch, never inside a child call's details.
+                  const batchRow = entry.sharedBatch === undefined ? null : <CodemodeScriptOutputRow key={`${entry.toolCallId}-script`} batch={entry.sharedBatch} />;
+                  return [<CodexToolRow key={entry.toolCallId} block={entry} />, ...(batchRow ? [batchRow] : [])];
                 }
                 if (entry.type === "custom") {
                   return <CodexCustomGroup key={entry.id} block={entry} cwd={cwd} onOpenFile={onOpenFile} isStreaming={isStreaming} />;

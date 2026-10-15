@@ -71,6 +71,7 @@ function mapNestedToolCalls(value: NestedToolCalls) {
       ...(call.argumentsBytes === undefined ? {} : { argumentsBytes: call.argumentsBytes }),
       ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
       ...(call.error === undefined ? {} : { error: call.error }),
+      ...(call.result === undefined ? {} : { result: call.result }),
     })),
   };
 }

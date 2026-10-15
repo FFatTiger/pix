@@ -185,6 +185,8 @@ export class ScriptedSdkDriverFactory implements PiRuntimeDriverFactory {
 
 class ScriptedSdkDriver implements PiRuntimeDriver {
   readonly identity; readonly capabilities: readonly RuntimeCapability[];
+  /** Recorded pix-nested-results persistence calls (test observation only). */
+  appendedNestedResults: { version: 1; toolCallId: string; calls: readonly { id: string; text: string; truncated: boolean; imageCount: number; isError: boolean }[] }[] = [];
   private listeners = new Set<DriverEventListener>(); private ui?: (request: DriverUiRequest) => void;
   private status: "idle" | "prompt" | "bash" | "compact" = "idle"; private abortPrompt = false; private abortBashFlag = false; private abortCompact = false;
   private model: ModelRef; private thinking: ThinkingLevel; private systemPrompt = "You are a coding agent."; private tools = new Map([["read", true], ["write", true], ["failing_tool", true]]);
@@ -209,8 +211,11 @@ class ScriptedSdkDriver implements PiRuntimeDriver {
   getSessionStats(): DriverState["sessionStats"] { return { messageCount: this.session.entries.length, pendingMessageCount: this.steering.length + this.follow.length, tokenCount: this.session.entries.length * 100, contextUsage: { percent: this.session.entries.length * 10, tokens: this.session.entries.length * 1000, contextWindow: 200000 } }; }
   getLastAssistantText(): string { return this.last; }
   resolveLeafEntry(_expectedRole?: string) { const entries = this.session.entries; const leaf = this.session.leaf; if (!leaf) return undefined; const entry = entries.find((e) => e.entryId === leaf); if (!entry) return undefined; return { entryId: entry.entryId, ...(entry.parentEntryId === undefined ? {} : { parentEntryId: entry.parentEntryId }) }; }
+  appendNestedResults(payload: { version: 1; toolCallId: string; calls: readonly { id: string; text: string; truncated: boolean; imageCount: number; isError: boolean }[] }) { this.appendedNestedResults.push(payload); }
   subscribe(listener: DriverEventListener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   emit(event: unknown) { for (const listener of [...this.listeners]) listener(event); }
+  /** Test seam: commit an entry (mirrors the SDK append that follows message_end). */
+  appendCommitted(message: AgentMessage) { this.store.append(this.session, message); }
   async bindUi(ui: (request: DriverUiRequest) => void, emit: (event: RuntimeEvent) => void) { this.ui = ui; void emit; }
   async prompt(message: string, images?: readonly ImageAttachment[], streaming?: "steer" | "followUp"): Promise<{ disposition: "started" | "handled" | "queued" }> {
     if (this.status === "prompt") {

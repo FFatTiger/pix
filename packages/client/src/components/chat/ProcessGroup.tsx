@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MarkdownBody } from "./MarkdownBody";
 import { MessageView, ThinkingBlock, ToolCallBlock } from "./MessageView";
+import { CodemodeScriptOutputRow } from "./NestedToolDetails";
 import { CodexProcessContent } from "./CodexProcessContent";
 import { useDisclosurePresence } from "./DisclosureCollapse";
 import { useI18n } from "@/hooks/useI18n";
@@ -672,6 +673,9 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
           displayBlock={step.block}
           processStyle
         />
+        {/* The codemode script's shared output trails the last child of its
+            group (status-only children carry no output of their own). */}
+        {step.block.sharedBatch !== undefined && <CodemodeScriptOutputRow batch={step.block.sharedBatch} />}
       </div>
     );
   }
@@ -697,6 +701,9 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
               displayBlock={block}
               processStyle
             />
+            {/* Each codemode batch's shared output follows the last child of
+                its OWN batch — adjacent batches can merge into one group. */}
+            {block.sharedBatch !== undefined && <CodemodeScriptOutputRow batch={block.sharedBatch} />}
           </div>
         ))}
       </div>

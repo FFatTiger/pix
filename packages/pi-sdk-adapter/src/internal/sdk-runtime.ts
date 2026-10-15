@@ -17,6 +17,7 @@ import type {
 import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES, BUILTIN_CAPABILITY_REGISTRY } from "@fffattiger/pix-runtime-core";
 import { effectiveAssistantSystemPromptFor, ensureAssistantToolsActive, assistantExtensionFactoriesForCwd } from "./assistant-tools.js";
 import { renderAssistantPreamble } from "./assistant-system-prompt.js";
+import { NESTED_RESULTS_CUSTOM_TYPE } from "./nested-results.js";
 import { redactText } from "./sanitize.js";
 import { createPiSdkSessionStore } from "./session-store.js";
 import { readGlobalToolsPreference } from "./settings-config-store.js";
@@ -812,6 +813,22 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     }
     if (resolved.length !== count) return undefined;
     return resolved.reverse();
+  }
+
+  /**
+   * Persist one batch of adapter-collected nested-call results as a plain
+   * SDK `custom` entry. Called by the adapter AFTER the parent tool-result
+   * entry has committed (leaf correlation succeeded), so the record lands on
+   * the branch directly after its parent. A plain `CustomEntry` is display/
+   * state only: the SDK ignores it in `buildSessionContext` (never sent to
+   * the model) and keeps it out of compaction summaries.
+   */
+  appendNestedResults(payload: {
+    version: 1;
+    toolCallId: string;
+    calls: readonly { id: string; text: string; truncated: boolean; imageCount: number; isError: boolean }[];
+  }): void {
+    this.session.sessionManager.appendCustomEntry(NESTED_RESULTS_CUSTOM_TYPE, payload);
   }
 
   private entryMatchesRole(entry: unknown, expectedRole?: string): boolean {
