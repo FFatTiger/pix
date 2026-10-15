@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { assistantToolDetailValue, assistantToolLabel } from "./tool-names";
+import { zhCNLocale } from "./i18n/messages/zh-CN";
+import { assistantToolDetailText, assistantToolDetailValue, assistantToolLabel } from "./tool-names";
+
+/** zh translator built from the real message table (same {name} interpolation). */
+const zhMessages: Record<string, string> = zhCNLocale.messages;
+const zhT = (key: string, params?: Record<string, string>) =>
+  (zhMessages[key] ?? key).replace(/\{(\w+)\}/g, (_token: string, name: string) => params?.[name] ?? `{${name}}`);
 
 describe("assistantToolLabel", () => {
   it("maps the assistant session tools", () => {
@@ -53,9 +59,11 @@ describe("assistantToolLabel", () => {
     expect(assistantToolDetailValue("send_to_session", { session: "x".repeat(80) }).length).toBeLessThanOrEqual(61);
   });
 
-  it("detail values prefer session/action/path keys for the new tools", () => {
+  it("detail values prefer session/path keys for the new tools", () => {
     expect(assistantToolDetailValue("open_session", { session: "修 bug" })).toBe("修 bug");
-    expect(assistantToolDetailValue("organize_sessions", { action: "rename" })).toBe("rename");
+    // organize_sessions no longer surfaces the raw action token — its object
+    // is the target session, resolved by the composer below.
+    expect(assistantToolDetailValue("organize_sessions", { action: "rename" })).toBe("");
     expect(assistantToolDetailValue("find_file_changes", { path: "nginx.conf" })).toBe("nginx.conf");
     expect(assistantToolDetailValue("summarize_activity", { range: "week" })).toBe("week");
   });
@@ -89,5 +97,38 @@ describe("assistantToolDetailValue", () => {
     expect(assistantToolDetailValue("search_sessions", { query: "x".repeat(200) }).length).toBeLessThanOrEqual(61);
     expect(assistantToolDetailValue("search_sessions", {})).toBe("");
     expect(assistantToolDetailValue("read_session", undefined)).toBe("");
+  });
+});
+
+describe("assistantToolDetailText", () => {
+  it("reads as verb + 「object」", () => {
+    expect(assistantToolDetailText("search_sessions", { query: "openclash 域名" }, zhT)).toBe("查找「openclash 域名」相关的会话");
+    expect(assistantToolDetailText("organize_sessions", { action: "rename", sessions: [{ session: "修 bug" }] }, zhT)).toBe("整理「修 bug」");
+    expect(assistantToolDetailText("find_file_changes", { path: "nginx.conf" }, zhT)).toBe("查找「nginx.conf」的改动记录");
+    expect(assistantToolDetailText("list_projects", { query: "pix" }, zhT)).toBe("查找项目「pix」");
+    expect(assistantToolDetailText("open_session", { session: "布局C 实现" }, zhT)).toBe("打开「布局C 实现」");
+    expect(assistantToolDetailText("draft_to_session", { session: "修 bug" }, zhT)).toBe("给「修 bug」填写草稿");
+    expect(assistantToolDetailText("send_to_session", { session: "修 bug" }, zhT)).toBe("发消息给「修 bug」");
+    expect(assistantToolDetailText("create_session", { project: "pix-next" }, zhT)).toBe("在「pix-next」新建会话");
+    expect(assistantToolDetailText("stop_session", { session: "s-9" }, zhT)).toBe("停止「s-9」");
+    expect(assistantToolDetailText("scratchpad", { action: "add", text: "检查 e2e" }, zhT)).toBe("记到便签：检查 e2e");
+  });
+
+  it("localizes the activity range and prefixes the project scope", () => {
+    expect(assistantToolDetailText("summarize_activity", { range: "week" }, zhT)).toBe("汇总本周的进展");
+    expect(assistantToolDetailText("summarize_activity", { range: "3" }, zhT)).toBe("汇总最近 3 天的进展");
+    expect(assistantToolDetailText("summarize_activity", {}, zhT)).toBe("汇总今天的进展");
+    expect(assistantToolDetailText("summarize_activity", { project: "pix", range: "today" }, zhT)).toBe("汇总「pix」今天的进展");
+  });
+
+  it("uses whole-scope wording instead of an empty object", () => {
+    expect(assistantToolDetailText("search_sessions", {}, zhT)).toBe("查找会话");
+    expect(assistantToolDetailText("session_status", {}, zhT)).toBe("查看全部会话的状态");
+    expect(assistantToolDetailText("list_open_todos", {}, zhT)).toBe("汇总全部待办");
+    expect(assistantToolDetailText("list_projects", {}, zhT)).toBe("列出全部项目");
+  });
+
+  it("returns an empty string for ordinary tools", () => {
+    expect(assistantToolDetailText("read", { path: "a.ts" }, zhT)).toBe("");
   });
 });

@@ -18,7 +18,7 @@ import {
   basenameResourcePath,
 } from "@/lib/step-categorizer";
 import type { StepIconName } from "@/lib/step-visuals";
-import { assistantToolDetailValue, assistantToolLabel } from "@/lib/tool-names";
+import { assistantToolDetailText, assistantToolLabel } from "@/lib/tool-names";
 import { ChatTeardropDotsIcon } from "@phosphor-icons/react/ChatTeardropDots";
 import { BookOpenIcon } from "@phosphor-icons/react/BookOpen";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
@@ -85,9 +85,8 @@ function enrichedToolLabel(
   // the one shared table in lib/tool-names, never the raw tool id.
   const assistantLabel = assistantToolLabel(block.toolName);
   if (assistantLabel) {
-    const detailValue = assistantToolDetailValue(block.toolName, block.input);
     return {
-      displayLabel: detailValue === "" ? ts(assistantLabel.labelKey) : ts(assistantLabel.detailKey, { value: detailValue }),
+      displayLabel: assistantToolDetailText(block.toolName, block.input, ts),
       iconName: assistantLabel.iconName,
     };
   }

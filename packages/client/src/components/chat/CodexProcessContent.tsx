@@ -29,7 +29,7 @@ import {
   type StepTone,
 } from "@/lib/step-categorizer";
 import type { StepIconName } from "@/lib/step-visuals";
-import { assistantToolDetailValue, assistantToolLabel } from "@/lib/tool-names";
+import { assistantToolDetailText, assistantToolLabel } from "@/lib/tool-names";
 import { AssistantActionCard, isAssistantActionTool } from "./AssistantActionCard";
 import { countPatchStats } from "@/lib/turn-written-files";
 
@@ -217,14 +217,11 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
   // table in lib/tool-names (also used by the timeline display mode).
   const assistantLabel = assistantToolLabel(block.toolName);
   if (assistantLabel) {
-    const detailValue = assistantToolDetailValue(block.toolName, block.input);
     return {
       action: t(assistantLabel.labelKey),
       completedAction: t(assistantLabel.labelKey),
       continuedAction: t(assistantLabel.labelKey),
-      detail: detailValue === ""
-        ? t(assistantLabel.labelKey)
-        : t(assistantLabel.detailKey, { value: detailValue }),
+      detail: assistantToolDetailText(block.toolName, block.input, t),
       iconName: assistantLabel.iconName,
       tone: undefined,
     };
