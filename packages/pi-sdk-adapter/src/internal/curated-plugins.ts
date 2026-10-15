@@ -173,7 +173,7 @@ function exactKeys(value: ReadonlyMap<string, unknown> | undefined, expected: re
   return expected.every((name) => value.has(name));
 }
 
-/** Tool families the two memory plugins register (pinned pi-memory 0.4.2 / lore 1.5.0). */
+/** Tool families the two memory plugins register (pinned pi-memory 0.4.2 / lore 1.5.1). */
 const PI_MEMORY_TOOL_FAMILY = /^memory_(?:write|read|forget|restore|search|status)$|^scratchpad$/;
 const LORE_TOOL_FAMILY = /^lore_(?:status|boot|get_node|search|list_domains|create_node|update_node|delete_node|move_node|skill_[a-z]+)$/;
 
