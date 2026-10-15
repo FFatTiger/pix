@@ -216,6 +216,23 @@ async function waitFor(label, predicate, timeoutMs = 20_000) {
 /** Promise resolved with the child's exit code, settled exactly once. Attach
  * immediately at spawn time so a fast exit (e.g. RPC shutdown completing
  * before the caller awaits) can never be missed. */
+/**
+ * Run a command without blocking the event loop. `pix down` must not use
+ * spawnSync while the daemon is our own child: a blocked loop cannot reap the
+ * exited daemon, the zombie still answers kill(pid, 0), and the CLI's
+ * "pid gone" check times out although the daemon shut down cleanly.
+ */
+function runAsync(cmd, args, opts) {
+  return new Promise((resolveRun) => {
+    const child = spawn(cmd, args, { ...opts, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c) => { stdout += c; });
+    child.stderr.on("data", (c) => { stderr += c; });
+    child.once("close", (status) => resolveRun({ status, stdout, stderr }));
+  });
+}
+
 function exitCodePromise(child) {
   return new Promise((resolveExit) => {
     child.once("exit", (code) => resolveExit(code));
@@ -385,7 +402,7 @@ async function runAll(sandbox) {
   log(`  RPC round-trip OK (session ${roundTrip.sessionId.slice(0, 12)}… created → snapshot → stopped)`);
 
   log("step 6/8: authenticated `pix down --all` (RPC shutdown, no signals)");
-  const down = spawnSync(pixBin, ["down", "--all"], { env: sandboxEnv(), encoding: "utf8" });
+  const down = await runAsync(pixBin, ["down", "--all"], { env: sandboxEnv() });
   if (down.status !== 0) fail(`pix down --all exited ${down.status}: ${down.stdout} ${down.stderr}`);
   const exitCode = await withTimeout(daemonExit, "daemon exit after shutdown", 20_000);
   if (exitCode !== 0) fail(`daemon exit ${exitCode} after shutdown (stderr tail: ${daemonErr.slice(-300)})`);
@@ -458,7 +475,7 @@ console.log(JSON.stringify({ sessionId: manager.getSessionId(), file: manager.ge
   );
   log(`  vNext daemon serves vPrev-era catalog (sessions under workspace: ${listOut.count}, total ${listOut.total})`);
 
-  const down2 = spawnSync(pixBin, ["down", "--all"], { env: sandboxEnv(), encoding: "utf8" });
+  const down2 = await runAsync(pixBin, ["down", "--all"], { env: sandboxEnv() });
   if (down2.status !== 0) fail(`vNext pix down failed: ${down2.stderr}`);
   const exit2 = await withTimeout(daemon2Exit, "vNext daemon exit after shutdown", 20_000);
   if (exit2 !== 0) fail(`vNext daemon exit ${exit2} (stderr tail: ${daemon2Err.slice(-300)})`);
