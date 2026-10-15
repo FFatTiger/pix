@@ -30,6 +30,8 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
   const [phase, setPhase] = useState<"visible" | "fading" | "hidden">("visible");
   const [listOpen, setListOpen] = useState(false);
   const [paused, setPaused] = useState(false);
+  // Expanded shows the full message inline; auto-hide stays paused while on.
+  const [expanded, setExpanded] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const autoHideTimer = useRef<number | null>(null);
   const fadeTimer = useRef<number | null>(null);
@@ -58,11 +60,12 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
     setCopiedKey(null);
     setPhase("visible");
     setListOpen(false);
+    setExpanded(false);
     return clearTimers;
   }, [clearTimers, latestKey]);
 
   useEffect(() => {
-    if (phase !== "visible" || listOpen || paused || latestKey === null) return;
+    if (phase !== "visible" || listOpen || paused || expanded || latestKey === null) return;
     autoHideTimer.current = window.setTimeout(() => {
       autoHideTimer.current = null;
       beginFade();
@@ -73,7 +76,7 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
         autoHideTimer.current = null;
       }
     };
-  }, [beginFade, latestKey, listOpen, paused, phase]);
+  }, [beginFade, expanded, latestKey, listOpen, paused, phase]);
 
   useEffect(() => () => clearTimers(), [clearTimers]);
 
@@ -82,6 +85,8 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
   const copy = (url: string, key: string) => {
     void copyText(url).then(() => setCopiedKey(key));
   };
+
+  const toggleExpanded = () => setExpanded((current) => !current);
 
   const showToast = phase !== "hidden" && !listOpen;
   const recent = [...notices].reverse();
@@ -94,12 +99,28 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
           data-testid="extension-notices"
           data-level={latest.level}
           data-phase={phase}
+          data-expanded={expanded ? "true" : undefined}
           role="status"
           aria-label={latest.message}
           onMouseEnter={() => setPaused(true)}
           onMouseLeave={() => setPaused(false)}
         >
-          <span className="extension-notice-message" title={latest.message}>{latest.message}</span>
+          <span
+            className="extension-notice-message"
+            title={latest.message}
+            role="button"
+            tabIndex={0}
+            aria-expanded={expanded}
+            onClick={toggleExpanded}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                toggleExpanded();
+              }
+            }}
+          >
+            {latest.message}
+          </span>
           {noticeUrl(latest.message) ? (
             <button
               type="button"

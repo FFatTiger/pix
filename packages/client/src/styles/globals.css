@@ -3478,9 +3478,30 @@ html.pi-booted body::before {
 .extension-notice-message {
   flex: 1 1 auto;
   min-width: 0;
+  /* Up to two lines; tapping the text expands the full message (there is no
+   * hover on touch, so the title attribute must not be the only way through). */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
+  cursor: pointer;
+}
+.extension-notice-message:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.extension-notice-toast[data-expanded="true"] {
+  align-items: flex-start;
+}
+.extension-notice-toast[data-expanded="true"] .extension-notice-message {
+  display: block;
+  -webkit-line-clamp: unset;
+  max-height: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  cursor: auto;
 }
 .extension-notice-toast[data-phase="fading"] {
   opacity: 0;
