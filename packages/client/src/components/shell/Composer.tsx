@@ -306,7 +306,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const hasStats = hasCap("runtime.stats");
   const canModels = can("models") && liveWorkspaceEnabled;
   const canFilesIndex = can("files") && liveWorkspaceEnabled;
-  const canUpload = can("files.upload") && liveWorkspaceEnabled;
+  const canUploadAttachments = can("attachments.upload") && liveWorkspaceEnabled;
   const canSkills = can("skills") && liveWorkspaceEnabled;
 
   // Authoritative running state (never inferred) OR a prompt transaction owned
@@ -1113,17 +1113,10 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     },
     [configurationApi, canSkills, liveWorkspaceEnabled],
   );
-  const uploadFiles = useCallback(
-    (files: File[], targetCwd: string) => {
+  const uploadAttachment = useCallback(
+    (file: File, sessionId?: string) => {
       if (!liveWorkspaceEnabled) return Promise.reject(workspaceAccessBoundary(workspaceDecision, t));
-      return resourcesApi.files
-        .upload({ directory: targetCwd, files })
-        .then((result) => {
-          if (result.errors.length > 0) {
-            throw new Error("Upload failed");
-          }
-          return result.uploaded;
-        });
+      return resourcesApi.attachments.upload(file, sessionId);
     },
     [resourcesApi, liveWorkspaceEnabled, workspaceDecision, t],
   );
@@ -1201,7 +1194,10 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         messagesScrollRef={transcriptScrollRef}
         {...(liveWorkspaceEnabled && canFilesIndex ? { listFiles, searchFiles } : {})}
         {...(liveWorkspaceEnabled && canSkills ? { listSkills } : {})}
-        {...(liveWorkspaceEnabled && canUpload ? { uploadFiles } : {})}
+        {...(liveWorkspaceEnabled && canUploadAttachments ? {
+          uploadAttachment,
+          ...(selectedSessionId ? { attachmentScopeId: selectedSessionId } : {}),
+        } : {})}
         fileIndexSnapshot={fileIndexSnapshot}
         skillNames={skillNames}
         toolbarAccessory={

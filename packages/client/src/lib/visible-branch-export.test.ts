@@ -339,6 +339,35 @@ describe("buildVisibleBranchDocument whitelist + order", () => {
     });
   });
 
+  it("strips attachment marker lines from exported user text and leaves prose alone", () => {
+    const document = buildVisibleBranchDocument(
+      ctx([
+        {
+          entryId: "u1",
+          message: {
+            role: "user",
+            content: "please read\n\n[Attached file saved at: /store/notes.txt]\n[Attached image saved at: /store/pic.png]",
+          },
+        },
+        {
+          entryId: "u2",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "see [Attached file saved at: /store/notes.txt] inline" }],
+          },
+        },
+      ]),
+      { exportedAt: EXPORTED_AT },
+    );
+    expect(document.entries[0]).toMatchObject({
+      content: [{ type: "text", text: "please read" }],
+    });
+    expect(document.entries[1]).toMatchObject({
+      content: [{ type: "text", text: "see [Attached file saved at: /store/notes.txt] inline" }],
+    });
+    expect(JSON.stringify(document.entries[0])).not.toContain("/store/");
+  });
+
   it("projects assistant with model/provider/stop/error; keeps text/thinking unmerged; maps toolCall; drops usage/writtenFiles", () => {
     const document = buildVisibleBranchDocument(
       ctx([

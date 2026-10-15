@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@fffattiger/pix-agent-worker": "0.2.3",
+    "@fffattiger/pix-local-authority": "0.2.3",
     "@fffattiger/pix-pi-sdk-adapter": "0.2.3",
     "@fffattiger/pix-protocol": "0.2.3",
     "@fffattiger/pix-runtime-core": "0.2.3"

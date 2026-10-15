@@ -6,6 +6,7 @@ import {
   CwdDefaultResponseSchema,
   CwdRootsResponseSchema,
   CwdValidateResponseSchema,
+  AttachmentUploadResponseSchema,
   FileIndexResponseSchema,
   FileListResponseSchema,
   FileMetaResponseSchema,
@@ -33,6 +34,7 @@ export interface UploadProgress {
 }
 
 export type UploadResponse = import("zod").infer<typeof UploadResponseSchema>;
+export type AttachmentUploadResponse = import("zod").infer<typeof AttachmentUploadResponseSchema>;
 
 /**
  * Typed 409 conflict surface for uploads. The Host answers a
@@ -177,6 +179,18 @@ export function createResourcesApi(http: HttpClient) {
       browse: (path?: string, signal?: AbortSignal) => http.get(urls.cwd.browse(path), { schema: CwdBrowseResponseSchema, ...(signal === undefined ? {} : { signal }) }),
       roots: (signal?: AbortSignal) => http.get(urls.cwd.roots(), { schema: CwdRootsResponseSchema, ...(signal === undefined ? {} : { signal }) }),
       createDefault: (signal?: AbortSignal) => http.post(urls.cwd.default(), {}, { schema: CwdDefaultResponseSchema, ...(signal === undefined ? {} : { signal }) }),
+    },
+    attachments: {
+      /** POST /v1/attachments — exactly one `file` field. Omit sessionId to stage under unfiled. */
+      upload: (file: File, sessionId?: string, signal?: AbortSignal) => {
+        const data = new FormData();
+        data.append("file", file, file.name);
+        return http.raw(urls.attachments.upload(sessionId), data, {
+          method: "POST",
+          schema: AttachmentUploadResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        });
+      },
     },
     worktrees: {
       list: (cwd: string, signal?: AbortSignal) => http.get(urls.worktrees.list(cwd), { schema: WorktreeListResponseSchema, ...(signal === undefined ? {} : { signal }) }),

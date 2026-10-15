@@ -49,6 +49,8 @@ export {
   catalogCapabilitiesFromDeps,
   normalizeCatalogCapabilities,
   normalizeSessionMutationCapabilities,
+  normalizeAssistantCapabilities,
+  normalizeAttachmentsCapabilities,
   registerHealthRoutes,
   registerBootstrapRoutes,
   resolveBootstrapGateStatus,
@@ -60,6 +62,8 @@ export type {
   BootstrapGateStatus,
 } from "./routes/health.js";
 export { registerFileRoutes, parseSingleRange } from "./routes/files.js";
+export { registerAttachmentRoutes, resolveAttachmentRouteRoot } from "./routes/attachments.js";
+export type { AttachmentRouteDeps } from "./routes/attachments.js";
 export { registerFileIndexRoutes } from "./routes/file-index.js";
 export { registerGitRoutes } from "./routes/git.js";
 export { registerWorktreeRoutes } from "./routes/worktrees.js";

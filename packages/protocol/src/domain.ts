@@ -370,6 +370,90 @@ export const ASSISTANT_SENT_MESSAGE_PREFIX = "[Pixie 代用户发送]";
  */
 export const ASSISTANT_NOTIFY_MESSAGE_PREFIX = "[Pix 助手工作通知]";
 
+// --- Attachment marker-line conventions --------------------------------
+
+/**
+ * Fixed marker line the sessiond authority appends to a user message for
+ * every INLINE image it persists into the Pix attachments store
+ * (`~/.pi/pix/attachments/<sessionId>/<sha256-16>.<ext>`). The line is part
+ * of the persisted message text so the model (and every Pi client, CLI
+ * included) can see the on-disk absolute path while the inline image blocks
+ * stay in the same message. Single owner: never re-declare.
+ */
+export const ATTACHED_IMAGE_MARKER_PREFIX = "[Attached image saved at: ";
+
+/**
+ * Fixed marker line for a UPLOADED file the client sends by absolute path
+ * (Host `/v1/attachments` upload → `<timestamp>-<rand>-<name>` inside the
+ * session's attachments directory or the pre-session `unfiled` staging area).
+ * Same line convention as {@link ATTACHED_IMAGE_MARKER_PREFIX}.
+ */
+export const ATTACHED_FILE_MARKER_PREFIX = "[Attached file saved at: ";
+
+export function formatAttachedImageMarkerLine(path: string): string {
+  return `${ATTACHED_IMAGE_MARKER_PREFIX}${path}]`;
+}
+
+export function formatAttachedFileMarkerLine(path: string): string {
+  return `${ATTACHED_FILE_MARKER_PREFIX}${path}]`;
+}
+
+/**
+ * Append marker lines to a prompt. A non-empty prompt keeps its text intact
+ * and starts the marker block after one blank line; an empty prompt becomes
+ * just the marker block. Deterministic so retries produce identical text.
+ */
+export function appendAttachedMarkerLines(prompt: string, lines: readonly string[]): string {
+  if (lines.length === 0) return prompt;
+  const block = lines.join("\n");
+  return prompt ? `${prompt}\n\n${block}` : block;
+}
+
+export interface AttachedMarkerSplit {
+  /** Message text with every marker line removed. */
+  text: string;
+  /** Absolute paths from `[Attached image saved at: …]` lines, in order. */
+  images: string[];
+  /** Absolute paths from `[Attached file saved at: …]` lines, in order. */
+  files: string[];
+}
+
+/**
+ * Remove every standalone attachment marker line from a message and collect
+ * the paths. Used by the client to hide the raw lines in user bubbles and to
+ * strip them on copy. A line matches only when it is EXACTLY one marker line
+ * (prefix … `]`, non-empty path); user-typed prose is never touched.
+ */
+export function splitAttachedMarkerLines(text: string): AttachedMarkerSplit {
+  const images: string[] = [];
+  const files: string[] = [];
+  const kept: string[] = [];
+  let removed = false;
+  for (const line of text.split("\n")) {
+    const imagePath = matchAttachedMarkerLine(line, ATTACHED_IMAGE_MARKER_PREFIX);
+    if (imagePath !== undefined) {
+      images.push(imagePath);
+      removed = true;
+      continue;
+    }
+    const filePath = matchAttachedMarkerLine(line, ATTACHED_FILE_MARKER_PREFIX);
+    if (filePath !== undefined) {
+      files.push(filePath);
+      removed = true;
+      continue;
+    }
+    kept.push(line);
+  }
+  return { text: removed ? kept.join("\n").replace(/\n+$/, "") : kept.join("\n"), images, files };
+}
+
+function matchAttachedMarkerLine(line: string, prefix: string): string | undefined {
+  if (!line.startsWith(prefix) || !line.endsWith("]")) return undefined;
+  const path = line.slice(prefix.length, -1);
+  return path.length > 0 ? path : undefined;
+}
+
+
 
 export const ProjectTrustStatusSchema = z.strictObject({
   cwd: NonEmptyStringSchema,

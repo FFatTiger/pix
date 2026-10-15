@@ -160,6 +160,21 @@ export function normalizeAssistantCapabilities(
 }
 
 /**
+ * Honest attachments-upload filter. `attachments.upload` is advertised only
+ * when the attachments seam is actually mounted — the same source of truth as
+ * POST /v1/attachments. Tokens are only ever removed. The store is host-owned
+ * (sessiond-independent), so a mounted seam keeps the token in both the full
+ * and the degraded projections.
+ */
+export function normalizeAttachmentsCapabilities(
+  listed: readonly HostCapability[],
+  deps: HostDeps,
+): readonly HostCapability[] {
+  if (deps.attachments !== undefined) return listed;
+  return listed.filter((token) => token !== "attachments.upload");
+}
+
+/**
  * Strip session-mutation tokens from a list. Applied to the readonly/
  * degraded projection: `session.write` / `session.delete` / `session.settings`
  * are only advertisable while sessiond is up, so the down/unknown projection
@@ -186,11 +201,14 @@ export async function resolveCapabilities(
   // Explicit overrides still have catalog tokens rewritten from mounted seams.
   // Session mutation tokens are seam-honest: only the mutation tokens whose
   // seams are actually mounted survive in the full projection.
-  const full = normalizeAssistantCapabilities(
-    normalizeSessionMutationCapabilities(
-      normalizeCatalogCapabilities(
-        deps.capabilities?.full ?? mounted,
-        deps.catalogs,
+  const full = normalizeAttachmentsCapabilities(
+    normalizeAssistantCapabilities(
+      normalizeSessionMutationCapabilities(
+        normalizeCatalogCapabilities(
+          deps.capabilities?.full ?? mounted,
+          deps.catalogs,
+        ),
+        deps,
       ),
       deps,
     ),
@@ -198,11 +216,15 @@ export async function resolveCapabilities(
   );
   // The readonly projection is only ever returned while sessiond is down (or
   // unknown), so both session-mutation tokens are always stripped there.
-  const readonly = withoutSessionMutationTokens(
-    normalizeCatalogCapabilities(
-      deps.capabilities?.readonly ?? mounted,
-      deps.catalogs,
+  // attachments.upload is host-owned and stays when its seam is mounted.
+  const readonly = normalizeAttachmentsCapabilities(
+    withoutSessionMutationTokens(
+      normalizeCatalogCapabilities(
+        deps.capabilities?.readonly ?? mounted,
+        deps.catalogs,
+      ),
     ),
+    deps,
   );
   if (!deps.sessiond) return { sessiond: "unknown", capabilities: readonly };
   const timeoutMs = deps.sessiondProbeTimeoutMs ?? 2_000;

@@ -69,6 +69,52 @@ describe("resource APIs", () => {
     // The schema is strict: isDir must be literal false (files only, no dirs).
     await expect(api.files.index("/proj", "x", signal)).rejects.toMatchObject({ kind: "decode", code: "INVALID_RESPONSE" });
   });
+
+  it("uploads one attachment as multipart field file, scoped or unfiled", async () => {
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    const body = { path: "/store/notes.txt", name: "notes.txt", size: 5 };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(json(body, 201))
+      .mockResolvedValueOnce(json(body, 201))
+      .mockResolvedValueOnce(json(body, 201));
+    const api = createResourcesApi(createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch }));
+    const signal = new AbortController().signal;
+
+    await expect(api.attachments.upload(file, "s/1 ?", signal)).resolves.toEqual(body);
+    await expect(api.attachments.upload(file)).resolves.toEqual(body);
+    await expect(api.attachments.upload(file, "")).resolves.toEqual(body);
+
+    expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual([
+      "/v1/attachments?sessionId=s%2F1+%3F",
+      "/v1/attachments",
+      "/v1/attachments",
+    ]);
+    const scoped = fetchImpl.mock.calls[0]?.[1] as RequestInit;
+    expect(scoped.method).toBe("POST");
+    expect(scoped.body).toBeInstanceOf(FormData);
+    expect((scoped.body as FormData).get("file")).toBeInstanceOf(File);
+    expect(new Headers(scoped.headers).has("Content-Type")).toBe(false);
+    expect(scoped.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("rejects an attachment upload that does not match the schema", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ path: "", name: "a.txt", size: 1 }, 201));
+    const api = createResourcesApi(createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch }));
+    await expect(api.attachments.upload(new File(["x"], "a.txt"))).rejects.toMatchObject({
+      kind: "decode",
+      code: "INVALID_RESPONSE",
+    });
+  });
+
+  it("propagates a typed attachment upload error", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ code: "invalid_input", message: "rejected" }, 400));
+    const api = createResourcesApi(createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch }));
+    await expect(api.attachments.upload(new File(["x"], "a.txt"))).rejects.toMatchObject({
+      status: 400,
+      code: "invalid_input",
+      message: "rejected",
+    });
+  });
 });
 
 describe("catalog configuration APIs", () => {

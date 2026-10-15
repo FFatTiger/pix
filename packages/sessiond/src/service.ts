@@ -173,6 +173,13 @@ export interface SessiondDependencies {
    * harnesses may omit it.
    */
   assistantCreateGuard?: { authorize(cwd: string): Promise<import("./assistant-ops.js").AssistantCreateGuardResult> };
+  /**
+   * Inline-image persistence into the shared Pix attachments store. The
+   * daemon composition wires the real store; `undefined`/`null` in unit
+   * harnesses leaves the feature inert (prompts and commands are dispatched
+   * unchanged, and session delete skips attachment cleanup).
+   */
+  attachments?: import("./attachments.js").SessiondAttachmentStore | null;
 }
 
 export interface PreparedAttachment {
@@ -1569,7 +1576,54 @@ export class SessiondService {
     // deterministically and ends the OLD worker through the identity stop path.
     if (command.type === "fork") return this.commandFork(sessionId, command, epoch);
     const record = this.requireActive(sessionId);
-    return this.commandOnRecord(record, command, epoch);
+    const annotated = await this.annotateCommandImages(record, command);
+    if ("rejected" in annotated) return annotated.rejected;
+    return this.commandOnRecord(record, annotated.command, epoch);
+  }
+
+  /**
+   * Persist inline images under the canonical session id. No store, or no
+   * images, leaves the input unchanged. A write failure is a retryable
+   * not_delivered rejection and never reaches the worker.
+   */
+  private async annotateTurnImages(
+    record: RecordState,
+    input: RuntimeSubmitTurnParams,
+  ): Promise<{ input: RuntimeSubmitTurnParams } | { rejected: Extract<SubmitTurnAdmission, { status: "rejected" }> }> {
+    const store = this.deps.attachments;
+    if (!store || !input.images?.length) return { input };
+    try {
+      return { input: { ...input, prompt: await store.annotateMessageWithImages(record.sessionId, input.prompt, input.images) } };
+    } catch {
+      return { rejected: this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "unavailable", message: "attachment persistence failed", retryable: true }, record.epoch, record.journal.lastEventId) };
+    }
+  }
+
+  /** Annotated input for fingerprinting. A persistence failure compares as the raw input (conflict, never a false duplicate). */
+  private async fingerprintTurnInput(record: RecordState, input: RuntimeSubmitTurnParams): Promise<RuntimeSubmitTurnParams> {
+    const annotated = await this.annotateTurnImages(record, input);
+    return "rejected" in annotated ? input : annotated.input;
+  }
+
+  /**
+   * Persist inline images on prompt/steer/follow_up BEFORE commandOnRecord
+   * fingerprints the command it receives. The transform is deterministic, so
+   * a retry of the same original payload keeps the same fingerprint.
+   */
+  private async annotateCommandImages(
+    record: RecordState,
+    command: RuntimeCommand,
+  ): Promise<{ command: RuntimeCommand } | { rejected: CorrelatedRuntimeCommandResult }> {
+    const store = this.deps.attachments;
+    if (!store) return { command };
+    if (command.type !== "prompt" && command.type !== "steer" && command.type !== "follow_up") return { command };
+    if (!command.images?.length) return { command };
+    try {
+      const message = await store.annotateMessageWithImages(record.sessionId, command.message, command.images);
+      return { command: { ...command, message } };
+    } catch {
+      return { rejected: unavailableCommand(command.commandId, command.type, "attachment persistence failed") };
+    }
   }
 
   /**
@@ -2087,13 +2141,15 @@ export class SessiondService {
 
   async submitTurn(input: RuntimeSubmitTurnParams): Promise<SubmitTurnAdmission> {
     if (this.shuttingDown) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "unavailable", message: "sessiond is shutting down", retryable: true });
-    const fingerprint = this.turnFingerprint(input);
     const admitted = await this.coordinator.admit<SubmitTurnAdmission | { pending: Promise<SubmitTurnAdmission> }>(input.sessionId, "submit", async (ctx) => {
       if (this.shuttingDown) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "unavailable", message: "sessiond is shutting down", retryable: true });
       let record = this.records.get(ctx.canonicalId);
       if (record && !["crashed", "stopped", "stopping"].includes(record.status)) {
+        // Same-operation replay is decided BEFORE any attachment write. The
+        // transform is deterministic, so the stored fingerprint (already the
+        // annotated prompt) matches a replay of the identical original payload.
         const prior = record.turnOperations.get(input.operationId);
-        if (prior) return this.duplicateTurn(record, prior, fingerprint);
+        if (prior) return this.duplicateTurn(record, prior, this.turnFingerprint(await this.fingerprintTurnInput(record, input)));
         if (input.expectedEpoch === undefined) {
           // Phase 5B: after a rollover a missing epoch is epoch_changed; before
           // the first rollover it keeps the legacy conflict (no epoch fence).
@@ -2114,14 +2170,24 @@ export class SessiondService {
       }
 
       if (!record || ["crashed", "stopped", "stopping"].includes(record.status)) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "worker_unavailable", message: "runtime is not active", retryable: true });
-      const prior = record.turnOperations.get(input.operationId);
-      if (prior) return this.duplicateTurn(record, prior, fingerprint);
       // Phase 5B: block every NEW turn admission while a whole-epoch rollover is pending.
       if (record.epochRollover !== undefined) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "epoch_changed", message: "session epoch changed", retryable: true }, record.epoch, record.journal.lastEventId);
       const caps = record.projection.snapshot().capabilities.capabilities;
       if (!caps.includes("runtime.prompt")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "unsupported_capability", message: "capability not supported: runtime.prompt", retryable: false }, record.epoch, record.journal.lastEventId);
       if (input.activationOverrides?.model !== undefined && !caps.includes("runtime.model.set")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "unsupported_capability", message: "capability not supported: runtime.model.set", retryable: false }, record.epoch, record.journal.lastEventId);
       if (input.activationOverrides?.thinkingLevel !== undefined && !caps.includes("runtime.thinking.set")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "unsupported_capability", message: "capability not supported: runtime.thinking.set", retryable: false }, record.epoch, record.journal.lastEventId);
+      // Inline images are persisted under the canonical session id BEFORE the
+      // fingerprint, so the prior-check / duplicateTurn / the operation record
+      // all hash the transformed prompt. The write is content-addressed, so a
+      // retry of the identical original payload keeps the same fingerprint.
+      const annotated = await this.annotateTurnImages(record, input);
+      if ("rejected" in annotated) return annotated.rejected;
+      input = annotated.input;
+      const fingerprint = this.turnFingerprint(input);
+      // Re-check: the operation may have been admitted while the image write
+      // was in flight on an earlier call that passed the pre-write check.
+      const prior = record.turnOperations.get(input.operationId);
+      if (prior) return this.duplicateTurn(record, prior, fingerprint);
       // Phase 5B: at turnOperation capacity BEFORE inserting any pending/
       // accepted identity, start/join a whole-epoch rollover. On success the
       // triggering submit is proven not-admitted and returns a rejected
@@ -3762,6 +3828,16 @@ export class SessiondService {
       if (this.records.has(canonical)) failClosedBusy();
       await this.deps.sessionCatalog!.deleteSession(canonical);
       this.titleOverlay.remove(canonical);
+      // Cleanup is best-effort: the catalog delete already committed, so a
+      // missing or unreadable attachment scope must not fail the session delete.
+      const store = this.deps.attachments;
+      if (store) {
+        try {
+          await store.removeSessionScope(canonical);
+        } catch (error) {
+          console.error(`[sessiond] attachment cleanup failed: ${error instanceof Error ? error.message : "unknown"}`);
+        }
+      }
     });
   }
 

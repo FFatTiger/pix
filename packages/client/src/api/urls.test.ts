@@ -16,6 +16,9 @@ describe("v1 URL builders", () => {
   });
 
   it("encodes cwd and file paths as query values", () => {
+    expect(urls.attachments.upload("s/1 ?")).toBe("/v1/attachments?sessionId=s%2F1+%3F");
+    expect(urls.attachments.upload()).toBe("/v1/attachments");
+    expect(urls.attachments.upload("")).toBe("/v1/attachments");
     expect(urls.files.resource("/tmp/a b#c", "read")).toBe("/v1/files?path=%2Ftmp%2Fa+b%23c&op=read");
     expect(urls.files.watch("/tmp/a b#c")).toBe("/v1/files/watch?path=%2Ftmp%2Fa+b%23c");
     expect(urls.git.diff("/repo x", "/repo x/a&b")).toBe("/v1/git/diff?cwd=%2Frepo+x&path=%2Frepo+x%2Fa%26b");
