@@ -45,6 +45,7 @@ class FakeSurface implements AssistantOpsSurface {
   headers = new Map<string, { title?: string; cwd?: string } | null>();
   contexts = new Map<string, Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }>; errorMessage?: string }>>();
   submitError: ProtocolError | undefined;
+  createError: unknown;
   commandOk = true;
   commandError: ProtocolError = { code: "session_busy", message: "busy", retryable: true };
   createSessionId = "created-1";
@@ -70,6 +71,7 @@ class FakeSurface implements AssistantOpsSurface {
     return { commandId: command.commandId, result: { ok: true, type: kind } };
   }
   async create(input: RuntimeCreateParams) {
+    if (this.createError !== undefined) throw this.createError;
     this.creates.push({ cwd: input.cwd, ...(input.name === undefined ? {} : { name: input.name }) });
     const record = makeRecord(this.createSessionId, input.cwd);
     this.records.set(record.sessionId, record);
@@ -213,6 +215,53 @@ test("quota rejects the 6th send, 4th create and 6th stop", async () => {
   const sixthStop = payload(await send(env, "stop-5", { kind: "stop", targetSessionId: "target" }));
   assert.equal(sixthStop.ok, false);
   assert.match((sixthStop.error as { message: string }).message, /5 次/);
+  env.authority.dispose();
+});
+
+test("parallel sends in one turn cannot bypass the per-turn quota (TOCTOU)", async () => {
+  const env = harness();
+  env.assistant.operationId = "turn-par";
+  const target = makeRecord("target", "/repos/app", { running: true });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  const frames = await Promise.all(Array.from({ length: 6 }, (_, index) =>
+    send(env, `par-${index}`, { kind: "send", targetSessionId: "target", message: `m${index}`, delivery: "follow_up", waitMinutes: 0 })));
+  const admitted = frames.filter((frame) => frame?.payload.ok === true);
+  assert.equal(admitted.length, 5, "exactly the cap passes when sends overlap");
+  const rejected = frames.filter((frame) => frame?.payload.ok === false);
+  assert.equal(rejected.length, 1);
+  assert.match((rejected[0]!.payload.error as { message: string }).message, /5 次/);
+  assert.equal(env.surface.commands.length, 5, "only the admitted sends reach the target");
+  env.authority.dispose();
+});
+
+test("a failed send gives its reserved quota slot back", async () => {
+  const env = harness();
+  env.assistant.operationId = "turn-fail";
+  const target = makeRecord("target", "/repos/app");
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  env.surface.submitError = { code: "unavailable", message: "worker gone", retryable: true };
+  const failed = payload(await send(env, "f1", { kind: "send", targetSessionId: "target", message: "nope", delivery: "follow_up", waitMinutes: 0 }));
+  assert.equal(failed.ok, false);
+  assert.equal((failed.error as { code: string }).code, "unavailable");
+  env.surface.submitError = undefined;
+  const retry = payload(await send(env, "f2", { kind: "send", targetSessionId: "target", message: "again", delivery: "follow_up", waitMinutes: 0 }));
+  assert.equal(retry.ok, true, "a failed send did not consume the slot");
+  env.authority.dispose();
+});
+
+test("a failed create gives its reserved quota slot back", async () => {
+  const env = harness();
+  env.assistant.operationId = "turn-cfail";
+  env.surface.createError = Object.assign(new Error("boom"), { code: "unavailable", retryable: true });
+  const failed = payload(await send(env, "c1", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+  assert.equal(failed.ok, false);
+  assert.equal((failed.error as { code: string }).code, "unavailable");
+  env.surface.createError = undefined;
+  env.surface.createSessionId = "made-1";
+  const retry = payload(await send(env, "c2", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+  assert.equal(retry.ok, true, "a failed create did not consume the slot");
   env.authority.dispose();
 });
 

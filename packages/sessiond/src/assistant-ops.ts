@@ -286,8 +286,6 @@ export class AssistantOpsAuthority {
   }
 
   private async executeSend(record: AssistantOpsRecordView, op: Extract<WorkerAssistantOpPayload, { kind: "send" }>): Promise<OpResultBody> {
-    const quota = this.peekQuota(record, "send");
-    if (quota) return fail("send", quota);
     if (op.targetSessionId === record.sessionId) {
       return fail("send", { code: "invalid_input", message: "不能以助手会话自身为目标", retryable: false });
     }
@@ -295,22 +293,30 @@ export class AssistantOpsAuthority {
     if (target && isAssistantWorkspacePath(target.cwd, this.homedir)) {
       return fail("send", { code: "invalid_input", message: "不能以助手工作区中的会话为目标", retryable: false });
     }
+    // Reserve the slot BEFORE any await: parallel tool calls inside one turn
+    // must not both pass an after-the-fact peek. Failure paths give it back.
+    const quota = this.reserveQuota(record, "send");
+    if (quota) return fail("send", quota);
     const located = await this.surface.locate(op.targetSessionId);
     if (!located.exists && !target) {
+      this.releaseQuota(record, "send");
       return fail("send", { code: "not_found", message: "session not found", retryable: false });
     }
     // Only a send that CONTINUES a just-delivered notification spends the
     // auto-continuation cap. A user-originated send (no notification since the
     // last user turn) is not a continuation and is not counted here.
     const continuing = this.pendingContinuation(record.sessionId, op.targetSessionId);
-    if (continuing && !this.reserveChain(record.sessionId, op.targetSessionId)) return fail("send", chainLimitError());
+    if (continuing && !this.reserveChain(record.sessionId, op.targetSessionId)) {
+      this.releaseQuota(record, "send");
+      return fail("send", chainLimitError());
+    }
     const message = marked(op.message);
     const routed = await this.routePrompt(target, op.targetSessionId, message, op.delivery);
     if (!routed.ok) {
+      this.releaseQuota(record, "send");
       if (continuing) this.releaseChain(record.sessionId, op.targetSessionId);
       return fail("send", routed.error);
     }
-    this.takeQuota(record, "send");
     const delegationId = this.registerDelegation(record, {
       targetSessionId: op.targetSessionId,
       targetTitle: await this.targetTitle(op.targetSessionId, target),
@@ -332,11 +338,13 @@ export class AssistantOpsAuthority {
   }
 
   private async executeCreate(record: AssistantOpsRecordView, op: Extract<WorkerAssistantOpPayload, { kind: "create" }>): Promise<OpResultBody> {
-    const quota = this.peekQuota(record, "create");
-    if (quota) return fail("create", quota);
     if (!isDirectory(op.cwd)) {
       return fail("create", { code: "invalid_input", message: "cwd is not a directory", retryable: false });
     }
+    // Reserve first (parallel create_session calls in one turn must not both
+    // pass the cap); every failure path below gives the slot back.
+    const quota = this.reserveQuota(record, "create");
+    if (quota) return fail("create", quota);
     let created: RuntimeCreateResult;
     try {
       created = await this.surface.create({
@@ -348,17 +356,19 @@ export class AssistantOpsAuthority {
         ...(op.thinkingLevel === undefined ? {} : { thinkingLevel: op.thinkingLevel }),
       });
     } catch (error) {
+      this.releaseQuota(record, "create");
       return fail("create", mapThrown(error));
     }
     const target = this.surface.getRecord(created.sessionId);
     if (target && isAssistantWorkspacePath(target.cwd, this.homedir)) {
+      this.releaseQuota(record, "create");
       return fail("create", { code: "invalid_input", message: "不能以助手工作区中的会话为目标", retryable: false });
     }
     const routed = await this.routePrompt(target, created.sessionId, marked(op.message), "follow_up");
     if (!routed.ok) {
+      this.releaseQuota(record, "create");
       return fail("create", routed.error);
     }
-    this.takeQuota(record, "create");
     const delegationId = this.registerDelegation(record, {
       targetSessionId: created.sessionId,
       targetTitle: op.title?.trim() || created.sessionId,
@@ -378,14 +388,13 @@ export class AssistantOpsAuthority {
   }
 
   private async executeStop(record: AssistantOpsRecordView, op: Extract<WorkerAssistantOpPayload, { kind: "stop" }>): Promise<OpResultBody> {
-    const quota = this.peekQuota(record, "stop");
-    if (quota) return fail("stop", quota);
     const located = await this.surface.locate(op.targetSessionId);
     if (!located.exists && !this.surface.getRecord(op.targetSessionId)) {
       return fail("stop", { code: "not_found", message: "session not found", retryable: false });
     }
+    const quota = this.reserveQuota(record, "stop");
+    if (quota) return fail("stop", quota);
     const stopped = await this.surface.stop(op.targetSessionId, "user");
-    this.takeQuota(record, "stop");
     return {
       ok: true,
       kind: "stop",
@@ -464,21 +473,27 @@ export class AssistantOpsAuthority {
     return `${record.sessionId}:${record.runningOperationId() ?? `epoch:${record.epoch}`}`;
   }
 
-  /** Reject when this turn already spent its cap. Does not consume a slot. */
-  private peekQuota(record: AssistantOpsRecordView, kind: "send" | "create" | "stop"): OpError | undefined {
-    const bucket = this.quota.get(this.quotaKey(record));
-    if ((bucket?.[kind] ?? 0) >= QUOTA[kind]) {
+  /**
+   * Reserve one slot BEFORE the op executes, so parallel ops in the same turn
+   * cannot both pass the cap (TOCTOU). Returns the rejection error when the
+   * cap is already spent; failure paths must call {@link releaseQuota}.
+   */
+  private reserveQuota(record: AssistantOpsRecordView, kind: "send" | "create" | "stop"): OpError | undefined {
+    const key = this.quotaKey(record);
+    const bucket = this.quota.get(key) ?? { send: 0, create: 0, stop: 0 };
+    if (bucket[kind] >= QUOTA[kind]) {
       return { code: "invalid_input", message: QUOTA_MESSAGES[kind], retryable: false };
     }
+    bucket[kind] += 1;
+    this.quota.set(key, bucket);
     return undefined;
   }
 
-  /** Consume one slot. Only called after the op actually succeeded. */
-  private takeQuota(record: AssistantOpsRecordView, kind: "send" | "create" | "stop"): void {
-    const key = this.quotaKey(record);
-    const bucket = this.quota.get(key) ?? { send: 0, create: 0, stop: 0 };
-    bucket[kind] += 1;
-    this.quota.set(key, bucket);
+  /** Give a reserved slot back when the op it was held for did not land. */
+  private releaseQuota(record: AssistantOpsRecordView, kind: "send" | "create" | "stop"): void {
+    const bucket = this.quota.get(this.quotaKey(record));
+    if (bucket === undefined || bucket[kind] <= 0) return;
+    bucket[kind] -= 1;
   }
 
   /** True when a notification for this target was delivered after the assistant's last user turn. */
