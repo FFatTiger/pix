@@ -37,6 +37,10 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // SubagentSettingsConfig drives many sequential menu interactions; under
+    // the root workspace test run (every package at once) its cases exceed
+    // the 5s default even though they pass in well under it alone.
+    testTimeout: 20000,
     // React 19 only exports `act` from the development build; keep tests off production entry.
     env: {
       NODE_ENV: "test",
