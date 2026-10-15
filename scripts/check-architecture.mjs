@@ -118,6 +118,24 @@ function basename(file) {
   return i >= 0 ? file.slice(i + 1) : file;
 }
 
+/** Path of `file` relative to `rootDir`, always with `/` separators. */
+function toPosixRelative(rootDir, file) {
+  const parts = (value) => value.split(/[\\/]+/).filter((part, index) => part !== "" || index === 0);
+  const rootParts = parts(rootDir);
+  const fileParts = parts(file);
+  const fold = (value) => (process.platform === "win32" ? value.toLowerCase() : value);
+  let index = 0;
+  while (
+    index < rootParts.length &&
+    index < fileParts.length &&
+    fold(rootParts[index]) === fold(fileParts[index])
+  ) {
+    index += 1;
+  }
+  if (index === rootParts.length) return fileParts.slice(index).join("/");
+  return fileParts.filter((part) => part !== "").join("/");
+}
+
 function extname(file) {
   const i = file.lastIndexOf(".");
   return i >= 0 ? file.slice(i) : "";
@@ -764,7 +782,7 @@ export function checkNoLegacyProductName({ files, rootDir = ROOT_DIR }) {
     const lowered = readFileSync(file, "utf8").toLowerCase();
     for (const token of LEGACY_PRODUCT_TOKENS) {
       if (lowered.includes(token)) {
-        const rel = file.startsWith(rootDir) ? file.slice(rootDir.length).replace(/^[\\/]+/, "") : file;
+        const rel = toPosixRelative(rootDir, file);
         offenders.push(`${rel}: legacy product name "${token.trim()}"`);
         break;
       }

@@ -23,24 +23,35 @@ import { fileURLToPath } from "node:url";
 /** Bounded retry for Windows transient lock errors (EBUSY/EPERM/ENOTEMPTY). */
 export const RETRY = { maxRetries: 5, retryDelay: 100 };
 
-// A lexical absolute drive path (`C:\…`, `C:/…`) is never a safe relative
-// target on any platform: natively it is an absolute path that would escape
-// cwd, and on a mismatched platform it is a meaningless artifact. UNC roots
-// (`\\server\share`) are rejected the same way.
-const DRIVE_ABSOLUTE = /^[A-Za-z]:[\\/]/;
-const UNC_ROOT = /^\\\\[^\\]+\\[^\\]+[\\/]?$/;
+// A lexical drive path (`C:`, `C:\`, `C:\foo`, `C:/foo`) is never a safe
+// relative target: on win32 it is absolute, elsewhere it is a meaningless
+// artifact. UNC roots (`\\server\share`) are rejected the same way.
+const DRIVE_PATH = /^[A-Za-z]:(?:[\\/]|$)/;
+const DRIVE_ROOT = /^[A-Za-z]:[\\/]?$/;
+const UNC_ROOT = /^\\\\[^\\]+\\[^\\]*[\\/]?$/;
 
 function eq(left, right) {
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
-/** True when `child` equals `parent` or is strictly beneath it. */
+/**
+ * True when `child` equals `parent` or is strictly beneath it.
+ *
+ * The separator is taken from the paths themselves, not from `path.sep`:
+ * callers compare both native paths (`C:\a\b`) and POSIX-style probes
+ * (`/a/b`) on every platform, and a native separator would make the POSIX
+ * form never match on Windows.
+ */
 export function isWithin(parent, child) {
-  if (eq(parent, child)) return true;
-  const prefix = parent.endsWith(sep) ? parent : parent + sep;
-  const p = process.platform === "win32" ? prefix.toLowerCase() : prefix;
-  const c = process.platform === "win32" ? child.toLowerCase() : child;
-  return c.startsWith(p);
+  const slash = parent.includes("/") || child.includes("/");
+  const back = parent.includes("\\") || child.includes("\\");
+  const separator = slash && !back ? "/" : !slash && back ? "\\" : sep;
+  const norm = (value) => (separator === "\\" ? value.toLowerCase() : value);
+  const p = norm(parent);
+  const c = norm(child);
+  if (p === c) return true;
+  const prefix = p.endsWith(separator) ? p : p + separator;
+  return c.startsWith(prefix);
 }
 
 /** True for `/`, `C:\`, and `\\server\share` (the root of any filesystem). */
@@ -82,16 +93,21 @@ export function resolveTarget(cwd, input) {
   if (input.trim() === "") {
     throw new Error("whitespace-only path");
   }
+  // Drive and UNC probes are classified before the generic absolute check.
+  // On win32 `C:\` and `C:\foo` are absolute, so the generic message would
+  // hide that a drive root (or a path off one) was the reason for refusal.
+  if (DRIVE_PATH.test(input)) {
+    // A bare drive root is both a drive path and a filesystem root.
+    const kind = DRIVE_ROOT.test(input) ? "absolute drive path / root path" : "absolute drive path";
+    throw new Error(`${kind} ${JSON.stringify(input)} is outside the working directory`);
+  }
+  if (UNC_ROOT.test(input)) {
+    throw new Error(`UNC root ${JSON.stringify(input)} is outside the working directory`);
+  }
   // Relative-only contract: an absolute path is rejected even when it happens
   // to point beneath cwd, so callers cannot bypass the cwd-relative intent.
   if (isAbsolute(input)) {
     throw new Error(`absolute path ${JSON.stringify(input)} is not allowed; pass a path relative to the working directory`);
-  }
-  if (DRIVE_ABSOLUTE.test(input)) {
-    throw new Error(`absolute drive path ${JSON.stringify(input)} is outside the working directory`);
-  }
-  if (UNC_ROOT.test(input)) {
-    throw new Error(`UNC root ${JSON.stringify(input)} is outside the working directory`);
   }
   const resolved = resolve(cwd, input);
   if (isRootPath(resolved)) {

@@ -598,7 +598,7 @@ test("collectFiles skips node_modules, dist, dist-test, coverage and dot-entries
   write(dir, ".hidden/secret.ts", "x");
   write(dir, "packages/protocol/src/index.ts", "export {};");
   const files = collectFiles(dir);
-  const rel = files.map((f) => f.slice(dir.length + 1));
+  const rel = files.map((f) => f.slice(dir.length).replace(/^[\\/]+/, "").replace(/\\/g, "/"));
   assert.ok(rel.includes("packages/protocol/src/index.ts"));
   for (const bad of [
     "node_modules/next/package.json",
