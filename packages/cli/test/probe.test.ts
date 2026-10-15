@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync } from "node:fs";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
+import { fixtureEndpoint } from "./test-endpoint.js";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
 import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
 import { pingSessiond, createSessiondProbe, probeSessiondCompatibility, isProtocolCurrent, helloProtocolVersion } from "../src/probe.js";
@@ -15,7 +17,8 @@ const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "pix-probe-"));
 /** A raw net server that AUTHs but never answers any request (hello hangs). */
 function startHangingServer(): Promise<{ socketPath: string; secret: string; server: ReturnType<typeof createServer> }> {
   return new Promise((resolve) => {
-    const socketPath = join(tmpdir(), `pix-hang-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+    // Short prefix: macOS sun_path is ~104 bytes and tmpdir() is already long.
+    const socketPath = fixtureEndpoint(mkdtempSync(join(tmpdir(), "ph-")));
     const secret = "s".repeat(43);
     const server = createServer((socket) => {
       socket.setNoDelay(true);
@@ -49,7 +52,7 @@ function startHangingServer(): Promise<{ socketPath: string; secret: string; ser
  */
 function startVersionedServer(version: unknown): Promise<{ socketPath: string; secret: string; server: ReturnType<typeof createServer> }> {
   return new Promise((resolve) => {
-    const socketPath = join(tmpdir(), `pix-ver-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+    const socketPath = fixtureEndpoint(mkdtempSync(join(tmpdir(), "pv-")));
     const secret = "s".repeat(43);
     const server = createServer((socket) => {
       socket.setNoDelay(true);

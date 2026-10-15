@@ -18,6 +18,7 @@
 import { createServer } from "node:net";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fixtureEndpoint } from "./test-endpoint.mjs";
 // Compiled-in contract generations (single source): the fixture's stale
 // variants must differ from the CURRENT build in exactly ONE field, so the
 // unaffected fields track the live constants instead of hardcoded numbers.
@@ -52,7 +53,7 @@ const busySession = {
   epoch: "fixture-epoch-1",
   name: "fixture-busy",
 };
-const endpoint = join(dir, "sessiond.sock");
+const endpoint = fixtureEndpoint(dir);
 const lockFile = join(dir, "sessiond.lock");
 const secretFile = join(dir, "sessiond.secret");
 const instanceId = `stale-build-${staleKind}-${process.pid}`;

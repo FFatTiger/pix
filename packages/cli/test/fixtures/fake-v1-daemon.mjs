@@ -9,13 +9,14 @@
 import { createServer } from "node:net";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fixtureEndpoint } from "./test-endpoint.mjs";
 
 const dir = process.env.PIX_SESSIOND_DIR;
 if (!dir) {
   console.error("PIX_SESSIOND_DIR required");
   process.exit(2);
 }
-const endpoint = join(dir, "sessiond.sock");
+const endpoint = fixtureEndpoint(dir);
 const lockFile = join(dir, "sessiond.lock");
 const secretFile = join(dir, "sessiond.secret");
 const instanceId = `fake-v1-${process.pid}`;

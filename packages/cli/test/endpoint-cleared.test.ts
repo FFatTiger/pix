@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import { endpointCleared } from "../src/supervise.js";
 import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
+import { fixtureEndpoint } from "./test-endpoint.js";
 
 const dirs: string[] = [];
 function freshDir(): string {
@@ -42,11 +43,12 @@ test("endpointCleared win32: a live listener keeps it uncleared; nothing listeni
   // is endpoint-path agnostic: it just connects).
   const dir = freshDir();
   const server = createServer();
-  await new Promise<void>((resolve) => server.listen(join(dir, "probe.sock"), resolve));
+  const endpoint = fixtureEndpoint(dir);
+  await new Promise<void>((resolve) => server.listen(endpoint, resolve));
   try {
-    assert.equal(await endpointCleared(pathsWith(join(dir, "probe.sock")), "win32"), false);
+    assert.equal(await endpointCleared(pathsWith(endpoint), "win32"), false);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
-  assert.equal(await endpointCleared(pathsWith(join(dir, "probe.sock")), "win32"), true);
+  assert.equal(await endpointCleared(pathsWith(endpoint), "win32"), true);
 });

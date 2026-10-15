@@ -13,6 +13,7 @@
 import { createServer } from "node:net";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fixtureEndpoint } from "./test-endpoint.mjs";
 
 const dir = process.env.PIX_SESSIOND_DIR;
 if (!dir) {
@@ -20,7 +21,7 @@ if (!dir) {
   process.exit(2);
 }
 const reportedVersion = Number(process.env.PIX_FAKE_PROTOCOL_VERSION ?? "3");
-const endpoint = join(dir, "sessiond.sock");
+const endpoint = fixtureEndpoint(dir);
 const lockFile = join(dir, "sessiond.lock");
 const secretFile = join(dir, "sessiond.secret");
 const instanceId = `unsup-v${reportedVersion}-${process.pid}`;
