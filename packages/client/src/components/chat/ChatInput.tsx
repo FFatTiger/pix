@@ -2203,7 +2203,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             className={`chat-input-shell${isStreaming && (onSteer || onFollowUp) ? " is-streaming" : ""}${manualMode ? " is-manual-height" : ""}`}
             onClick={(e) => {
               const target = e.target as HTMLElement;
-              if (!target.closest("button, input, select, [role=button], [role=separator]")) textareaRef.current?.focus();
+              // Overlays rendered inside the shell (popover covers, menus) close on tap;
+              // that tap must not also summon the keyboard.
+              if (!target.closest("button, input, select, [role=button], [role=separator], .session-info-bar-popover-cover, .session-info-bar-popover, .chat-input-popover, .ui-menu")) textareaRef.current?.focus();
             }}
             style={{
               display: "flex",
