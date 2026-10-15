@@ -113,8 +113,11 @@ describe("CapabilitiesConfig overview", () => {
     await waitFor(() => expect(putBody).toBeTruthy());
     const body = putBody as { expectedRevision: string; capabilities: Array<{ id: string; enabled: boolean }> };
     expect(body.expectedRevision).toBe(revision);
-    expect(body.capabilities.find((row) => row.id === "todo")?.enabled).toBe(false);
-    expect(body.capabilities.filter((row) => row.id !== "todo").every((row) => row.enabled)).toBe(true);
+    // Full replacement of the loaded snapshot: only the flipped row changes.
+    // side_chat was already off and must stay off.
+    expect(body.capabilities).toEqual(
+      capabilities.map((row) => row.id === "todo" ? { ...row, enabled: false } : row),
+    );
     expect((await screen.findByRole("switch", { name: "Task list" })).getAttribute("aria-checked")).toBe("false");
   });
 
@@ -129,7 +132,8 @@ describe("CapabilitiesConfig overview", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open Memory settings" }));
     expect(opened).toEqual(["subagents", "memory"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open Smart compaction settings" }));
+    // The link name is the detail page's own title, not the capability name.
+    fireEvent.click(screen.getByRole("button", { name: "Open Context compaction settings" }));
     expect(opened).toEqual(["subagents", "memory", "compaction"]);
   });
 
