@@ -73,62 +73,49 @@ export function CapabilitiesConfig({ onOpenPage }: { onOpenPage?: (page: Setting
     if (entry.detailPage !== null && isOpenablePage(entry.detailPage)) onOpenPage?.(entry.detailPage);
   };
 
-  const renderDetailLink = (entry: CapabilityCatalogEntry): ReactNode => {
-    if (entry.detailPage === null || onOpenPage === undefined) return null;
-    const pageLabel = t(`desktop.settingsPage.${entry.detailPage}`);
-    return (
-      <button
-        type="button"
-        className="settings-capability-link"
-        onClick={() => openDetail(entry)}
-        aria-label={t("desktop.capabilitiesOpenDetail", { page: pageLabel })}
-      >
-        <CaretRight size={14} aria-hidden="true" />
-      </button>
-    );
-  };
+  // iOS-style rows: a capability with its own page is one tappable row that
+  // shows its current state and a chevron (the switch lives on that page); a
+  // capability without a page is a plain switch row. Trailing controls share
+  // one right edge either way.
+  const renderPageRow = (entry: CapabilityCatalogEntry, value: string): ReactNode => (
+    <button
+      key={entry.id}
+      type="button"
+      className="settings-capability-row"
+      onClick={() => openDetail(entry)}
+      aria-label={t("desktop.capabilitiesOpenDetail", { page: t(`desktop.settingsPage.${entry.detailPage}`) })}
+    >
+      <span style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+        <span className="settings-capability-row-label">{t(entry.labelKey)}</span>
+        <span className="settings-capability-row-desc">{t(entry.descriptionKey)}</span>
+      </span>
+      <span className="settings-capability-row-value">{value}</span>
+      <CaretRight size={14} aria-hidden="true" className="settings-capability-row-caret" />
+    </button>
+  );
 
   const renderRow = (entry: CapabilityCatalogEntry): ReactNode => {
     if (entry.control === "memory_provider") {
       const provider = memoryQuery.data?.provider;
-      return (
-        <div key={entry.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button
-            type="button"
-            className="settings-capability-row"
-            onClick={() => openDetail(entry)}
-            aria-label={t("desktop.capabilitiesOpenDetail", { page: t("desktop.settingsPage.memory") })}
-          >
-            <span style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
-              <span className="settings-capability-row-label">{t(entry.labelKey)}</span>
-              <span className="settings-capability-row-desc">{t(entry.descriptionKey)}</span>
-            </span>
-            <span className="settings-capability-row-value">
-              {provider === undefined ? "—" : t(memoryProviderLabelKey(provider))}
-            </span>
-            <CaretRight size={14} aria-hidden="true" style={{ flexShrink: 0, color: "var(--text-muted)" }} />
-          </button>
-        </div>
-      );
+      return renderPageRow(entry, provider === undefined ? "—" : t(memoryProviderLabelKey(provider)));
     }
     const row = query.data?.capabilities.find((candidate) => candidate.id === entry.id);
     if (row === undefined) return null;
+    if (entry.detailPage !== null && onOpenPage !== undefined && isOpenablePage(entry.detailPage)) {
+      return renderPageRow(entry, t(row.enabled ? "desktop.capabilityStateOn" : "desktop.capabilityStateOff"));
+    }
     return (
-      <div key={entry.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <SettingToggle
-            checked={row.enabled}
-            onChange={(enabled) => setEnabled(entry.id, enabled)}
-            label={t(entry.labelKey)}
-            description={t(entry.descriptionKey)}
-            disabled={save.isPending}
-            loading={save.isPending && save.variables?.capabilities.some((candidate) => (
-              candidate.id === entry.id && candidate.enabled !== row.enabled
-            ))}
-          />
-        </div>
-        {renderDetailLink(entry)}
-      </div>
+      <SettingToggle
+        key={entry.id}
+        checked={row.enabled}
+        onChange={(enabled) => setEnabled(entry.id, enabled)}
+        label={t(entry.labelKey)}
+        description={t(entry.descriptionKey)}
+        disabled={save.isPending}
+        loading={save.isPending && save.variables?.capabilities.some((candidate) => (
+          candidate.id === entry.id && candidate.enabled !== row.enabled
+        ))}
+      />
     );
   };
 

@@ -549,6 +549,8 @@ export const zhCNLocale = {
     "desktop.noToolsReadOnly": "不使用工具，只读",
     "desktop.fourBuiltInTools": "4 个内置工具",
     "desktop.allBuiltInTools": "所有内置工具",
+    "desktop.capabilityStateOn": "已开启",
+    "desktop.capabilityStateOff": "已关闭",
     "desktop.toolOff": "关闭",
     "desktop.toolDefault": "默认",
     "desktop.toolFull": "完整",

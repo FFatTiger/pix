@@ -1931,17 +1931,18 @@ html.dark .catalog-meta-item--error {
   user-select: none;
   transition: background 0.12s;
 }
-.settings-toggle-row.has-description { align-items: flex-start; }
+.settings-toggle-row.has-description { align-items: center; }
 .settings-toggle-row:hover { background: var(--bg-hover); }
 .settings-toggle-row:has(.ui-switch:disabled) { cursor: not-allowed; }
 .settings-toggle-row:has(.ui-switch:disabled):hover { background: transparent; }
 
 /* Capabilities overview: link row (choice-valued capability) and chevron entry. */
-.settings-capability-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; margin: 0 -14px; border: none; border-radius: 7px; background: none; cursor: pointer; user-select: none; transition: background .12s; }
+.settings-capability-row { display: flex; align-items: center; gap: 10px; width: calc(100% + 28px); padding: 12px 14px; margin: 0 -14px; text-align: left; color: inherit; font: inherit; border: none; border-radius: 7px; background: none; cursor: pointer; user-select: none; transition: background .12s; }
 .settings-capability-row:hover { background: var(--bg-hover); }
 .settings-capability-row-label { display: block; font-size: 13px; font-weight: 550; color: var(--text); line-height: 1.4; }
 .settings-capability-row-desc { display: block; font-size: 11px; line-height: 1.5; color: var(--text-muted); margin-top: 2px; }
 .settings-capability-row-value { flex: none; font-size: 12.5px; color: var(--text-muted); }
+.settings-capability-row-caret { flex: none; color: var(--text-dim); margin-right: -2px; }
 .settings-capability-link { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; border-radius: 6px; background: none; color: var(--text-muted); cursor: pointer; }
 .settings-capability-link:hover { background: var(--bg-hover); color: var(--text); }
 

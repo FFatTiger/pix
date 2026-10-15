@@ -549,6 +549,8 @@ export const enLocale = {
     "desktop.noToolsReadOnly": "No tools, read-only",
     "desktop.fourBuiltInTools": "4 built-in tools",
     "desktop.allBuiltInTools": "All built-in tools",
+    "desktop.capabilityStateOn": "On",
+    "desktop.capabilityStateOff": "Off",
     "desktop.toolOff": "off",
     "desktop.toolDefault": "default",
     "desktop.toolFull": "full",
