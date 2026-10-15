@@ -1225,7 +1225,7 @@ export class SessiondService {
         void this.assistantOps?.handleWorkerOp(this.assistantRecordView(record), message.id, message.payload);
         break;
       case "worker.assistantWaitCancel":
-        this.assistantOps?.handleWaitCancel(message.payload);
+        this.assistantOps?.handleWaitCancel(this.assistantRecordView(record), message.payload);
         break;
       case "worker.status":
         record.status = message.payload.status;

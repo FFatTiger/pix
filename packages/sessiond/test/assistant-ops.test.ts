@@ -634,7 +634,7 @@ test("wait pushes a completion frame; waitCancel flips to a notification; a wait
   env.surface.exists.add("other");
   env.assistant.operationId = "op-cancel";
   const second = payload(await send(env, "wait-2", { kind: "send", targetSessionId: "other", message: "more", delivery: "steer", waitMinutes: 5 }));
-  env.authority.handleWaitCancel({ sessionId: "assistant", delegationId: second.delegationId as string });
+  env.authority.handleWaitCancel(view(env.assistant), { sessionId: "assistant", delegationId: second.delegationId as string });
   other.running = false;
   other.lastEventId = 4;
   env.authority.scheduleSettleCheck();
@@ -720,6 +720,46 @@ test("notifications merge, follow a busy assistant, cold-open a missing assistan
   const ledger = JSON.parse(readFileSync(join(env.dir, "workspace-state.json"), "utf8")).assistantDelegations as { delegations: Array<{ targetSessionId: string; state: string }> };
   assert.equal(ledger.delegations.find((row) => row.targetSessionId === "d")?.state, "delivery_failed");
   env.authority.dispose();
+});
+
+test("waitCancel is identity-bound: a foreign session id or non-assistant requester is a no-op", async () => {
+  const env = harness();
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 1 });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  const admitted = payload(await send(env, "wc-1", { kind: "send", targetSessionId: "target", message: "work", delivery: "steer", waitMinutes: 5 }));
+  const delegationId = admitted.delegationId as string;
+
+  // Wrong session id in the payload: no state change.
+  env.authority.handleWaitCancel(view(env.assistant), { sessionId: "someone-else", delegationId });
+  target.running = false;
+  target.lastEventId = 3;
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  env.advance(IDLE_GRACE);
+  await wait(1_200);
+  assert.equal(env.assistant.sent.some((frame) => frame.type === "worker.assistantCompletion"), true,
+    "the wait is still armed for the named assistant, so it settles as a completion frame");
+  env.authority.dispose();
+
+  // A non-assistant requester cannot cancel either.
+  const env2 = harness();
+  const target2 = makeRecord("target2", "/repos/app", { running: true, lastEventId: 1 });
+  env2.surface.records.set("target2", target2);
+  env2.surface.exists.add("target2");
+  const outsider = makeRecord("outsider", "/repos/other");
+  env2.surface.records.set("outsider", outsider);
+  const admitted2 = payload(await send(env2, "wc-2", { kind: "send", targetSessionId: "target2", message: "work", delivery: "steer", waitMinutes: 5 }));
+  env2.authority.handleWaitCancel(view(outsider), { sessionId: "assistant", delegationId: admitted2.delegationId as string });
+  target2.running = false;
+  target2.lastEventId = 3;
+  env2.authority.scheduleSettleCheck();
+  await wait(80);
+  env2.advance(IDLE_GRACE);
+  await wait(1_200);
+  assert.equal(env2.assistant.sent.filter((frame) => frame.type === "worker.assistantCompletion").length, 1,
+    "the forged cancel never flipped the wait to notify");
+  env2.authority.dispose();
 });
 
 test("ledger round-trip re-enqueues a pending notification and degrades a wait to notify", async () => {

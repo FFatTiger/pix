@@ -249,8 +249,15 @@ export class AssistantOpsAuthority {
     }
   }
 
-  /** A pending wait was cancelled. The work continues; settlement notifies. */
-  handleWaitCancel(payload: { sessionId: string; delegationId: string }): void {
+  /**
+   * A pending wait was cancelled. The work continues; settlement notifies.
+   * Identity-bound: the cancel only lands when the requesting worker IS the
+   * assistant-workspace session the payload names — a different worker that
+   * guesses ids gets a silent no-op, never a state change.
+   */
+  handleWaitCancel(record: AssistantOpsRecordView, payload: { sessionId: string; delegationId: string }): void {
+    if (payload.sessionId !== record.sessionId) return;
+    if (!isAssistantWorkspacePath(record.cwd, this.homedir)) return;
     const delegation = this.delegations.find((item) => item.id === payload.delegationId && item.assistantSessionId === payload.sessionId);
     if (!delegation || delegation.state !== "wait") return;
     delegation.mode = "notify";
