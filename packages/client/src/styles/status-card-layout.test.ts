@@ -126,14 +126,14 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 100%");
   });
 
-  it("caps the mobile card at min(340px, viewport - 44px)", () => {
+  it("caps the mobile card at min(340px, viewport - 92px)", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
     const mobileStart = css.indexOf("@media (max-width: 640px)", css.indexOf(".subagent-transcript"));
     expect(mobileStart).toBeGreaterThanOrEqual(0);
     const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf(".status-card-panel", mobileStart)) + 1);
-    expect(rule(mobile, ".status-card-panel")).toContain("width: min(340px, calc(100vw - 44px))");
-    expect(rule(mobile, ".status-card-panel")).toContain("max-width: calc(100vw - 44px)");
+    expect(rule(mobile, ".status-card-panel")).toContain("width: min(340px, calc(100vw - 92px))");
+    expect(rule(mobile, ".status-card-panel")).toContain("max-width: calc(100vw - 92px)");
   });
 
   it("replaces the desktop pane tabs with the icon rail (mobile keeps tabs)", () => {

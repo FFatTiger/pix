@@ -3143,9 +3143,11 @@ span.linenumber {
 
 @media (max-width: 640px) {
   .status-card-panel {
-    /* Row padding (2 x 16px) + tab inset (12px) keep the card on screen. */
-    width: min(340px, calc(100vw - 44px));
-    max-width: calc(100vw - 44px);
+    /* The card grows out of the tab, so it stays left: 16px row padding +
+       20px tab inset on the left, and twice that inset (40px) to the
+       composer's right edge, so the asymmetry reads as intended. */
+    width: min(340px, calc(100vw - 92px));
+    max-width: calc(100vw - 92px);
   }
 }
 
