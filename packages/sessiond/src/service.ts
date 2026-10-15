@@ -923,6 +923,9 @@ export class SessiondService {
         // Always-on residency: adopt/online the assistant record (this is also
         // the armed → online transition when the first message created it).
         this.assistantResidency.onRecordReady(record.sessionId, record.cwd);
+        // The assistant worker (re)loaded: park-redelivered notifications get
+        // their one extra delivery ride (no-op for non-assistant sessions).
+        this.assistantOps?.noteAssistantReady(record.sessionId);
         return record;
       } catch (error) {
         this.records.delete(record.sessionId);
@@ -3655,6 +3658,7 @@ export class SessiondService {
                   role: "assistant" as const,
                   ...(text.length > 0 ? { content: text } : {}),
                   ...(entry.message.errorMessage === undefined ? {} : { errorMessage: entry.message.errorMessage }),
+                  ...(entry.message.stopReason === undefined ? {} : { stopReason: entry.message.stopReason }),
                 },
               }];
             }),

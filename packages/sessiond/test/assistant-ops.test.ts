@@ -48,6 +48,8 @@ class FakeSurface implements AssistantOpsSurface {
   createError: unknown;
   /** When set, authorizeCreateCwd returns/throws it; default allows. */
   createGuard: AssistantCreateGuardResult | "throw" | undefined;
+  /** When set, submitTurn waits for it before answering (dispose-race tests). */
+  submitGate: Promise<void> | undefined;
   commandOk = true;
   commandError: ProtocolError = { code: "session_busy", message: "busy", retryable: true };
   createSessionId = "created-1";
@@ -58,6 +60,7 @@ class FakeSurface implements AssistantOpsSurface {
   }
   async submitTurn(input: RuntimeSubmitTurnParams): Promise<SubmitTurnAdmission> {
     this.submits.push({ input: { sessionId: input.sessionId, prompt: input.prompt, operationId: input.operationId, ...(input.expectedEpoch === undefined ? {} : { expectedEpoch: input.expectedEpoch }), ...(input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision }) } });
+    if (this.submitGate) await this.submitGate;
     if (this.submitError) {
       return { status: "rejected", delivery: "not_delivered", sessionId: input.sessionId, operationId: input.operationId, error: this.submitError };
     }
@@ -107,6 +110,11 @@ function makeRecord(sessionId: string, cwd: string, overrides: Partial<FakeRecor
     lastEventId: 0, capabilities: ["runtime.prompt", "runtime.steer", "runtime.follow_up"],
     operationId: null, writtenFiles: [], sent: [], ...overrides,
   };
+}
+
+/** A context entry with a turn-end stopReason (proves a completed turn). */
+function completedEntry(text: string, stopReason = "stop"): { role: string; content: string; stopReason: string } {
+  return { role: "assistant", content: text, stopReason };
 }
 
 function view(record: FakeRecord): AssistantOpsRecordView {
@@ -801,6 +809,134 @@ test("ledger round-trip re-enqueues a pending notification and degrades a wait t
   assert.match(waiting.submits.at(-1)?.input.prompt ?? "", /结果: 已停止/, "a restarted wait settles as a notification");
   assert.equal(assistant.sent.some((frame) => frame.type === "worker.assistantCompletion"), false);
   second.dispose();
+});
+
+test("a dispose during a flush still persists the spliced queue (no duplicate after restart)", async () => {
+  const env = harness();
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 1 });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  env.surface.contexts.set("target", [completedEntry("done")]);
+  await send(env, "d1", { kind: "send", targetSessionId: "target", message: "work", delivery: "steer", waitMinutes: 0 });
+  // Hold the delivery in flight, dispose the authority mid-flush, then let
+  // the delivery succeed.
+  let release!: () => void;
+  env.surface.submitGate = new Promise<void>((resolve) => { release = resolve; });
+  env.surface.records.delete("target");
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 50); // flush started; the batch is spliced and delivery is parked on the gate
+  env.authority.dispose();
+  release();
+  await wait(100);
+  const ledger = JSON.parse(readFileSync(join(env.dir, "workspace-state.json"), "utf8")).assistantDelegations as {
+    delegations: Array<{ targetSessionId: string; state: string }>;
+    queue: unknown[];
+  };
+  assert.equal(ledger.delegations.find((row) => row.targetSessionId === "target")?.state, "settled");
+  assert.equal(ledger.queue.length, 0, "the delivered item must not remain queued on disk");
+});
+
+test("a delivery_failed notification gets exactly one more ride when the assistant (re)loads", async () => {
+  const env = harness();
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 1 });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  env.surface.contexts.set("target", [completedEntry("all good")]);
+  await send(env, "r1", { kind: "send", targetSessionId: "target", message: "work", delivery: "steer", waitMinutes: 0 });
+  env.surface.records.delete("target");
+  env.surface.submitError = { code: "unavailable", message: "down", retryable: true };
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  await wait(5_200);
+  await wait(5_200);
+  const ledgerPath = join(env.dir, "workspace-state.json");
+  const parked = JSON.parse(readFileSync(ledgerPath, "utf8")).assistantDelegations as { delegations: Array<{ targetSessionId: string; state: string }>; queue: unknown[] };
+  assert.equal(parked.delegations.find((row) => row.targetSessionId === "target")?.state, "delivery_failed");
+  assert.equal(parked.queue.length, 0, "the exhausted item is parked, not retried on a timer");
+
+  // Assistant still broken: the redelivery rides once and parks again.
+  env.authority.noteAssistantReady("assistant");
+  await wait(NOTIFY_MERGE + 100);
+  await wait(5_200);
+  const reparked = JSON.parse(readFileSync(ledgerPath, "utf8")).assistantDelegations as { delegations: Array<{ state: string }>; queue: unknown[] };
+  assert.equal(reparked.delegations.find((row) => row.state === "delivery_failed") !== undefined, true, "one failed ride parks it again");
+  assert.equal(reparked.queue.length, 0);
+
+  // Assistant healthy: the redelivery lands with the retained render fields.
+  env.surface.submitError = undefined;
+  env.authority.noteAssistantReady("assistant");
+  await wait(NOTIFY_MERGE + 100);
+  const redelivered = env.surface.submits.at(-1)?.input.prompt ?? "";
+  assert.match(redelivered, /id: target/);
+  assert.match(redelivered, /结果: 完成/);
+  assert.match(redelivered, /最后回复: all good/, "the retained lastText survives the redelivery");
+  const delivered = JSON.parse(readFileSync(ledgerPath, "utf8")).assistantDelegations as { delegations: Array<{ state: string }>; queue: unknown[] };
+  assert.equal(delivered.queue.length, 0);
+  assert.equal(delivered.delegations.find((row) => row.state === "delivery_failed"), undefined);
+  env.authority.dispose();
+});
+
+test("after a sessiond restart a cold target settles from its journal, not a blanket 已停止", async () => {
+  const env = harness();
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 2 });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  await send(env, "j1", { kind: "send", targetSessionId: "target", message: "work", delivery: "steer", waitMinutes: 0 });
+  // The work finished and the journal proves it, but the daemon died before
+  // the settle pass ran. After the restart there is no live record.
+  env.surface.contexts.set("target", [completedEntry("finished the build")]);
+  env.authority.dispose();
+
+  const reloaded = new AssistantOpsAuthority({ surface: env.surface, store: new FileWorkspaceStateStore(env.dir), homedir: HOME, now: () => env.now });
+  env.surface.records.delete("target"); // cold after restart; the session still exists
+  reloaded.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  const completed = env.surface.submits.at(-1)?.input.prompt ?? "";
+  assert.match(completed, /结果: 完成/, "a proven-finished journal reports completion");
+  assert.match(completed, /最后回复: finished the build/);
+  reloaded.dispose();
+
+  // A journal without a turn-end stopReason stays an honest stop.
+  const dir2 = mkdtempSync(join(tmpdir(), "pix-assistant-ops-cold-"));
+  const surface = new FakeSurface();
+  const assistant = makeRecord("assistant", ASSISTANT_CWD);
+  surface.records.set("assistant", assistant);
+  const t2 = makeRecord("t2", "/repos/app", { running: true, lastEventId: 2 });
+  surface.records.set("t2", t2);
+  surface.exists.add("t2");
+  const first = new AssistantOpsAuthority({ surface, store: new FileWorkspaceStateStore(dir2), homedir: HOME, now: () => 1 });
+  await first.handleWorkerOp(view(assistant), "j2", { sessionId: "assistant", op: { kind: "send", targetSessionId: "t2", message: "work", delivery: "steer", waitMinutes: 0 } });
+  first.dispose();
+  surface.contexts.set("t2", [{ role: "assistant", content: "partial work, no turn end" }]);
+  const second = new AssistantOpsAuthority({ surface, store: new FileWorkspaceStateStore(dir2), homedir: HOME, now: () => 2 });
+  surface.records.delete("t2"); // cold; session still exists
+  second.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  assert.match(surface.submits.at(-1)?.input.prompt ?? "", /结果: 已停止/, "no proof of completion ⇒ honest stop");
+  second.dispose();
+
+  // A deleted session is still a plain stop.
+  const dir3 = mkdtempSync(join(tmpdir(), "pix-assistant-ops-cold2-"));
+  const surface3 = new FakeSurface();
+  surface3.records.set("assistant", makeRecord("assistant", ASSISTANT_CWD));
+  const t3 = makeRecord("t3", "/repos/app", { running: true, lastEventId: 2 });
+  surface3.records.set("t3", t3);
+  surface3.exists.add("t3");
+  const first3 = new AssistantOpsAuthority({ surface: surface3, store: new FileWorkspaceStateStore(dir3), homedir: HOME, now: () => 1 });
+  await first3.handleWorkerOp(view(surface3.records.get("assistant")!), "j3", { sessionId: "assistant", op: { kind: "send", targetSessionId: "t3", message: "work", delivery: "steer", waitMinutes: 0 } });
+  first3.dispose();
+  const second3 = new AssistantOpsAuthority({ surface: surface3, store: new FileWorkspaceStateStore(dir3), homedir: HOME, now: () => 2 });
+  surface3.records.delete("t3");
+  surface3.exists.delete("t3"); // gone entirely
+  second3.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  assert.match(surface3.submits.at(-1)?.input.prompt ?? "", /结果: 已停止/);
+  second3.dispose();
 });
 
 test("legacy assistant-delegations.json is imported once and removed; an invalid one is left in place", async (t) => {

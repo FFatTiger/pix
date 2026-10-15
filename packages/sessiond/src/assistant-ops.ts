@@ -133,8 +133,17 @@ interface Delegation {
   confirmEventId?: number;
   /** True once the target was observed busy after this delegation was created. */
   busySeen?: boolean;
-  /** Delivery attempts already spent on the notification (0..NOTIFY_ATTEMPT_CAP). */
+  /**
+   * Delivery attempts already spent on the notification (0..NOTIFY_ATTEMPT_CAP).
+   * When the state is delivery_failed this also parks the redelivery until
+   * the assistant worker is (re)loaded.
+   */
   notifyAttempts?: number;
+  /** Rendered notification fields retained for a redelivery after the queue
+   * item was dropped (set when the settlement first enqueued). */
+  notifyLastText?: string;
+  notifyWrittenFiles?: string[];
+  notifyError?: string;
 }
 
 interface ChainTarget {
@@ -271,6 +280,37 @@ export class AssistantOpsAuthority {
    */
   noteRpcSubmitTurn(sessionId: string): void {
     void this.noteUserTurn(sessionId);
+  }
+
+  /**
+   * The assistant worker became (re)available. A delegation whose
+   * notification exhausted its delivery attempts gets exactly ONE more ride
+   * per load: success delivers it, failure parks it again until the next
+   * load. Never fabricates a notification for a healthy queue — only
+   * delivery_failed rows are considered.
+   */
+  noteAssistantReady(sessionId: string): void {
+    if (this.disposed) return;
+    const parked = this.delegations.filter((row) => row.state === "delivery_failed" && row.assistantSessionId === sessionId);
+    if (parked.length === 0) return;
+    for (const delegation of parked) {
+      delegation.state = "settled";
+      delegation.notifyAttempts = NOTIFY_ATTEMPT_CAP - 1;
+      this.queue.push({
+        delegationId: delegation.id,
+        assistantSessionId: delegation.assistantSessionId,
+        targetSessionId: delegation.targetSessionId,
+        targetTitle: delegation.targetTitle,
+        targetCwd: delegation.targetCwd,
+        outcome: delegation.outcome ?? "completed",
+        ...(delegation.notifyLastText === undefined ? {} : { lastText: delegation.notifyLastText }),
+        ...(delegation.notifyWrittenFiles === undefined || delegation.notifyWrittenFiles.length === 0 ? {} : { writtenFiles: delegation.notifyWrittenFiles }),
+        ...(delegation.notifyError === undefined ? {} : { error: delegation.notifyError }),
+        attempts: NOTIFY_ATTEMPT_CAP - 1,
+      });
+    }
+    this.persist();
+    this.armNotify();
   }
 
   /** Coalesce running-state transitions into one settlement pass. */
@@ -740,7 +780,26 @@ export class AssistantOpsAuthority {
     let needsConfirm = false;
     for (const delegation of pending) {
       const target = this.surface.getRecord(delegation.targetSessionId);
-      if (!target || target.status === "stopped" || target.status === "stopping") {
+      if (!target) {
+        // No live record — after a sessiond restart every record is cold.
+        // A deleted session is an honest stop; a session that still exists
+        // gets its outcome from the journal (the settle pass that should have
+        // reported it may have died with the daemon), never a blanket "stopped".
+        const located = await this.surface.locate(delegation.targetSessionId);
+        if (!located.exists) {
+          await this.settle(delegation, "stopped");
+          continue;
+        }
+        const failed = delegation.busySeen === true ? await this.tailFailure(delegation.targetSessionId) : undefined;
+        const outcome: AssistantWorkOutcome = delegation.busySeen !== true
+          ? "stopped"
+          : failed !== undefined
+            ? "failed"
+            : (await this.tailCompleted(delegation.targetSessionId)) ? "completed" : "stopped";
+        await this.settle(delegation, outcome, failed);
+        continue;
+      }
+      if (target.status === "stopped" || target.status === "stopping") {
         await this.settle(delegation, "stopped");
         continue;
       }
@@ -810,6 +869,11 @@ export class AssistantOpsAuthority {
     this.clearConfirm(delegation);
     const summary = await this.buildSummary(delegation, outcome, forcedError);
     if (summary.targetTitle) delegation.targetTitle = summary.targetTitle;
+    // Retain the rendered fields so a redelivery (noteAssistantReady) can
+    // rebuild the queue item exactly.
+    if (summary.lastText !== undefined) delegation.notifyLastText = summary.lastText;
+    if (summary.writtenFiles !== undefined) delegation.notifyWrittenFiles = summary.writtenFiles;
+    if (summary.error !== undefined) delegation.notifyError = summary.error;
     if (wasWait) {
       const assistant = this.surface.getRecord(delegation.assistantSessionId);
       if (assistant && !["crashed", "stopped", "stopping"].includes(assistant.status)) {
@@ -855,6 +919,22 @@ export class AssistantOpsAuthority {
       return lastAssistant(context?.entries ?? []).errorMessage;
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * True when the session's last assistant entry PROVES a finished turn (a
+   * normal stopReason, not aborted/error). Used only for cold targets whose
+   * live record is gone: absent proof the settlement stays an honest "stopped".
+   */
+  private async tailCompleted(sessionId: string): Promise<boolean> {
+    if (!this.surface.readSessionContext) return false;
+    try {
+      const context = await this.surface.readSessionContext(sessionId, { limit: CONTEXT_TAIL });
+      const stopReason = lastAssistant(context?.entries ?? []).stopReason;
+      return stopReason !== undefined && stopReason !== "aborted" && stopReason !== "error";
+    } catch {
+      return false;
     }
   }
 
@@ -950,9 +1030,12 @@ export class AssistantOpsAuthority {
       }
     } finally {
       this.flushing = false;
-      if (this.disposed) return;
+      // Persist even while disposed: the batch was already spliced out of the
+      // in-memory queue, so skipping the write would leave the on-disk ledger
+      // claiming those notifications are still pending — a restart would
+      // deliver them a second time.
       this.persist();
-      if (this.queue.length > 0) this.armRetry();
+      if (!this.disposed && this.queue.length > 0) this.armRetry();
     }
   }
 
@@ -1157,14 +1240,18 @@ function mapThrown(error: unknown): OpError {
   return { code: "internal", message: error instanceof Error ? error.message : "assistant op failed", retryable: false };
 }
 
-function lastAssistant(entries: Array<{ message?: { role?: string; content?: string | Array<{ type?: string; text?: string }>; errorMessage?: string; stopReason?: string } }>): { text?: string; errorMessage?: string } {
+function lastAssistant(entries: Array<{ message?: { role?: string; content?: string | Array<{ type?: string; text?: string }>; errorMessage?: string; stopReason?: string } }>): { text?: string; errorMessage?: string; stopReason?: string } {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const message = entries[index]?.message;
     if (!message || message.role !== "assistant") continue;
     const text = typeof message.content === "string"
       ? message.content
       : (message.content ?? []).filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text).join("");
-    return { ...(text.length > 0 ? { text } : {}), ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}) };
+    return {
+      ...(text.length > 0 ? { text } : {}),
+      ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
+      ...(message.stopReason !== undefined ? { stopReason: message.stopReason } : {}),
+    };
   }
   return {};
 }
