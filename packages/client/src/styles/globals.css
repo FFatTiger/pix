@@ -2402,11 +2402,14 @@ span.linenumber {
 
 .status-card-shell {
   position: relative;
+  /* Tab and card sit past the composer's 12px corner radius plus the 8px
+     fillet, so both fillets land on its straight top edge. */
+  margin-left: 20px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   min-width: 0;
-  max-width: 100%;
+  max-width: calc(100% - 20px);
   /* Keep the pill clear of the composer's top-right floating controls. */
   padding-right: var(--composer-floating-controls-reserve);
 }
@@ -2535,27 +2538,25 @@ span.linenumber {
   font-size: 12px;
 }
 
-/* The tab's left edge is flush with the composer's left edge, so that
-   side runs straight down into the composer: no left fillet, and the
-   composer's top-left corner is square while a tab is present (the tab's
-   own 10px radius is the shape's top-left corner). Only the right side
-   fillets back onto the composer top edge. */
-.subagent-activity-capsule::before { content: none; }
+/* Concave fillets where the tab meets the composer, so the edge flows out on
+   both sides. The tab sits inset on the composer's straight top edge (see
+   .status-card-shell), so the composer keeps all four rounded corners. */
+.subagent-activity-capsule::before,
 .subagent-activity-capsule::after {
   content: "";
   position: absolute;
-  right: -8px;
   bottom: 0;
   width: 8px;
   height: 8px;
   pointer-events: none;
+}
+.subagent-activity-capsule::before {
+  left: -8px;
+  background: radial-gradient(circle at 0 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
+}
+.subagent-activity-capsule::after {
+  right: -8px;
   background: radial-gradient(circle at 100% 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
-}
-.conversation-container:has(.subagent-activity-card) .chat-input-shell {
-  border-top-left-radius: 0;
-}
-.conversation-container:has(.subagent-activity-card) .chat-input-streaming-overlay {
-  border-top-left-radius: 0;
 }
 
 
@@ -4263,6 +4264,9 @@ button.assistant-entry-chip:focus-visible { outline: 2px solid color-mix(in srgb
   background: var(--composer-bg);
   box-shadow: none;
   transition: background 160ms ease, border-color 160ms ease;
+}
+.subagent-activity-capsule::before {
+  background: radial-gradient(circle at 0 0, transparent 7px, var(--composer-ring) 7px, var(--composer-ring) 8px, var(--composer-bg) 8.5px);
 }
 .subagent-activity-capsule::after {
   background: radial-gradient(circle at 100% 0, transparent 7px, var(--composer-ring) 7px, var(--composer-ring) 8px, var(--composer-bg) 8.5px);
