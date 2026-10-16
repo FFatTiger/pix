@@ -21,12 +21,9 @@ export interface SubagentActivityCardProps {
   /** Clear the queue and put every message back into the composer. */
   onRecallQueue?: () => void;
   onOpenActivity: (activity: SubagentActivity) => void;
-  onOpenDirectory: () => void;
 }
 
 const EMPTY_TODOS: readonly StatusTodoItem[] = [];
-/** Ended agents stay on the card, faded, but only the most recent few. */
-const ENDED_PREVIEW_LIMIT = 3;
 
 /** Run time of an agent: start to finish once ended, start to now while running. Two units at most. */
 function elapsedLabel(activity: SubagentActivity, now: number, t: ReturnType<typeof useI18n>["t"]): string {
@@ -124,7 +121,6 @@ export function SubagentActivityCard({
   onSteerQueued,
   onRecallQueue,
   onOpenActivity,
-  onOpenDirectory,
 }: SubagentActivityCardProps) {
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -141,7 +137,8 @@ export function SubagentActivityCard({
   );
   const running = useMemo(() => activities.filter((activity) => activity.status === "running"), [activities]);
   const ended = useMemo(
-    () => activities.filter((activity) => activity.status !== "running").slice(-ENDED_PREVIEW_LIMIT).reverse(),
+    // Every ended agent stays on the card (faded, newest first); the card scrolls.
+    () => activities.filter((activity) => activity.status !== "running").reverse(),
     [activities],
   );
   const endedCount = activities.length - running.length;
@@ -219,6 +216,9 @@ export function SubagentActivityCard({
     </>
   ) : null;
 
+  // A lone section needs no heading: the capsule already names it.
+  const showSectionTitles = [todos.length > 0, hasAgents, queued.length > 0].filter(Boolean).length > 1;
+
   const agentRow = (activity: SubagentActivity, faded: boolean) => {
     const content = (
       <>
@@ -282,7 +282,7 @@ export function SubagentActivityCard({
           <div className="status-card-body">
             {todos.length > 0 ? (
               <section className="status-card-section" data-testid="status-progress-section">
-                <div className="status-section-title">{t("desktop.statusTodos")}</div>
+                {showSectionTitles ? <div className="status-section-title">{t("desktop.statusTodos")}</div> : null}
                 <ul className="status-todo-list">
                   {todos.map((item) => (
                     <li
@@ -302,16 +302,11 @@ export function SubagentActivityCard({
                 className={`status-card-section${todos.length > 0 ? " is-separated" : ""}`}
                 data-testid="status-agents-section"
               >
-                <div className="status-section-title">{t("desktop.subagents")}</div>
+                {showSectionTitles ? <div className="status-section-title">{t("desktop.subagents")}</div> : null}
                 <div className="subagent-activity-body">
                   {running.map((activity) => agentRow(activity, false))}
                   {ended.map((activity) => agentRow(activity, true))}
                 </div>
-                {endedCount > ENDED_PREVIEW_LIMIT ? (
-                  <button type="button" className="status-agents-all" onClick={onOpenDirectory}>
-                    {t("desktop.statusAgentsAll", { count: activities.length })}
-                  </button>
-                ) : null}
               </section>
             ) : null}
             {queued.length > 0 ? (

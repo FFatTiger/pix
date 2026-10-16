@@ -34,7 +34,6 @@ function renderCard(
   props: Partial<React.ComponentProps<typeof SubagentActivityCard>> = {},
 ) {
   const onOpenActivity = props.onOpenActivity ?? vi.fn();
-  const onOpenDirectory = props.onOpenDirectory ?? vi.fn();
   const view = render(
     <I18nProvider>
       <SubagentActivityCard
@@ -44,11 +43,10 @@ function renderCard(
         {...(props.onSteerQueued === undefined ? {} : { onSteerQueued: props.onSteerQueued })}
         {...(props.onRecallQueue === undefined ? {} : { onRecallQueue: props.onRecallQueue })}
         onOpenActivity={onOpenActivity}
-        onOpenDirectory={onOpenDirectory}
       />
     </I18nProvider>,
   );
-  return { ...view, onOpenActivity, onOpenDirectory };
+  return { ...view, onOpenActivity };
 }
 
 describe("SubagentActivityCard", () => {
@@ -59,7 +57,7 @@ describe("SubagentActivityCard", () => {
   it("stays absent when the selected session has no todos, agent activity, or queued messages", () => {
     const { container } = render(
       <I18nProvider>
-        <SubagentActivityCard activities={[]} todos={[]} onOpenActivity={() => undefined} onOpenDirectory={() => undefined} />
+        <SubagentActivityCard activities={[]} todos={[]} onOpenActivity={() => undefined} />
       </I18nProvider>,
     );
     expect(container.firstChild).toBeNull();
@@ -122,7 +120,7 @@ describe("SubagentActivityCard", () => {
           activities={[RUNNING, COMPLETED]}
           todos={[{ id: 1, subject: "Write the capsule", status: "completed" }]}
           onOpenActivity={() => undefined}
-          onOpenDirectory={() => undefined}
+         
         />
       </I18nProvider>,
     );
@@ -134,7 +132,7 @@ describe("SubagentActivityCard", () => {
           activities={[RUNNING, COMPLETED]}
           todos={[]}
           onOpenActivity={() => undefined}
-          onOpenDirectory={() => undefined}
+         
         />
       </I18nProvider>,
     );
@@ -146,7 +144,7 @@ describe("SubagentActivityCard", () => {
           activities={[COMPLETED]}
           todos={[]}
           onOpenActivity={() => undefined}
-          onOpenDirectory={() => undefined}
+         
         />
       </I18nProvider>,
     );
@@ -253,7 +251,7 @@ describe("SubagentActivityCard", () => {
   });
 
   it("lists running agents ahead of ended ones, one line each, and opens a row in the panel", () => {
-    const { onOpenActivity, onOpenDirectory } = renderCard();
+    const { onOpenActivity } = renderCard();
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const agents = screen.getByTestId("status-agents-section");
     const running = within(agents).getByText("Inspect runtime");
@@ -264,22 +262,18 @@ describe("SubagentActivityCard", () => {
     expect(note.getAttribute("title")).toBe("Explore");
     expect(ended.closest(".subagent-activity-row")?.className).toContain("is-ended");
     expect(screen.queryByRole("button", { name: /^Ended/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^View all/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime" }));
     expect(onOpenActivity).toHaveBeenCalledWith(RUNNING);
     fireEvent.click(screen.getByRole("button", { name: "Open agent Check tests" }));
     expect(onOpenActivity).toHaveBeenCalledWith(COMPLETED);
-    expect(onOpenDirectory).not.toHaveBeenCalled();
   });
 
   it.each(["completed", "failed", "partial", "stopped"] as const)("keeps a %s agent visible, faded, without an all-agents entry", (status) => {
-    const { onOpenDirectory } = renderCard({ activities: [{ ...COMPLETED, status }], todos: [] });
+    renderCard({ activities: [{ ...COMPLETED, status }], todos: [] });
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const row = screen.getByText("Check tests").closest(".subagent-activity-row");
     expect(row?.className).toContain("is-ended");
-    expect(screen.queryByRole("button", { name: /^View all/ })).toBeNull();
-    expect(onOpenDirectory).not.toHaveBeenCalled();
   });
 
   it("shows the agent type as the one-line note", () => {
@@ -295,7 +289,6 @@ describe("SubagentActivityCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     expect(screen.getByTestId("status-progress-section")).toBeTruthy();
     expect(screen.queryByTestId("status-agents-section")).toBeNull();
-    expect(screen.queryByRole("button", { name: /^View all/ })).toBeNull();
   });
 
   it("keeps a running task pending until its validated child session arrives", () => {
@@ -311,7 +304,7 @@ describe("SubagentActivityCard", () => {
           activities={[RUNNING]}
           todos={[]}
           onOpenActivity={onOpenActivity}
-          onOpenDirectory={() => undefined}
+         
         />
       </I18nProvider>,
     );
@@ -334,7 +327,7 @@ describe("SubagentActivityCard", () => {
     expect(within(progress).queryByRole("button")).toBeNull();
   });
 
-  it("shows the three most recent ended agents and an all-agents entry past that", () => {
+  it("lists every agent, running first then ended newest first, each opening its own page", () => {
     const ended = [0, 1, 2, 3].map((index) => ({
       ...COMPLETED,
       key: `task:ended-${index}`,
@@ -342,18 +335,13 @@ describe("SubagentActivityCard", () => {
       title: `Ended ${index}`,
       childSessionId: `child-ended-${index}`,
     }));
-    const { onOpenDirectory } = renderCard({ activities: [RUNNING, ...ended], todos: [] });
+    const { onOpenActivity } = renderCard({ activities: [RUNNING, ...ended], todos: [] });
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const agents = screen.getByTestId("status-agents-section");
-    expect(within(agents).getByText("Inspect runtime")).toBeTruthy();
-    expect(within(agents).queryByText("Ended 0")).toBeNull();
-    expect(within(agents).getByText("Ended 1")).toBeTruthy();
-    expect(within(agents).getByText("Ended 3")).toBeTruthy();
-    const running = within(agents).getByText("Inspect runtime");
-    const oldestShown = within(agents).getByText("Ended 1");
-    expect(running.compareDocumentPosition(oldestShown) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-    fireEvent.click(within(agents).getByRole("button", { name: /^View all/ }));
-    expect(onOpenDirectory).toHaveBeenCalledOnce();
+    const titles = within(agents).getAllByText(/Inspect runtime|Ended \d/).map((node) => node.textContent);
+    expect(titles).toEqual(["Inspect runtime", "Ended 3", "Ended 2", "Ended 1", "Ended 0"]);
+    expect(within(agents).queryByText("Agents")).toBeNull();
+    fireEvent.click(within(agents).getByText("Ended 0"));
+    expect(onOpenActivity).toHaveBeenCalledWith(expect.objectContaining({ taskId: "ended-0" }));
   });
 });

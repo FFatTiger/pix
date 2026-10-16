@@ -1474,7 +1474,6 @@ export function AppShell({ search }: AppShellProps) {
                     onSteerQueued={(index) => composerRef.current?.steerQueued(index)}
                     onRecallQueue={() => composerRef.current?.recallQueue()}
                     onOpenActivity={handleOpenSubagentActivity}
-                    onOpenDirectory={() => openSubagentPanel(null)}
                   />
                 )}
                 {isAssistantView && assistantInfo === undefined ? null : (
