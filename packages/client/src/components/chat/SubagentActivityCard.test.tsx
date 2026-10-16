@@ -107,7 +107,7 @@ describe("SubagentActivityCard", () => {
     expect(screen.getByRole("button", { name: "Expand status" }).textContent).not.toContain("Write the capsule");
   });
 
-  it("falls through capsule priority from pending todo to completed todo to running agents, and hides with only ended agents", () => {
+  it("puts todos first in the capsule, then agents, and stays with only ended agents", () => {
     const { rerender } = renderCard({
       todos: [{ id: 1, subject: "Write the capsule", status: "completed" }, { id: 2, subject: "Polish later", status: "pending" }],
       activities: [RUNNING, COMPLETED],
@@ -121,24 +121,28 @@ describe("SubagentActivityCard", () => {
     rerender(card([RUNNING, COMPLETED], [{ id: 1, subject: "Write the capsule", status: "completed" }]));
     expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Write the capsule");
     rerender(card([RUNNING, COMPLETED], []));
-    expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("1 running");
+    expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Agents");
     rerender(card([COMPLETED], []));
-    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Agents");
   });
 
-  it("carries the todo completion count and running-agent count on the capsule", () => {
-    renderCard();
+  it("counts agents by state on the capsule: running, done, failed", () => {
+    renderCard({
+      activities: [RUNNING, COMPLETED, { ...COMPLETED, key: "p", taskId: "p", status: "partial" }, { ...COMPLETED, key: "f", taskId: "f", status: "failed" }, { ...COMPLETED, key: "s", taskId: "s", status: "stopped" }],
+    });
     const capsule = screen.getByRole("button", { name: "Expand status" });
     expect(within(capsule).getByText("1/3")).toBeTruthy();
-    const agents = within(capsule).getByText("1");
-    expect(agents.className).toBe("status-capsule-agents");
-    expect(agents.getAttribute("title")).toBe("1 running");
+    expect(within(capsule).getByTitle("1 running").textContent).toBe("1");
+    expect(within(capsule).getByTitle("2 done").textContent).toBe("2");
+    expect(within(capsule).getByTitle("2 failed").textContent).toBe("2");
   });
 
-  it("omits the agent count when no agent is running", () => {
+  it("omits a state with no agents in it", () => {
     renderCard({ activities: [COMPLETED] });
     const capsule = screen.getByRole("button", { name: "Expand status" });
-    expect(capsule.querySelector(".status-capsule-agents")).toBeNull();
+    expect(capsule.querySelector(".status-capsule-agent.is-running")).toBeNull();
+    expect(capsule.querySelector(".status-capsule-agent.is-failed")).toBeNull();
+    expect(capsule.querySelector(".status-capsule-agent.is-done")).toBeTruthy();
   });
 
   it("toggles the expanded card from the capsule as transient internal state", () => {
@@ -225,22 +229,27 @@ describe("SubagentActivityCard", () => {
     expect(within(progress).getByText("Polish later").closest("[data-todo-status='pending']")).toBeTruthy();
   });
 
-  it("lists only running agents, type first, and opens a row in the panel", () => {
-    const { onOpenActivity } = renderCard();
+  it("lists running agents first, type before title, then recently ended ones with when they ended", () => {
+    const { onOpenActivity } = renderCard({ activities: [{ ...COMPLETED, completedAt: Date.now() - 3 * 60_000 }, RUNNING] });
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const agents = screen.getByTestId("status-agents-section");
-    expect(within(agents).queryByText("Check tests")).toBeNull();
     const note = within(agents).getByText("Explore");
     const title = within(agents).getByText("Inspect runtime");
     expect(note.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const ended = within(agents).getByText("Check tests");
+    expect(title.compareDocumentPosition(ended) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(ended.closest(".subagent-activity-row")?.className).toContain("is-ended");
+    expect(ended.closest(".subagent-activity-row")?.textContent).toContain("3m ago");
     fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime" }));
     expect(onOpenActivity).toHaveBeenCalledWith(RUNNING);
   });
 
-  it.each(["completed", "failed", "partial", "stopped"] as const)("leaves a %s agent off the card", (status) => {
-    renderCard({ activities: [RUNNING, { ...COMPLETED, status }], todos: [] });
+  it("keeps only the five most recently ended agents", () => {
+    const ended = [0, 1, 2, 3, 4, 5, 6].map((index) => ({ ...COMPLETED, key: `e${index}`, taskId: `e${index}`, title: `Ended ${index}`, completedAt: 1_000 + index }));
+    renderCard({ activities: ended, todos: [] });
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
-    expect(screen.queryByText("Check tests")).toBeNull();
+    const titles = within(screen.getByTestId("status-agents-section")).getAllByText(/^Ended \d$/).map((node) => node.textContent);
+    expect(titles).toEqual(["Ended 6", "Ended 5", "Ended 4", "Ended 3", "Ended 2"]);
   });
 
   it("shows the agent type as the one-line note", () => {

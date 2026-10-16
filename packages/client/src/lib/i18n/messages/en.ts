@@ -613,6 +613,8 @@ export const enLocale = {
     "desktop.subagentsCount": "{count} agents",
     "desktop.endedAgentsCount": "Ended {count}",
     "desktop.runningAgentsCount": "{count} running",
+    "desktop.doneAgentsCount": "{count} done",
+    "desktop.failedAgentsCount": "{count} failed",
     "desktop.statusProgress": "Progress",
     "desktop.expandStatus": "Expand status",
     "desktop.pendingMessagesCount": "{count} queued",

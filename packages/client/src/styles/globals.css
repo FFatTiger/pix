@@ -2588,7 +2588,11 @@ span.linenumber {
   background: color-mix(in srgb, var(--text) 16%, transparent);
 }
 
-.status-capsule-agents { color: var(--accent); }
+.status-capsule-agents { gap: 7px; }
+.status-capsule-agent { display: inline-flex; align-items: center; gap: 3px; }
+.status-capsule-agent.is-running { color: var(--accent); }
+.status-capsule-agent.is-done { color: var(--status-success, #16a34a); }
+.status-capsule-agent.is-failed { color: var(--accent-red); }
 
 .status-section-title,
 .status-queue-head {
@@ -2792,6 +2796,12 @@ span.linenumber {
 }
 .status-todo-more-spacer {
   flex: 0 0 16px;
+}
+
+/* Compact card rows so todos plus a handful of agents fit without scrolling. */
+.status-card-panel .status-todo-row,
+.status-card-panel .subagent-activity-row {
+  height: 32px;
 }
 
 /* Card agent rows: the agent type leads, the task title fills the rest. */

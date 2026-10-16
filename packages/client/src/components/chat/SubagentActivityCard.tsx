@@ -24,6 +24,8 @@ export interface SubagentActivityCardProps {
 }
 
 const EMPTY_TODOS: readonly StatusTodoItem[] = [];
+/** Ended agents listed under the running ones, newest first. */
+const RECENT_ENDED_SHOWN = 5;
 /** Pending todos shown after the step in progress before folding into "N more". */
 const NEXT_TODOS_SHOWN = 3;
 
@@ -43,11 +45,11 @@ function elapsedLabel(activity: SubagentActivity, now: number, t: ReturnType<typ
 
 function capsuleSummary(
   todos: readonly StatusTodoItem[],
-  running: readonly SubagentActivity[],
+  agentCount: number,
   queuedCount: number,
   t: ReturnType<typeof useI18n>["t"],
 ): { icon: ReactNode; label: string } | null {
-  if (todos.length === 0 && running.length === 0 && queuedCount > 0) {
+  if (todos.length === 0 && agentCount === 0 && queuedCount > 0) {
     return {
       icon: <ArrowBendUpLeftIcon size={15} aria-hidden="true" />,
       label: t("desktop.pendingMessagesCount", { count: queuedCount }),
@@ -74,14 +76,26 @@ function capsuleSummary(
       label: completed.subject,
     };
   }
-  if (running.length > 0) {
-    return {
-      icon: <RobotIcon size={15} aria-hidden="true" />,
-      label: t("desktop.runningAgentsCount", { count: running.length }),
-    };
+  // The state counts sit right beside this label, so it only names the section.
+  if (agentCount > 0) {
+    return { icon: <RobotIcon size={15} aria-hidden="true" />, label: t("desktop.subagents") };
   }
   return null;
 }
+
+/** Ended agents read by recency: "just now", "3 minutes ago"... */
+function endedAgo(completedAt: number | undefined, now: number, t: ReturnType<typeof useI18n>["t"]): string {
+  if (completedAt === undefined) return "";
+  const minutes = Math.floor((now - completedAt) / 60_000);
+  if (minutes < 1) return t("desktop.justNow");
+  if (minutes < 60) return t("desktop.minutesAgo", { count: minutes });
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return t("desktop.hoursAgo", { count: hours });
+  return t("desktop.daysAgo", { count: Math.floor(hours / 24) });
+}
+
+/** Failed and stopped read as errors on the capsule; partial counts as done. */
+const AGENT_ERROR_STATUSES: ReadonlySet<SubagentActivity["status"]> = new Set(["failed", "stopped"]);
 
 function TodoStatusIcon({ status }: { status: StatusTodoItem["status"] }) {
   if (status === "completed") {
@@ -135,17 +149,27 @@ export function SubagentActivityCard({
     () => todos.filter((item) => item.status === "completed").length,
     [todos],
   );
-  const summary = capsuleSummary(todos, running, queued.length, t);
-  // Only live work belongs on the card; ended agents live in the agents pane.
-  const hasAgents = activities.some((activity) => activity.status === "running");
+  const summary = capsuleSummary(todos, activities.length, queued.length, t);
+  const hasAgents = activities.length > 0;
+  // Running first, then the most recently ended few (older ones live in the agents pane).
+  const ended = useMemo(
+    () => activities
+      .filter((activity) => activity.status !== "running")
+      .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
+      .slice(0, RECENT_ENDED_SHOWN),
+    [activities],
+  );
+  const failedCount = activities.filter((activity) => AGENT_ERROR_STATUSES.has(activity.status)).length;
+  const doneCount = activities.length - running.length - failedCount;
   const [completedOpen, setCompletedOpen] = useState(false);
   const [pendingOpen, setPendingOpen] = useState(false);
 
   useEffect(() => {
-    if (running.length === 0) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    if (activities.length === 0) return;
+    // Seconds tick for running durations; a slow tick keeps "N minutes ago" honest.
+    const timer = window.setInterval(() => setNow(Date.now()), running.length > 0 ? 1000 : 30_000);
     return () => window.clearInterval(timer);
-  }, [running.length]);
+  }, [activities.length, running.length]);
 
   useLayoutEffect(() => {
     if (open) return;
@@ -179,7 +203,7 @@ export function SubagentActivityCard({
     };
   }, [open]);
 
-  if (todos.length === 0 && running.length === 0 && queued.length === 0) return null;
+  if (todos.length === 0 && activities.length === 0 && queued.length === 0) return null;
 
   const capsuleContent = summary ? (
     <>
@@ -188,13 +212,26 @@ export function SubagentActivityCard({
       {todos.length > 0 ? (
         <span className="status-capsule-count">{completedTodoCount}/{todos.length}</span>
       ) : null}
-      {running.length > 0 ? (
-        <span
-          className="status-capsule-agents"
-          title={t("desktop.runningAgentsCount", { count: running.length })}
-        >
-          <CircleNotchIcon className="subagent-running-icon" size={12} aria-hidden="true" />
-          {running.length}
+      {hasAgents ? (
+        <span className="status-capsule-agents">
+          {running.length > 0 ? (
+            <span className="status-capsule-agent is-running" title={t("desktop.runningAgentsCount", { count: running.length })}>
+              <CircleNotchIcon className="subagent-running-icon" size={12} aria-hidden="true" />
+              {running.length}
+            </span>
+          ) : null}
+          {doneCount > 0 ? (
+            <span className="status-capsule-agent is-done" title={t("desktop.doneAgentsCount", { count: doneCount })}>
+              <CheckCircleIcon size={12} aria-hidden="true" />
+              {doneCount}
+            </span>
+          ) : null}
+          {failedCount > 0 ? (
+            <span className="status-capsule-agent is-failed" title={t("desktop.failedAgentsCount", { count: failedCount })}>
+              <XCircleIcon size={12} aria-hidden="true" />
+              {failedCount}
+            </span>
+          ) : null}
         </span>
       ) : null}
       {queued.length > 0 && (todos.length > 0 || activities.length > 0) ? (
@@ -211,7 +248,7 @@ export function SubagentActivityCard({
   // A lone section needs no heading: the capsule already names it.
   const showSectionTitles = [todos.length > 0, hasAgents, queued.length > 0].filter(Boolean).length > 1;
 
-  const agentRow = (activity: SubagentActivity) => {
+  const agentRow = (activity: SubagentActivity, isEnded: boolean) => {
     const content = (
       <>
         <AgentStatusIcon status={activity.status} />
@@ -219,17 +256,17 @@ export function SubagentActivityCard({
           <span className="subagent-activity-note" title={activity.agentType}>{activity.agentType}</span>
         ) : null}
         <span className="subagent-activity-name" title={activity.title}>{activity.title}</span>
-        <span className="subagent-activity-elapsed">{elapsedLabel(activity, now, t)}</span>
+        <span className="subagent-activity-elapsed">{isEnded ? endedAgo(activity.completedAt, now, t) : elapsedLabel(activity, now, t)}</span>
       </>
     );
     return activity.childSessionId === undefined ? (
-      <div className="subagent-activity-row is-pending" key={activity.key} aria-disabled="true">
+      <div className={`subagent-activity-row is-pending${isEnded ? " is-ended" : ""}`} key={activity.key} aria-disabled="true">
         {content}
       </div>
     ) : (
       <button
         type="button"
-        className="subagent-activity-row"
+        className={`subagent-activity-row${isEnded ? " is-ended" : ""}`}
         key={activity.key}
         onClick={() => onOpenActivity(activity)}
         aria-label={t("desktop.openSubagent", { title: activity.title })}
@@ -319,7 +356,8 @@ export function SubagentActivityCard({
               >
                 {showSectionTitles ? <div className="status-section-title">{t("desktop.subagents")}</div> : null}
                 <div className="subagent-activity-body">
-                  {running.map((activity) => agentRow(activity))}
+                  {running.map((activity) => agentRow(activity, false))}
+                  {ended.map((activity) => agentRow(activity, true))}
                 </div>
               </section>
             ) : null}

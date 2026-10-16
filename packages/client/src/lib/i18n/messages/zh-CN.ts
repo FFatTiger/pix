@@ -613,6 +613,8 @@ export const zhCNLocale = {
     "desktop.subagentsCount": "{count} 个子代理",
     "desktop.endedAgentsCount": "已结束 {count}",
     "desktop.runningAgentsCount": "{count} 运行中",
+    "desktop.doneAgentsCount": "已完成 {count} 个",
+    "desktop.failedAgentsCount": "出错 {count} 个",
     "desktop.statusProgress": "进程",
     "desktop.expandStatus": "展开状态",
     "desktop.pendingMessagesCount": "待发送 {count}",
