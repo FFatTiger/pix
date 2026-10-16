@@ -2775,6 +2775,37 @@ span.linenumber {
   text-overflow: ellipsis;
 }
 
+/* Fold rows: full-width buttons that read like the rows they stand for. */
+.status-todo-fold {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  text-align: left;
+  cursor: pointer;
+}
+.status-todo-fold:hover {
+  color: var(--text);
+}
+.status-todo-row.status-todo-fold.is-completed .status-todo-subject {
+  text-decoration: none;
+}
+.status-todo-more-spacer {
+  flex: 0 0 16px;
+}
+
+/* Card agent rows: the agent type leads, the task title fills the rest. */
+.status-card-panel .subagent-activity-row .subagent-activity-note {
+  flex: 0 0 auto;
+  max-width: 40%;
+}
+.status-card-panel .subagent-activity-row .subagent-activity-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .status-todo-row.is-completed .status-todo-subject {
   color: var(--text-dim);
   text-decoration: line-through;

@@ -622,6 +622,8 @@ export const zhCNLocale = {
     "desktop.statusDisplayModeAuto": "自动",
     "desktop.minimizeStatus": "最小化状态",
     "desktop.statusTodos": "待办",
+    "desktop.statusTodosDone": "已完成 {count} 项",
+    "desktop.statusTodosMore": "还有 {count} 项",
     "desktop.showSubagentActivity": "查看子代理动态",
     "desktop.finishedSubagents": "已结束的子代理",
     "desktop.subagentDirectory": "子代理会话",

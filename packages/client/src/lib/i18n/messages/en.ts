@@ -622,6 +622,8 @@ export const enLocale = {
     "desktop.statusDisplayModeAuto": "Auto",
     "desktop.minimizeStatus": "Minimize status",
     "desktop.statusTodos": "To-do",
+    "desktop.statusTodosDone": "{count} done",
+    "desktop.statusTodosMore": "{count} more",
     "desktop.showSubagentActivity": "Show agent activity",
     "desktop.finishedSubagents": "Finished agents",
     "desktop.subagentDirectory": "Agent sessions",

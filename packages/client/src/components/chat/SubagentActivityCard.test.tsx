@@ -107,48 +107,23 @@ describe("SubagentActivityCard", () => {
     expect(screen.getByRole("button", { name: "Expand status" }).textContent).not.toContain("Write the capsule");
   });
 
-  it("falls through capsule priority from pending todo to completed todo to running then ended agents", () => {
+  it("falls through capsule priority from pending todo to completed todo to running agents, and hides with only ended agents", () => {
     const { rerender } = renderCard({
       todos: [{ id: 1, subject: "Write the capsule", status: "completed" }, { id: 2, subject: "Polish later", status: "pending" }],
       activities: [RUNNING, COMPLETED],
     });
     expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Polish later");
-
-    rerender(
+    const card = (activities: SubagentActivity[], todos: StatusTodoItem[]) => (
       <I18nProvider>
-        <SubagentActivityCard
-          activities={[RUNNING, COMPLETED]}
-          todos={[{ id: 1, subject: "Write the capsule", status: "completed" }]}
-          onOpenActivity={() => undefined}
-         
-        />
-      </I18nProvider>,
+        <SubagentActivityCard activities={activities} todos={todos} onOpenActivity={() => undefined} />
+      </I18nProvider>
     );
+    rerender(card([RUNNING, COMPLETED], [{ id: 1, subject: "Write the capsule", status: "completed" }]));
     expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Write the capsule");
-
-    rerender(
-      <I18nProvider>
-        <SubagentActivityCard
-          activities={[RUNNING, COMPLETED]}
-          todos={[]}
-          onOpenActivity={() => undefined}
-         
-        />
-      </I18nProvider>,
-    );
+    rerender(card([RUNNING, COMPLETED], []));
     expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("1 running");
-
-    rerender(
-      <I18nProvider>
-        <SubagentActivityCard
-          activities={[COMPLETED]}
-          todos={[]}
-          onOpenActivity={() => undefined}
-         
-        />
-      </I18nProvider>,
-    );
-    expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Ended 1");
+    rerender(card([COMPLETED], []));
+    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
   });
 
   it("carries the todo completion count and running-agent count on the capsule", () => {
@@ -160,10 +135,9 @@ describe("SubagentActivityCard", () => {
     expect(agents.getAttribute("title")).toBe("1 running");
   });
 
-  it("omits the capsule counts when there are no todos and no running agents", () => {
-    renderCard({ todos: [], activities: [COMPLETED] });
+  it("omits the agent count when no agent is running", () => {
+    renderCard({ activities: [COMPLETED] });
     const capsule = screen.getByRole("button", { name: "Expand status" });
-    expect(capsule.querySelector(".status-capsule-count")).toBeNull();
     expect(capsule.querySelector(".status-capsule-agents")).toBeNull();
   });
 
@@ -239,41 +213,34 @@ describe("SubagentActivityCard", () => {
     expect(document.activeElement).toBe(capsule);
   });
 
-  it("renders the flat todo list with honest statuses under a quiet heading", () => {
-    renderCard();
+  it("folds done todos into one row and keeps the step in progress and what comes next", () => {
+    renderCard({ activities: [] });
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const progress = screen.getByTestId("status-progress-section");
-    expect(within(progress).getByText("To-do")).toBeTruthy();
+    expect(within(progress).queryByText("To-do")).toBeNull();
+    expect(within(progress).queryByText("Write the capsule")).toBeNull();
+    fireEvent.click(within(progress).getByRole("button", { name: "1 done" }));
     expect(within(progress).getByText("Write the capsule").closest("[data-todo-status='completed']")).toBeTruthy();
     expect(within(progress).getByText("Ship the panel").closest("[data-todo-status='in_progress']")).toBeTruthy();
     expect(within(progress).getByText("Polish later").closest("[data-todo-status='pending']")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Progress" })).toBeNull();
   });
 
-  it("lists running agents ahead of ended ones, one line each, and opens a row in the panel", () => {
+  it("lists only running agents, type first, and opens a row in the panel", () => {
     const { onOpenActivity } = renderCard();
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const agents = screen.getByTestId("status-agents-section");
-    const running = within(agents).getByText("Inspect runtime");
-    const ended = within(agents).getByText("Check tests");
-    expect(running.compareDocumentPosition(ended) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(agents).queryByText("Check tests")).toBeNull();
     const note = within(agents).getByText("Explore");
-    expect(note.className).toContain("subagent-activity-note");
-    expect(note.getAttribute("title")).toBe("Explore");
-    expect(ended.closest(".subagent-activity-row")?.className).toContain("is-ended");
-    expect(screen.queryByRole("button", { name: /^Ended/ })).toBeNull();
-
+    const title = within(agents).getByText("Inspect runtime");
+    expect(note.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime" }));
     expect(onOpenActivity).toHaveBeenCalledWith(RUNNING);
-    fireEvent.click(screen.getByRole("button", { name: "Open agent Check tests" }));
-    expect(onOpenActivity).toHaveBeenCalledWith(COMPLETED);
   });
 
-  it.each(["completed", "failed", "partial", "stopped"] as const)("keeps a %s agent visible, faded, without an all-agents entry", (status) => {
-    renderCard({ activities: [{ ...COMPLETED, status }], todos: [] });
+  it.each(["completed", "failed", "partial", "stopped"] as const)("leaves a %s agent off the card", (status) => {
+    renderCard({ activities: [RUNNING, { ...COMPLETED, status }], todos: [] });
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
-    const row = screen.getByText("Check tests").closest(".subagent-activity-row");
-    expect(row?.className).toContain("is-ended");
+    expect(screen.queryByText("Check tests")).toBeNull();
   });
 
   it("shows the agent type as the one-line note", () => {
@@ -312,36 +279,31 @@ describe("SubagentActivityCard", () => {
     expect(onOpenActivity).toHaveBeenCalledWith(RUNNING);
   });
 
-  it("lists every todo flat, with no earlier/later folds", () => {
-    const todos: StatusTodoItem[] = Array.from({ length: 8 }, (_, index) => ({
+  it("shows the next three pending todos and folds the rest behind N more", () => {
+    const todos: StatusTodoItem[] = Array.from({ length: 10 }, (_, index) => ({
       id: index + 1,
       subject: `Item ${index + 1}`,
       status: index === 4 ? "in_progress" : index < 4 ? "completed" : "pending",
     }));
-    renderCard({ todos });
+    renderCard({ todos, activities: [] });
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const progress = screen.getByTestId("status-progress-section");
-    for (let index = 1; index <= 8; index += 1) {
-      expect(within(progress).getByText(`Item ${index}`)).toBeTruthy();
-    }
-    expect(within(progress).queryByRole("button")).toBeNull();
+    expect(within(progress).getByRole("button", { name: "4 done" })).toBeTruthy();
+    for (const index of [5, 6, 7, 8]) expect(within(progress).getByText(`Item ${index}`)).toBeTruthy();
+    expect(within(progress).queryByText("Item 9")).toBeNull();
+    fireEvent.click(within(progress).getByRole("button", { name: "2 more" }));
+    expect(within(progress).getByText("Item 10")).toBeTruthy();
+    expect(within(progress).queryByRole("button", { name: /more$/ })).toBeNull();
   });
 
-  it("lists every agent, running first then ended newest first, each opening its own page", () => {
-    const ended = [0, 1, 2, 3].map((index) => ({
-      ...COMPLETED,
-      key: `task:ended-${index}`,
-      taskId: `ended-${index}`,
-      title: `Ended ${index}`,
-      childSessionId: `child-ended-${index}`,
-    }));
-    const { onOpenActivity } = renderCard({ activities: [RUNNING, ...ended], todos: [] });
+  it("names sections only when the card has more than one", () => {
+    renderCard({ todos: [], activities: [RUNNING] });
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
-    const agents = screen.getByTestId("status-agents-section");
-    const titles = within(agents).getAllByText(/Inspect runtime|Ended \d/).map((node) => node.textContent);
-    expect(titles).toEqual(["Inspect runtime", "Ended 3", "Ended 2", "Ended 1", "Ended 0"]);
-    expect(within(agents).queryByText("Agents")).toBeNull();
-    fireEvent.click(within(agents).getByText("Ended 0"));
-    expect(onOpenActivity).toHaveBeenCalledWith(expect.objectContaining({ taskId: "ended-0" }));
+    expect(within(screen.getByTestId("status-agents-section")).queryByText("Agents")).toBeNull();
+    cleanup();
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
+    expect(within(screen.getByTestId("status-agents-section")).getByText("Agents")).toBeTruthy();
   });
+
 });

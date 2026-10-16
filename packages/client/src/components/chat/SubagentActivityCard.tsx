@@ -24,6 +24,8 @@ export interface SubagentActivityCardProps {
 }
 
 const EMPTY_TODOS: readonly StatusTodoItem[] = [];
+/** Pending todos shown after the step in progress before folding into "N more". */
+const NEXT_TODOS_SHOWN = 3;
 
 /** Run time of an agent: start to finish once ended, start to now while running. Two units at most. */
 function elapsedLabel(activity: SubagentActivity, now: number, t: ReturnType<typeof useI18n>["t"]): string {
@@ -42,11 +44,10 @@ function elapsedLabel(activity: SubagentActivity, now: number, t: ReturnType<typ
 function capsuleSummary(
   todos: readonly StatusTodoItem[],
   running: readonly SubagentActivity[],
-  endedCount: number,
   queuedCount: number,
   t: ReturnType<typeof useI18n>["t"],
 ): { icon: ReactNode; label: string } | null {
-  if (todos.length === 0 && running.length === 0 && endedCount === 0 && queuedCount > 0) {
+  if (todos.length === 0 && running.length === 0 && queuedCount > 0) {
     return {
       icon: <ArrowBendUpLeftIcon size={15} aria-hidden="true" />,
       label: t("desktop.pendingMessagesCount", { count: queuedCount }),
@@ -77,12 +78,6 @@ function capsuleSummary(
     return {
       icon: <RobotIcon size={15} aria-hidden="true" />,
       label: t("desktop.runningAgentsCount", { count: running.length }),
-    };
-  }
-  if (endedCount > 0) {
-    return {
-      icon: <RobotIcon size={15} aria-hidden="true" />,
-      label: t("desktop.endedAgentsCount", { count: endedCount }),
     };
   }
   return null;
@@ -136,18 +131,15 @@ export function SubagentActivityCard({
     [queuedMessages],
   );
   const running = useMemo(() => activities.filter((activity) => activity.status === "running"), [activities]);
-  const ended = useMemo(
-    // Every ended agent stays on the card (faded, newest first); the card scrolls.
-    () => activities.filter((activity) => activity.status !== "running").reverse(),
-    [activities],
-  );
-  const endedCount = activities.length - running.length;
   const completedTodoCount = useMemo(
     () => todos.filter((item) => item.status === "completed").length,
     [todos],
   );
-  const summary = capsuleSummary(todos, running, endedCount, queued.length, t);
-  const hasAgents = activities.length > 0;
+  const summary = capsuleSummary(todos, running, queued.length, t);
+  // Only live work belongs on the card; ended agents live in the agents pane.
+  const hasAgents = activities.some((activity) => activity.status === "running");
+  const [completedOpen, setCompletedOpen] = useState(false);
+  const [pendingOpen, setPendingOpen] = useState(false);
 
   useEffect(() => {
     if (running.length === 0) return;
@@ -187,7 +179,7 @@ export function SubagentActivityCard({
     };
   }, [open]);
 
-  if (todos.length === 0 && activities.length === 0 && queued.length === 0) return null;
+  if (todos.length === 0 && running.length === 0 && queued.length === 0) return null;
 
   const capsuleContent = summary ? (
     <>
@@ -219,29 +211,25 @@ export function SubagentActivityCard({
   // A lone section needs no heading: the capsule already names it.
   const showSectionTitles = [todos.length > 0, hasAgents, queued.length > 0].filter(Boolean).length > 1;
 
-  const agentRow = (activity: SubagentActivity, faded: boolean) => {
+  const agentRow = (activity: SubagentActivity) => {
     const content = (
       <>
         <AgentStatusIcon status={activity.status} />
-        <span className="subagent-activity-name" title={activity.title}>{activity.title}</span>
         {activity.agentType ? (
           <span className="subagent-activity-note" title={activity.agentType}>{activity.agentType}</span>
         ) : null}
+        <span className="subagent-activity-name" title={activity.title}>{activity.title}</span>
         <span className="subagent-activity-elapsed">{elapsedLabel(activity, now, t)}</span>
       </>
     );
     return activity.childSessionId === undefined ? (
-      <div
-        className={`subagent-activity-row is-pending${faded ? " is-ended" : ""}`}
-        key={activity.key}
-        aria-disabled="true"
-      >
+      <div className="subagent-activity-row is-pending" key={activity.key} aria-disabled="true">
         {content}
       </div>
     ) : (
       <button
         type="button"
-        className={`subagent-activity-row${faded ? " is-ended" : ""}`}
+        className="subagent-activity-row"
         key={activity.key}
         onClick={() => onOpenActivity(activity)}
         aria-label={t("desktop.openSubagent", { title: activity.title })}
@@ -250,6 +238,19 @@ export function SubagentActivityCard({
       </button>
     );
   };
+
+  // Todos fold to what matters now: one row for everything done, the step in
+  // progress, and the next few; the rest behind "N more".
+  const completedTodos = todos.filter((item) => item.status === "completed");
+  const activeTodos = todos.filter((item) => item.status === "in_progress");
+  const pendingTodos = todos.filter((item) => item.status === "pending");
+  const shownPending = pendingOpen ? pendingTodos : pendingTodos.slice(0, NEXT_TODOS_SHOWN);
+  const todoRow = (item: StatusTodoItem) => (
+    <li key={item.id} className={`status-todo-row is-${item.status}`} data-todo-status={item.status}>
+      <TodoStatusIcon status={item.status} />
+      <span className="status-todo-subject" title={item.subject}>{item.subject}</span>
+    </li>
+  );
 
   return (
     <div
@@ -284,16 +285,30 @@ export function SubagentActivityCard({
               <section className="status-card-section" data-testid="status-progress-section">
                 {showSectionTitles ? <div className="status-section-title">{t("desktop.statusTodos")}</div> : null}
                 <ul className="status-todo-list">
-                  {todos.map((item) => (
-                    <li
-                      key={item.id}
-                      className={`status-todo-row is-${item.status}`}
-                      data-todo-status={item.status}
-                    >
-                      <TodoStatusIcon status={item.status} />
-                      <span className="status-todo-subject" title={item.subject}>{item.subject}</span>
+                  {completedTodos.length > 0 ? (
+                    <li>
+                      <button
+                        type="button"
+                        className="status-todo-row status-todo-fold is-completed"
+                        aria-expanded={completedOpen}
+                        onClick={() => setCompletedOpen((value) => !value)}
+                      >
+                        <TodoStatusIcon status="completed" />
+                        <span className="status-todo-subject">{t("desktop.statusTodosDone", { count: completedTodos.length })}</span>
+                      </button>
                     </li>
-                  ))}
+                  ) : null}
+                  {completedOpen ? completedTodos.map(todoRow) : null}
+                  {activeTodos.map(todoRow)}
+                  {shownPending.map(todoRow)}
+                  {pendingTodos.length > shownPending.length ? (
+                    <li>
+                      <button type="button" className="status-todo-row status-todo-fold" onClick={() => setPendingOpen(true)}>
+                        <span className="status-todo-more-spacer" aria-hidden="true" />
+                        <span className="status-todo-subject">{t("desktop.statusTodosMore", { count: pendingTodos.length - shownPending.length })}</span>
+                      </button>
+                    </li>
+                  ) : null}
                 </ul>
               </section>
             ) : null}
@@ -304,8 +319,7 @@ export function SubagentActivityCard({
               >
                 {showSectionTitles ? <div className="status-section-title">{t("desktop.subagents")}</div> : null}
                 <div className="subagent-activity-body">
-                  {running.map((activity) => agentRow(activity, false))}
-                  {ended.map((activity) => agentRow(activity, true))}
+                  {running.map((activity) => agentRow(activity))}
                 </div>
               </section>
             ) : null}
