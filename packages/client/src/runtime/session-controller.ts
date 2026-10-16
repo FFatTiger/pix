@@ -235,6 +235,13 @@ export interface ControllerView {
    */
   readonly hasAdmittedSnapshot: boolean;
   /**
+   * The attachment was lost to the transport (not a detach, stop or switch)
+   * and this controller is reconnecting to the same session at the same
+   * cursor. The last admitted state stays presentable — transcript, model,
+   * capabilities — and queued sends wait for the re-attach instead of failing.
+   */
+  readonly resuming: boolean;
+  /**
    * This exact controller was installed from the Browser's identity-only create
    * path, whose initial thinking intent is necessarily automatic (explicit
    * concrete thinking travels later in submitTurn activation overrides).
@@ -306,6 +313,7 @@ const INITIAL_VIEW: ControllerView = {
   historyGeneration: 0,
   historyAnchorLeafId: null,
   hasAdmittedSnapshot: false,
+  resuming: false,
   createdWithAutoThinking: false,
   liveEntries: [],
   optimisticEntries: [],
@@ -718,6 +726,8 @@ const DEFAULT_DETACH_ACK_TIMEOUT_MS = 10_000;
 const DEFAULT_SIDE_CHAT_COMMAND_TIMEOUT_MS = 10_000;
 /** Bounded wait for shared transport sendability before a submit-turn envelope. */
 const SUBMIT_SEND_TIMEOUT_MS = 10_000;
+/** How long a steer / follow-up sent during transport recovery waits for the re-attach. */
+const QUEUED_TURN_RESUME_TIMEOUT_MS = 20_000;
 /** One silent recover-and-resend after a non-user send failure. Never loops. */
 const SUBMIT_RECOVERY_BUDGET_MS = 30_000;
 /** Bounded lifecycle/attach send gate (create/open through the shared transport gate). */
@@ -1295,7 +1305,7 @@ export class SessionController implements RuntimeControllerPort {
         retryable: false,
       } satisfies ProtocolError);
     }
-    if (!this.attached || !this.sessionId) {
+    if (!this.sessionId || (!this.attached && !this.resuming)) {
       return Promise.reject(this.notAttachedError());
     }
     if (this.pendingQueuedTurn) {
@@ -1324,7 +1334,8 @@ export class SessionController implements RuntimeControllerPort {
       const pending: QueuedTurnPending = { commandId: command.commandId, attempt: null, sessionId, command: wsMessage, type, resolve, reject };
       this.pendingQueuedTurn = pending;
       this.notify();
-      this.sendQueuedTurnAttempt(pending);
+      if (this.attached) this.sendQueuedTurnAttempt(pending);
+      else this.sendQueuedTurnAfterResume(pending);
     });
     return this.withOptimisticGuard(optimisticId, dispatch.then((value) => {
       // Pi 1.0 receipt: "handled" means an extension input handler consumed
@@ -2800,6 +2811,20 @@ export class SessionController implements RuntimeControllerPort {
   };
 
   getSnapshot = (): ControllerView => this.view;
+
+  /** See {@link ControllerView.resuming}. */
+  private get resuming(): boolean {
+    return !this.attached
+      && this.intendedSession !== null
+      && this.intendedSession.sessionId === this.sessionId
+      && this.authorityCursorKnown
+      && this.epoch !== null
+      && this.snapshot !== null
+      && !this.sessionStopped
+      && !this.stopping
+      && !this.fatal
+      && !this.runtimeConnection.getSnapshot().fatal;
+  }
 
   /** Narrow registry seams; no private lane fields are inspected externally. */
   get attachedNow(): boolean { return this.attached; }
@@ -4321,6 +4346,67 @@ export class SessionController implements RuntimeControllerPort {
     });
   }
 
+  /**
+   * Transport recovery: hold the queued turn (bubble already shown) until the
+   * resume attach lands. resyncAfterAttach then re-sends this slot with the
+   * same commandId (same epoch) or rejects it (epoch changed), exactly like a
+   * turn that was in flight when the transport dropped. Only the bound lives
+   * here: no re-attach in time fails it before it ever reached the wire.
+   */
+  private sendQueuedTurnAfterResume(pending: QueuedTurnPending): void {
+    void this.waitForReattach(pending.sessionId, QUEUED_TURN_RESUME_TIMEOUT_MS).then((attached) => {
+      if (attached || this.pendingQueuedTurn !== pending) return;
+      this.pendingQueuedTurn = null;
+      const error = { code: "unavailable", message: "session did not reconnect in time", retryable: false } satisfies ProtocolError;
+      this.reportQueuedSendFailure(pending, error);
+      pending.reject(error);
+      this.notify();
+    });
+  }
+
+  /** Resolve true once attached to `sessionId` again; false on timeout or when recovery is abandoned. */
+  private waitForReattach(sessionId: string, timeoutMs: number): Promise<boolean> {
+    if (this.attached && this.sessionId === sessionId) return Promise.resolve(true);
+    // Send intent: reconnect now instead of after the pending backoff step.
+    void this.runtimeConnection.whenSendable(timeoutMs).catch(() => undefined);
+    return new Promise<boolean>((resolve) => {
+      let unsubscribe: () => void = () => undefined;
+      const timer = this.setTimeoutFn(() => { unsubscribe(); resolve(false); }, timeoutMs);
+      unsubscribe = this.subscribe(() => {
+        if (this.attached && this.sessionId === sessionId) {
+          this.clearTimeoutFn(timer);
+          unsubscribe();
+          resolve(true);
+        } else if (!this.resuming) {
+          this.clearTimeoutFn(timer);
+          unsubscribe();
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  /** Fire-and-forget diagnostic for a steer / follow-up that never reached the wire. */
+  private reportQueuedSendFailure(pending: QueuedTurnPending, error: ProtocolError): void {
+    const report = this.runtimeConnection.reportSendFailure;
+    if (!report) return;
+    try {
+      report({
+        kind: "send_failure",
+        code: error.code,
+        phase: "activation",
+        message: `${pending.type}: ${error.message}`.slice(0, 200),
+        retryable: error.retryable,
+        connectionState: this.runtimeConnection.connectionState,
+        epoch: this.epoch,
+        sessionKind: this.snapshot?.cwd?.endsWith("/pix/assistant") ? "assistant" : "session",
+        sessionId: pending.sessionId,
+      });
+    } catch {
+      // Diagnostics never change send outcome.
+    }
+  }
+
   private sendQueuedTurnAttempt(pending: QueuedTurnPending): void {
     pending.attempt?.cancel();
     pending.attempt = this.binding.sendAttempt({
@@ -4763,6 +4849,7 @@ export class SessionController implements RuntimeControllerPort {
       historyGeneration: this.historyGeneration,
       historyAnchorLeafId: this.historyAnchorLeafId,
       hasAdmittedSnapshot: this.computeAdmittedSnapshotEligible(),
+      resuming: this.resuming,
       createdWithAutoThinking: this.createdWithAutoThinking,
       // Exact-session projection: `liveEntries` is COMMITTED ONLY. Speculative
       // user bubbles live exclusively in `optimisticEntries`. The legacy
@@ -4780,7 +4867,7 @@ export class SessionController implements RuntimeControllerPort {
       canAgent: transport.host?.capabilities.includes("agent") === true,
       queuedTurnPending: this.pendingQueuedTurn !== null,
       extensionUiReplyPending: this.pendingExtensionUiCommand !== null,
-      capabilities: this.attached ? (snapshot?.capabilities ?? null) : null,
+      capabilities: this.attached || this.resuming ? (snapshot?.capabilities ?? null) : null,
       turnActive: this.pendingTurn !== null,
       turnDelivery: this.pendingTurn === null ? null : this.pendingTurn.delivery,
       submitTurnEnabled: this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE),

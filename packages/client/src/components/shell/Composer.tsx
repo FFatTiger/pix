@@ -234,7 +234,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const firstPromptCreateRef = useRef<Promise<{ sessionId: string; cwd: string }> | null>(null);
 
   // `live` is true only when the selected session IS the attached runtime.
-  const live = (liveProp ?? exact?.attached ?? false) === true;
+  const live = (liveProp ?? (exact?.attached === true || exact?.resuming === true)) === true;
   // The SELECTED session the composer targets (send + draft). A live
   // standalone mount may inherit the attached session for backwards
   // compatibility. A non-live composer is a new-session surface, however:

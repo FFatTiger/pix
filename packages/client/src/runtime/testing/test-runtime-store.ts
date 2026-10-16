@@ -79,6 +79,7 @@ const EMPTY_VIEW: RuntimeView = {
   historyGeneration: 0,
   historyAnchorLeafId: null,
   hasAdmittedSnapshot: false,
+  resuming: false,
   createdWithAutoThinking: false,
   liveEntries: [],
   optimisticEntries: [],

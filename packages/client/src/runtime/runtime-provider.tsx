@@ -41,6 +41,7 @@ import {
   type ExactRuntimeView,
   type RuntimeConnectionApi,
 } from "./exact-runtime.js";
+import { coalesceBursts } from "./burst-coalescer.js";
 
 /** Detect the client shell (pwa when running standalone) and platform. */
 export function detectClientIdentity(navigatorLike: Navigator, matchMedia?: (q: string) => { matches: boolean }): ClientIdentity {
@@ -97,6 +98,8 @@ interface RuntimeContextValue {
   readonly connection: RuntimeConnection;
   /** The ONE SessionControllerRegistry owned by the provider (also owned by nothing else). */
   readonly registry: SessionControllerRegistry;
+  /** See RuntimeProviderProps.coalesceRenderBursts. */
+  readonly coalesceRenderBursts: boolean;
 }
 
 const RuntimeContext = createContext<RuntimeContextValue | null>(null);
@@ -106,9 +109,15 @@ export interface RuntimeProviderProps {
   /** Override socket IO deps (tests). */
   readonly deps?: Partial<RuntimeSocketDeps>;
   readonly options?: SessionControllerRegistryOptions;
+  /**
+   * Deliver per-session update bursts to React once per frame (see
+   * coalesceBursts). The app shell turns this on; tests keep synchronous
+   * delivery so a step's assertions see its updates without a frame.
+   */
+  readonly coalesceRenderBursts?: boolean;
 }
 
-export function RuntimeProvider({ children, deps, options }: RuntimeProviderProps) {
+export function RuntimeProvider({ children, deps, options, coalesceRenderBursts = false }: RuntimeProviderProps) {
   const [value] = useState<RuntimeContextValue>(() => {
     const socketDeps = createBrowserSocketDeps(deps);
     // RuntimeProvider OWNS exactly one RuntimeConnection and one
@@ -122,7 +131,7 @@ export function RuntimeProvider({ children, deps, options }: RuntimeProviderProp
       reportSendFailure,
     });
     const registry = new SessionControllerRegistry(connection, options);
-    return { connection, registry };
+    return { connection, registry, coalesceRenderBursts };
   });
   // The owner is INTENTIONALLY IMMUTABLE: `deps`/`options` are read only in the
   // useState initializer, so rerendering the provider with different props never
@@ -255,7 +264,7 @@ export function useRuntimeConnection(): RuntimeConnectionApi {
  * across admission/eviction/rebind/reconnect).
  */
 function useExactRuntime(sessionId: string | null): ExactRuntimeApi | null {
-  const { registry } = useRuntimeOwners();
+  const { registry, coalesceRenderBursts } = useRuntimeOwners();
   // Cache the projected exact view so `getSnapshot` is reference-stable between
   // REAL changes (useSyncExternalStore requires it — a fresh object per call
   // would loop). The cache is rebuilt only when membership flips or the exact
@@ -278,8 +287,15 @@ function useExactRuntime(sessionId: string | null): ExactRuntimeApi | null {
   }, [registry, sessionId]);
   const subscribe = useCallback((listener: () => void): (() => void) => {
     if (sessionId === null) return () => undefined;
-    return registry.subscribeSession(sessionId, listener);
-  }, [registry, sessionId]);
+    if (!coalesceRenderBursts) return registry.subscribeSession(sessionId, listener);
+    // Replay bursts reach React once per frame; see coalesceBursts.
+    const coalesced = coalesceBursts(listener);
+    const unsubscribe = registry.subscribeSession(sessionId, coalesced.notify);
+    return () => {
+      coalesced.cancel();
+      unsubscribe();
+    };
+  }, [registry, sessionId, coalesceRenderBursts]);
   const view = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   // Stable per-session actions — recreated only when the bound sessionId or
   // registry changes, NOT on admission/eviction/rebind/reconnect.

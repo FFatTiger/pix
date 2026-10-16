@@ -102,6 +102,27 @@ describe("RuntimeSocket", () => {
     expect(sockets).toHaveLength(2); // reconnected
   });
 
+  it("caps the reconnect wait at 2s while visible and keeps the full backoff while hidden", () => {
+    const sockets: FakeWebSocket[] = [];
+    let setVisible: (visible: boolean) => void = () => undefined;
+    const deps: RuntimeSocketDeps = {
+      ...makeDeps(sockets, { random: () => 0.999 }),
+      onVisibility: (cb) => { setVisible = cb; return () => undefined; },
+    };
+    const socket = new RuntimeSocket(deps, makeHandler({ states: [], acks: [], rejects: [], messages: [] }));
+    socket.connect();
+    // Six failed attempts: the uncapped wait would now be ~16s.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      sockets.at(-1)!.serverClose(1006);
+      vi.advanceTimersByTime(2_000);
+    }
+    expect(sockets).toHaveLength(7);
+    setVisible(false);
+    sockets.at(-1)!.serverClose(1006);
+    vi.advanceTimersByTime(2_000);
+    expect(sockets).toHaveLength(7);
+  });
+
   it("online/visibility recovery triggers immediate reconnect", () => {
     const sockets: FakeWebSocket[] = [];
     const onlineCbs: (() => void)[] = [];

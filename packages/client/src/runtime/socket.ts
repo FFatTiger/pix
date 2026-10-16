@@ -122,6 +122,14 @@ const DEFAULT_LIVENESS: LivenessOptions = {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 
+/**
+ * Reconnect wait ceiling while the page is visible. The full backoff (up to
+ * 30s) is for a background tab; someone looking at the screen expects the
+ * session back within moments of the network returning (a phone resuming a
+ * PWA usually has no network for its first seconds).
+ */
+const VISIBLE_RECONNECT_CAP_MS = 2_000;
+
 /** Host information negotiated at handshake (mode + capabilities + limits). */
 export interface NegotiatedHost {
   readonly mode: HostMode;
@@ -198,6 +206,8 @@ export class RuntimeSocket {
   private livenessNegotiated = false;
   private lastInboundAt = 0;
   private hiddenAt: number | null = null;
+  /** Last reported page visibility (assumed visible without a visibility hook). */
+  private pageVisible = true;
   private heartbeatTimer: Timer | null = null;
   private pingDeadlineTimer: Timer | null = null;
   private pingOutstanding = false;
@@ -498,7 +508,8 @@ export class RuntimeSocket {
       return;
     }
     this.reconnectAttempt += 1;
-    const delay = computeBackoffDelay(this.reconnectAttempt, this.deps.random, this.backoff);
+    const backoffDelay = computeBackoffDelay(this.reconnectAttempt, this.deps.random, this.backoff);
+    const delay = this.pageVisible ? Math.min(backoffDelay, VISIBLE_RECONNECT_CAP_MS) : backoffDelay;
     this.setState("unavailable");
     this.reconnectTimer = this.deps.setTimeout(() => {
       this.reconnectTimer = null;
@@ -506,6 +517,15 @@ export class RuntimeSocket {
       this.setState("reconnecting");
       this.openConnection();
     }, delay);
+  }
+
+  /**
+   * The user is trying to send while the transport is down: reconnect now
+   * instead of waiting out the current backoff. No-op while already sendable
+   * or while an attempt is in flight.
+   */
+  nudge(): void {
+    this.tryImmediateReconnect();
   }
 
   /** Try an immediate reconnect (online/visibility recovery), resetting the wait. */
@@ -537,6 +557,7 @@ export class RuntimeSocket {
    * reconnect so the first user action lands on a PROVEN transport.
    */
   private handleVisibilityChange(visible: boolean): void {
+    this.pageVisible = visible;
     if (!visible) {
       this.hiddenAt = this.deps.now();
       // iOS suspends timers for a hidden page. Stop the chain here so a

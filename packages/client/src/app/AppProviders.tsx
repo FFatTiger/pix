@@ -53,7 +53,7 @@ export function AppProviders({ children, host }: AppProvidersProps) {
       <QueryClientProvider client={queryClient}>
         <HttpClientProvider>
           <CapabilityProvider {...(host === undefined ? {} : { host })}>
-            <RuntimeProvider>
+            <RuntimeProvider coalesceRenderBursts>
               <SessionStagingProvider>
               {/* PWA resume: revalidate the boot surface on visibility/online/runtime reconnect. */}
               <ResumeRefetch />

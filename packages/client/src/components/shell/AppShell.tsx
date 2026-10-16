@@ -679,7 +679,10 @@ export function AppShell({ search }: AppShellProps) {
   // selected frame live — the selected session fails closed to its HISTORY
   // view while the Composer stays editable; sending performs the only
   // activation transition.
-  const selectionMatchesLive = activeRuntime?.attached === true;
+  // Transport recovery keeps the frame live: the last admitted state stays on
+  // screen and sends wait for the re-attach, instead of flipping to history
+  // (which cannot load while the network is still coming back).
+  const selectionMatchesLive = activeRuntime?.attached === true || activeRuntime?.resuming === true;
   const canAgents = canBrowseSessions && viewSessionId !== null;
   const canSideChat = selectionMatchesLive
     && activeRuntime?.capabilities?.capabilities.includes("runtime.side_chat") === true;

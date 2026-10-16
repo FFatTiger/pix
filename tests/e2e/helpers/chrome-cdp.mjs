@@ -310,6 +310,10 @@ export async function launchChromeCdp(options = {}) {
       async setHidden(hidden) {
         await this.evaluate(`(${SET_VISIBILITY})(${hidden ? "true" : "false"})`);
       },
+      /** Raw CDP command on this target (e.g. Page.setWebLifecycleState). */
+      async cdp(method, params = {}) {
+        return send(method, params, targetSession);
+      },
       async navigate(url) {
         await send("Page.navigate", { url }, targetSession);
         await this.waitFor("document.readyState === 'complete' || document.readyState === 'interactive'", { timeoutMs: 20_000, label: `navigate ${url}` });

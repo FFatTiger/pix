@@ -127,7 +127,7 @@ export function TranscriptList({
   // attached" becomes "live whenever THIS session is attached" — the facade
   // could wrongly report another session's attachment here). A non-selected
   // attached session never contributes rows.
-  const isLive = (liveProp ?? exact?.attached ?? false) === true;
+  const isLive = (liveProp ?? (exact?.attached === true || exact?.resuming === true)) === true;
   // Protocol v2: persisted history arrives as ONE complete deferred context
   // response; committed live entries come from the exact controller history
   // layer. The single shared hook merges both by persisted entryId.

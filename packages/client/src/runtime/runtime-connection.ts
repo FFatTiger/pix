@@ -543,6 +543,9 @@ export class RuntimeConnection implements RuntimeSocketHandler {
    */
   async whenSendable(timeoutMs: number): Promise<void> {
     const deadline = this.nowFn() + timeoutMs;
+    // A send waiting on a dead transport reconnects now rather than after the
+    // pending backoff step.
+    if (!canSend(this.connectionState)) this.socket.nudge();
     for (;;) {
       if (this.fatal || this.connectionState === "stopped") {
         throw this.error ?? { code: "unavailable", message: "runtime not sendable", retryable: false };

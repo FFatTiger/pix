@@ -393,6 +393,37 @@ describe("SessionStore — same-epoch resend vs epoch_changed reject", () => {
     await expect(promptP).resolves.toBeTruthy();
   });
 
+  it("a follow-up sent while the transport is down waits for the resume attach and goes out on it", async () => {
+    const h = createHarness();
+    let ws = await openAndAttach(h);
+    ws.serverClose(1006);
+    await flush();
+    const followUp = h.store.followUp("sent during reconnect");
+    await flush();
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(true);
+    ws = await reconnectReady(h);
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message?: string } } }>(ws, "command")!;
+    expect(cmd.payload.command).toMatchObject({ type: "follow_up", message: "sent during reconnect" });
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "follow_up" } } } });
+    await expect(followUp).resolves.toBeTruthy();
+  });
+
+  it("a follow-up held for a resume that never comes fails definitely, so the draft comes back", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    ws.serverClose(1006);
+    await flush();
+    const followUp = h.store.followUp("never delivered");
+    const settled = expect(followUp).rejects.toMatchObject({ code: "unavailable", retryable: false });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await settled;
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
   it("epoch_changed: NEVER re-sends the old commandId; rejects as ambiguous", async () => {
     const h = createHarness();
     let ws = await openAndAttach(h);

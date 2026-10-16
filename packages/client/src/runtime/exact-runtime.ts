@@ -76,6 +76,8 @@ export interface ExactRuntimeView {
    * attached/running state (never gates WS/running/presentation leases).
    */
   readonly hasAdmittedSnapshot: boolean;
+  /** See ControllerView.resuming: transport recovery of this exact attachment. */
+  readonly resuming: boolean;
   /** Browser-local identity-only create carried automatic thinking intent. */
   readonly createdWithAutoThinking: boolean;
   /** Committed live entries only; optimism lives exclusively in {@link optimisticEntries}. */
@@ -196,6 +198,7 @@ export function emptyExactView(sessionId: string): ExactRuntimeView {
     historyGeneration: 0,
     historyAnchorLeafId: null,
     hasAdmittedSnapshot: false,
+    resuming: false,
     createdWithAutoThinking: false,
     liveEntries: [],
     optimisticEntries: [],
@@ -224,6 +227,7 @@ export function projectExactView(sessionId: string, view: ControllerView): Exact
     historyGeneration: view.historyGeneration,
     historyAnchorLeafId: view.historyAnchorLeafId,
     hasAdmittedSnapshot: view.hasAdmittedSnapshot,
+    resuming: view.resuming,
     createdWithAutoThinking: view.createdWithAutoThinking,
     liveEntries: view.liveEntries,
     optimisticEntries: view.optimisticEntries,
