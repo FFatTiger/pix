@@ -79,6 +79,17 @@ describe("show_files", () => {
     }
   });
 
+  it("treats a blank open as no open", async () => {
+    const { cwd, file } = await fixture();
+    try {
+      const result = await tool().execute("c5", { files: [file], open: "  " } as never, undefined, undefined, { cwd });
+      assert.equal(result.isError, undefined);
+      assert.equal((result.details as { open?: string }).open, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed for a missing file, a directory, and an open outside the list", async () => {
     const { cwd, dir, file } = await fixture();
     try {

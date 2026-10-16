@@ -94,7 +94,8 @@ export function createShowFilesExtension(): InlineExtension {
         }
         if (files.length === 0) return toolError("没有可展示的文件。");
         let open: string | undefined;
-        if (params.open !== undefined) {
+        // Models often send open: "" for "none"; treat blank as unset.
+        if (params.open !== undefined && params.open.trim() !== "") {
           const resolvedOpen = resolveShowFile(params.open, ctx.cwd);
           if ("error" in resolvedOpen) return toolError(resolvedOpen.error);
           if (!seen.has(resolvedOpen.file.path)) {

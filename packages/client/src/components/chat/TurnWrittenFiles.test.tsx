@@ -14,15 +14,17 @@ function mount(files: TurnFileRow[], onOpenFile = vi.fn()) {
 }
 
 describe("TurnWrittenFiles", () => {
-  it("renders an image thumbnail from the files read URL and a chip for other files", () => {
+  it("renders an image thumbnail from the files read URL and an icon tile for other files", () => {
     mount([
       { source: "shown", filePath: "/x/shot.png", kind: "image" },
       { source: "shown", filePath: "/x/notes.md", kind: "file" },
     ]);
     const image = screen.getByRole("button", { name: "Open shot.png" }).querySelector("img");
     expect(image?.getAttribute("src")).toBe("/v1/files?path=%2Fx%2Fshot.png&op=read&sessionId=s-1");
-    expect(image?.style.height).toBe("64px");
-    expect(screen.getByRole("button", { name: "Open notes.md" }).querySelector("img")).toBeNull();
+    expect(screen.getByRole("button", { name: "Open shot.png" }).textContent).toBe("");
+    const file = screen.getByRole("button", { name: "Open notes.md" });
+    expect(file.querySelector("img")).toBeNull();
+    expect(file.textContent).toBe("notes.md");
   });
 
   it("opens a shown file in the right pane and a written file as a diff", () => {
