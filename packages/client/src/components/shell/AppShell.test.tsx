@@ -12,7 +12,7 @@ import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
 import { HttpClientProvider } from "@/app/http-context";
 import { ContextMenuProvider } from "@/components/ContextMenu";
-import { transcriptScrollRef } from "@/components/chat/chat-experience-bridge";
+import { openChatFile, transcriptScrollRef } from "@/components/chat/chat-experience-bridge";
 import { SessionStagingProvider } from "@/features/composer/session-staging-provider";
 import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
 import { CaptureTestRuntime } from "@/runtime/testing/capture-test-runtime";
@@ -4636,6 +4636,73 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     fireEvent.click(railFiles);
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-closed");
     expect(railFiles.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("previews a shown file inside Files, presses the rail, and reveals the file on back", async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
+      const p = String(path);
+      if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
+      if (p.includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
+      if (p.includes("op=read")) return json({ content: "AAAA", language: "text", size: 4 });
+      if (p.includes("/v1/git/diff")) return json({ supported: false });
+      if (p.includes("/v1/git/status")) return json({ isGitRepository: false, repositoryRoot: null, files: [], additions: 0, deletions: 0 });
+      if (p.includes("op=list") && p.includes(encodeURIComponent("/x/src"))) {
+        return json({ path: "/x/src", entries: [{ name: "notes.md", isDir: false, isSymlink: false }] });
+      }
+      if (p.includes("op=list")) return json({ path: "/x", entries: [{ name: "src", isDir: true, isSymlink: false }] });
+      if (p.includes("/v1/projects")) return json({ projects: [], page: 1, pageSize: 10, total: 0, totalPages: 0, catalogRevision: 0 });
+      if (p.includes("/v1/sessions")) return json({ sessions: [], page: 1, pageSize: 50, total: 0, totalPages: 0, catalogRevision: 0 });
+      if (p.includes("/v1/worktrees")) return json({ projectRoot: "/x", isGit: true, isTopLevel: true, worktrees: [] });
+      if (p.includes("/v1/models")) return json({ models: [], defaultModel: null });
+      if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
+      if (p.includes("/v1/skills")) return json({ skills: [] });
+      return json({});
+    }) as unknown as typeof fetch;
+    mountApp({ cwd: "/x" });
+    await settle();
+    const railFiles = screen.getByRole("button", { name: "Files" });
+    await act(async () => {
+      openChatFile("/x/src/notes.md", { source: "turn-files" });
+      await flush();
+    });
+    await settle();
+    expect(railFiles.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Back to files" })).toBeTruthy();
+    expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
+
+    fireEvent.click(railFiles);
+    expect(railFiles.getAttribute("aria-pressed")).toBe("false");
+    expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-closed");
+
+    fireEvent.click(railFiles);
+    await settle();
+    expect(screen.queryByRole("button", { name: "Back to files" })).toBeNull();
+    expect(document.querySelector('[aria-label="Files"]')).toBeTruthy();
+
+    await act(async () => {
+      openChatFile("/x/src/notes.md", { source: "turn-files" });
+      await flush();
+    });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Back to files" }));
+    await settle();
+    const revealed = document.querySelector('[data-path="/x/src/notes.md"]');
+    expect(revealed?.getAttribute("aria-current")).toBe("true");
+    expect(document.querySelector('[data-path="/x/src"]')).toBeTruthy();
+  });
+
+  it("opens a written file in the files pane as a diff", async () => {
+    globalThis.fetch = fileFetch();
+    mountApp({ cwd: "/x" });
+    await settle();
+    await act(async () => {
+      openChatFile("/x/a.ts", { source: "turn-files", initialDisplayMode: "diff" });
+      await flush();
+    });
+    await settle();
+    expect(screen.getByRole("button", { name: "Files" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Back to files" })).toBeTruthy();
   });
 });
 

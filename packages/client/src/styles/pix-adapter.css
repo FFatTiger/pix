@@ -2268,9 +2268,15 @@ html.dark .catalog-meta-item--error {
   color: var(--accent);
 }
 
-/* Files a turn showed the user (show_files): same-size tiles, one line, scrolls sideways. */
-.turn-shown-files { display: flex; gap: 6px; overflow-x: auto; margin-top: calc(var(--spacing) * 3); padding-bottom: 2px; scrollbar-width: thin; }
-.turn-shown-file { flex: none; width: 64px; height: 64px; padding: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-subtle); color: var(--text-muted); cursor: pointer; transition: border-color 0.12s, color 0.12s; }
-.turn-shown-file:hover { color: var(--text); border-color: var(--text-dim); }
-.turn-shown-file img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.turn-shown-file-name { max-width: 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--font-mono); }
+/* Files a turn showed the user (show_files): album grid, then a compact list. */
+.turn-shown-files { margin-top: calc(var(--spacing) * 3); }
+.turn-shown-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 4px; }
+.turn-shown-shot { aspect-ratio: 1; padding: 0; border: 0; border-radius: 10px; overflow: hidden; background: var(--bg-subtle); cursor: pointer; }
+.turn-shown-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.turn-shown-shot:hover { filter: brightness(1.06); }
+.turn-shown-list { display: flex; flex-direction: column; margin-top: 6px; }
+.turn-shown-files > .turn-shown-list:first-child { margin-top: 0; }
+.turn-shown-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 3px 6px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.turn-shown-row:hover { background: var(--bg-subtle); }
+.turn-shown-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
+.turn-shown-dir { margin-left: auto; flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); }

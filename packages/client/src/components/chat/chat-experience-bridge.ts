@@ -39,6 +39,11 @@ function notifyOpenFileListeners(): void {
  * Register the chat file-open receiver (a mounted file viewer). Returns the
  * unregister function; registering twice replaces the previous target.
  */
+/** Invoke the registered chat file-open receiver. No-op before one is mounted. */
+export function openChatFile(filePath: string, options?: { initialDisplayMode?: "diff"; source?: "turn-files" }): void {
+  openFileTarget?.(filePath, options);
+}
+
 export function registerChatOpenFileTarget(handler: ChatOpenFileHandler | null): () => void {
   openFileTarget = handler;
   notifyOpenFileListeners();

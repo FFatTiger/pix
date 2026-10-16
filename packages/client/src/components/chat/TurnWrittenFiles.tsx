@@ -1,29 +1,105 @@
-
 import { useI18n } from "@/hooks/useI18n";
 import { urls } from "@/api/urls";
-import { getFileName } from "@/lib/file-paths";
+import { getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
 import type { TurnFileRow } from "@/lib/turn-written-files";
 import { getFileIcon } from "./FileIcons";
 
 /**
- * Files a turn wrote or handed to the user (`show_files`).
- * Written files: chips that open in diff view. Shown files: a strip of
- * same-size tiles (image thumbnail, or file icon + name) that scrolls
- * sideways and opens a preview.
+ * Parent directory shown on a shown-file row, relative to the session cwd.
+ * The cwd itself is "./"; a path outside it keeps a ~-shortened absolute parent.
  */
-export function TurnWrittenFiles({ files, onOpenFile, sessionId }: {
+export function shownFileParentLabel(filePath: string, cwd?: string): string {
+  const parent = getFileDirectory(filePath);
+  if (!parent || parent === "/") return "";
+  if (!cwd) return shortenHome(parent);
+  const root = cwd.replace(/\/$/, "");
+  if (parent === root) return "./";
+  const relative = getRelativeFilePath(parent, root);
+  if (relative !== parent) return relative;
+  return shortenHome(parent);
+}
+
+function shortenHome(directory: string): string {
+  const home = homeDirectory();
+  if (home && (directory === home || directory.startsWith(`${home}/`))) {
+    return `~${directory.slice(home.length)}`;
+  }
+  return directory;
+}
+
+/** Best-effort user home for display only. Never used to resolve a real path. */
+function homeDirectory(): string | undefined {
+  const fromEnv = typeof process !== "undefined" ? process.env.HOME ?? process.env.USERPROFILE : undefined;
+  if (fromEnv) return fromEnv.replace(/\\/g, "/").replace(/\/$/, "");
+  return undefined;
+}
+
+/**
+ * Files a turn wrote or handed to the user (`show_files`).
+ * Shown images are an album grid; other shown files are a compact list with
+ * the parent directory. Written files stay the existing chips and open as a diff.
+ */
+export function TurnWrittenFiles({ files, onOpenFile, sessionId, cwd }: {
   files: TurnFileRow[];
   onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff"; source?: "turn-files" }) => void) | undefined;
   sessionId?: string | undefined;
+  cwd?: string | undefined;
 }) {
   const { t } = useI18n();
   if (files.length === 0) return null;
   const written = files.filter((file) => file.source === "written");
   const shown = files.filter((file) => file.source === "shown");
+  const images = shown.filter((file) => file.kind === "image");
+  const others = shown.filter((file) => file.kind !== "image");
   const open = (filePath: string) => onOpenFile?.(filePath, { source: "turn-files" });
 
   return (
     <>
+    {shown.length > 0 ? (
+      <div className="turn-shown-files" aria-label={t("desktop.filesShown")}>
+        {images.length > 0 ? (
+          <div className="turn-shown-grid">
+            {images.map((file) => {
+              const name = getFileName(file.filePath);
+              return (
+                <button
+                  key={file.filePath}
+                  type="button"
+                  className="turn-shown-shot"
+                  title={file.filePath}
+                  aria-label={t("desktop.openWrittenFile", { name })}
+                  onClick={() => open(file.filePath)}
+                >
+                  <img src={urls.files.file(file.filePath, "read", { sessionId })} alt="" />
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {others.length > 0 ? (
+          <div className="turn-shown-list">
+            {others.map((file) => {
+              const name = getFileName(file.filePath);
+              const parent = shownFileParentLabel(file.filePath, cwd);
+              return (
+                <button
+                  key={file.filePath}
+                  type="button"
+                  className="turn-shown-row"
+                  title={file.filePath}
+                  aria-label={t("desktop.openWrittenFile", { name })}
+                  onClick={() => open(file.filePath)}
+                >
+                  {getFileIcon(name, 16)}
+                  <span className="turn-shown-name">{name}</span>
+                  {parent ? <span className="turn-shown-dir">{parent}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    ) : null}
     {written.length > 0 ? (
     <div
       aria-label={t("desktop.filesWritten")}
@@ -74,33 +150,6 @@ export function TurnWrittenFiles({ files, onOpenFile, sessionId }: {
         );
       })}
     </div>
-    ) : null}
-    {shown.length > 0 ? (
-      <div className="turn-shown-files" aria-label={t("desktop.filesShown")}>
-        {shown.map((file) => {
-          const name = getFileName(file.filePath);
-          const image = file.source === "shown" && file.kind === "image";
-          return (
-            <button
-              key={file.filePath}
-              type="button"
-              className="turn-shown-file"
-              title={file.filePath}
-              aria-label={t("desktop.openWrittenFile", { name })}
-              onClick={() => open(file.filePath)}
-            >
-              {image ? (
-                <img src={urls.files.file(file.filePath, "read", { sessionId })} alt="" />
-              ) : (
-                <>
-                  {getFileIcon(name, 24)}
-                  <span className="turn-shown-file-name">{name}</span>
-                </>
-              )}
-            </button>
-          );
-        })}
-      </div>
     ) : null}
     </>
   );

@@ -903,7 +903,7 @@ function AssistantMessageView({
       </div>
 
       {turnFiles && turnFiles.length > 0 && (
-        <TurnWrittenFiles files={turnFiles} onOpenFile={onOpenFile} sessionId={sessionId} />
+        <TurnWrittenFiles files={turnFiles} onOpenFile={onOpenFile} sessionId={sessionId} cwd={cwd} />
       )}
 
       {!isStreaming && (textContent || time || message.provider || turnStopped) && (

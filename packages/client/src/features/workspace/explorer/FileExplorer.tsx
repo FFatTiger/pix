@@ -28,6 +28,8 @@ interface Props {
   onAtMention?: ((relativePath: string, isDir: boolean) => void) | undefined;
   onAtMentions?: ((relativePaths: string[]) => void) | undefined;
   onUploadBusyChange?: ((busy: boolean) => void) | undefined;
+  /** Expand to this file, scroll it into view, and highlight it. Outside cwd is ignored. */
+  revealPath?: string | null | undefined;
 }
 
 export interface FileExplorerHandle {
@@ -148,6 +150,7 @@ function TreeNode({
   expandedPaths,
   onToggleExpanded,
   highlightedPaths,
+  selectedPath,
   ignoredPaths,
   changedFiles,
 }: {
@@ -159,11 +162,18 @@ function TreeNode({
   expandedPaths: Set<string>;
   onToggleExpanded: (fullPath: string, open: boolean) => void;
   highlightedPaths: Set<string>;
+  selectedPath?: string | null | undefined;
   ignoredPaths: Set<string>;
   changedFiles: Map<string, ExplorerGitStatus>;
 }) {
   const open = expandedPaths.has(node.fullPath);
   const highlighted = highlightedPaths.has(node.fullPath);
+  const selected = selectedPath === node.fullPath;
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!selected) return;
+    rowRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [selected]);
   const pathKey = gitPathKey(node.fullPath);
   const ignored = isIgnoredPath(pathKey, ignoredPaths);
   const gitStatus = getNodeGitStatus(pathKey, node.isDir, changedFiles);
@@ -226,6 +236,9 @@ function TreeNode({
   return (
     <div>
       <div
+        ref={rowRef}
+        data-path={node.fullPath}
+        aria-current={selected ? "true" : undefined}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         onMouseEnter={() => setHovered(true)}
@@ -239,7 +252,7 @@ function TreeNode({
           paddingRight: 8,
           height: 24,
           cursor: "pointer",
-          background: hovered ? "var(--bg-hover)" : "transparent",
+          background: selected || hovered ? "var(--bg-hover)" : "transparent",
           borderRadius: 4,
           userSelect: "none",
           opacity: ignored ? (hovered ? 0.72 : 0.5) : 1,
@@ -368,6 +381,7 @@ function TreeNode({
               expandedPaths={expandedPaths}
               onToggleExpanded={onToggleExpanded}
               highlightedPaths={highlightedPaths}
+              selectedPath={selectedPath}
               ignoredPaths={ignoredPaths}
               changedFiles={changedFiles}
             />
@@ -416,9 +430,11 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   onAtMention,
   onAtMentions,
   onUploadBusyChange,
+  revealPath,
 }, ref) {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(new Set());
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -585,11 +601,35 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       uploadAbortRef.current?.abort();
       setExpandedPaths(new Set());
       setHighlightedPaths(new Set());
+      setSelectedPath(null);
       setUploadSummary(null);
       setPendingConflict(null);
       setUploadError(null);
     }
   }, [cwd]);
+
+  // Reveal expands every ancestor inside cwd and selects the file. A path
+  // outside the workspace has nothing to expand, so it is left alone.
+  useEffect(() => {
+    if (!revealPath) return;
+    const root = cwd.replace(/\/$/, "");
+    if (revealPath !== root && !revealPath.startsWith(`${root}/`)) return;
+    const parent = revealPath.slice(0, revealPath.lastIndexOf("/"));
+    if (parent.length > root.length) {
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        let cursor = parent;
+        while (cursor.length > root.length) {
+          next.add(cursor);
+          const slash = cursor.lastIndexOf("/");
+          if (slash <= root.length) break;
+          cursor = cursor.slice(0, slash);
+        }
+        return next;
+      });
+    }
+    setSelectedPath(revealPath);
+  }, [cwd, revealPath]);
 
   useEffect(() => () => uploadAbortRef.current?.abort(), []);
 
@@ -738,6 +778,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
               expandedPaths={expandedPaths}
               onToggleExpanded={handleToggleExpanded}
               highlightedPaths={highlightedPaths}
+              selectedPath={selectedPath}
               ignoredPaths={ignoredPaths}
               changedFiles={changedFiles}
             />

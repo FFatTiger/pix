@@ -38,6 +38,8 @@ export interface ExplorerPanelProps {
   /** Whether the panel is on screen. Gates queries so a hidden panel never
    *  fires file/git requests (the container stays mounted for animations). */
   visible?: boolean;
+  /** Expand the tree to this file, scroll it into view, and highlight it. */
+  revealPath?: string | null | undefined;
 }
 
 /** Fixed file-search error copy (code-first, then kind, fixed fallback). */
@@ -71,7 +73,7 @@ function describeIndexError(error: unknown): string {
   return "Unable to search files.";
 }
 
-export function ExplorerPanel({ cwd, canFiles, onOpenFile, onAtMention, onAtMentions, headerAction, visible = true }: ExplorerPanelProps) {
+export function ExplorerPanel({ cwd, canFiles, onOpenFile, onAtMention, onAtMentions, headerAction, visible = true, revealPath }: ExplorerPanelProps) {
   const { t } = useI18n();
   const http = useHttpClient();
   const options = useMemo(() => createQueryOptions(http), [http]);
@@ -358,6 +360,7 @@ export function ExplorerPanel({ cwd, canFiles, onOpenFile, onAtMention, onAtMent
                 {...(onAtMention === undefined ? {} : { onAtMention })}
                 {...(onAtMentions === undefined ? {} : { onAtMentions })}
                 onUploadBusyChange={setExplorerUploadBusy}
+                revealPath={revealPath}
               />
             </div>
           )}

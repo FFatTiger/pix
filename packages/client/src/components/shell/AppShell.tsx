@@ -61,7 +61,7 @@ import { useVisualViewportFrame } from "@/hooks/useVisualViewportHeight";
 import { useGateStatus } from "@/features/gate/useGate";
 import { useHttpClient } from "@/app/http-context";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
-import { ChatsCircleIcon, FilesIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowLeftIcon, ChatsCircleIcon, FilesIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
 import { AssistantEntryChip } from "@/components/shell/AssistantEntryChip";
 import { setDraft } from "@/lib/draft-store";
 import {
@@ -79,7 +79,7 @@ export interface AppShellProps {
   search: WorkspaceSearch;
 }
 
-type RightPane = "files" | "subagents" | "side_chat" | "preview" | null;
+type RightPane = "files" | "subagents" | "side_chat" | null;
 
 /** Shared session-label fallback: explicit title → first message → short id. */
 function sessionLabelFor(session: { title?: string | undefined; firstMessage?: string | undefined; sessionId: string }): string {
@@ -405,8 +405,11 @@ export function AppShell({ search }: AppShellProps) {
   // ── Shared right panel (Files, Agents, or Side chat) ─────────────────────
   const [rightPane, setRightPane] = useState<RightPane>(null);
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
-  /** File the right pane previews. Set only by a live tool result or a chip click. */
+  /** File previewed inside the files pane. Null shows the tree. Cleared when the pane closes. */
   const [previewFile, setPreviewFile] = useState<string | null>(null);
+  const [previewDisplayMode, setPreviewDisplayMode] = useState<"diff" | undefined>(undefined);
+  /** Path the tree should expand to after leaving a preview that lives inside filesCwd. */
+  const [revealPath, setRevealPath] = useState<string | null>(null);
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
@@ -1013,6 +1016,14 @@ export function AppShell({ search }: AppShellProps) {
     void navigate({ to: "/", search: search.cwd === undefined ? {} : { cwd: search.cwd } });
   }, [navigate, search.cwd]);
 
+  const closeRightPane = useCallback(() => {
+    setRightPane(null);
+    setPreviewFile(null);
+    setPreviewDisplayMode(undefined);
+    setRevealPath(null);
+    setSelectedChildSessionId(null);
+  }, []);
+
   // ── File open ────────────────────────────────────────────────────────────
   // Opening a file (file browser, chat file links, written-file rows,
   // linked files) creates/activates ONE file tab owned by the current
@@ -1039,8 +1050,8 @@ export function AppShell({ search }: AppShellProps) {
       initialDisplayMode: openOptions.initialDisplayMode,
     }));
     void navigate({ to: "/", search: { cwd, file: filePath } });
-    if (isMobile) setRightPane(null);
-  }, [canFiles, navigate, isMobile]);
+    if (isMobile) closeRightPane();
+  }, [canFiles, closeRightPane, navigate, isMobile]);
 
   // Linked files inside the viewer open a new file tab carrying the active
   // file tab's source session (the file that linked it).
@@ -1060,7 +1071,9 @@ export function AppShell({ search }: AppShellProps) {
       // in the right pane. Every other chat link still opens a main-area tab.
       if (options?.source === "turn-files") {
         setPreviewFile(filePath);
-        setRightPane("preview");
+        setPreviewDisplayMode(options.initialDisplayMode);
+        setRevealPath(null);
+        setRightPane("files");
         return;
       }
       handleOpenFile(filePath, getFileName(filePath), {
@@ -1075,8 +1088,20 @@ export function AppShell({ search }: AppShellProps) {
   const handlePreviewFile = useCallback((filePath: string): void => {
     if (!canFiles) return;
     setPreviewFile(filePath);
-    setRightPane("preview");
+    setPreviewDisplayMode(undefined);
+    setRevealPath(null);
+    setRightPane("files");
   }, [canFiles]);
+
+  const closeFilePreview = useCallback(() => {
+    const cwd = filesCwdRef.current;
+    if (previewFile !== null && cwd !== undefined) {
+      const root = cwd.replace(/\/$/, "");
+      if (previewFile === root || previewFile.startsWith(`${root}/`)) setRevealPath(previewFile);
+    }
+    setPreviewFile(null);
+    setPreviewDisplayMode(undefined);
+  }, [previewFile]);
 
   // Live tool results of the session the user is looking at. The first scan
   // after mount (and after every session switch) only records what is already
@@ -1099,7 +1124,9 @@ export function AppShell({ search }: AppShellProps) {
         const open = showFilesOpenPath(effect.details);
         if (open !== null && canFiles) {
           setPreviewFile(open);
-          setRightPane("preview");
+          setPreviewDisplayMode(undefined);
+          setRevealPath(null);
+          setRightPane("files");
         }
       } else if (effect.toolName === "open_session" && isAssistantView) {
         const target = openSessionTarget(effect.details);
@@ -1194,23 +1221,21 @@ export function AppShell({ search }: AppShellProps) {
   // RightPaneToggle plus the in-panel tab selector.
   const handleRailSelect = useCallback((pane: Exclude<RightPane, null>) => {
     if (rightPane === pane) {
-      setRightPane(null);
-      setSelectedChildSessionId(null);
+      closeRightPane();
       return;
     }
     selectRightPane(pane);
-  }, [rightPane, selectRightPane]);
+  }, [closeRightPane, rightPane, selectRightPane]);
 
   const handleToggleRightPane = useCallback(() => {
     if (rightPane !== null) {
-      setRightPane(null);
-      setSelectedChildSessionId(null);
+      closeRightPane();
       return;
     }
     if (canFiles) selectRightPane("files");
     else if (canAgents) selectRightPane("subagents");
     else if (canSideChat) selectRightPane("side_chat");
-  }, [canAgents, canFiles, canSideChat, rightPane, selectRightPane]);
+  }, [canAgents, canFiles, canSideChat, closeRightPane, rightPane, selectRightPane]);
 
   const handleSidebarToggle = useCallback(() => {
     if (isMobile) {
@@ -1225,8 +1250,7 @@ export function AppShell({ search }: AppShellProps) {
         if (wasOpening) setMobileSidebarMounted(false);
         return;
       }
-      setRightPane(null);
-      setSelectedChildSessionId(null);
+      closeRightPane();
       mobileSidebarOpeningRef.current = true;
       setMobileSidebarMounted(true);
       mobileSidebarOpenFrameRef.current = window.requestAnimationFrame(() => {
@@ -1239,7 +1263,7 @@ export function AppShell({ search }: AppShellProps) {
       return;
     }
     setSidebarOpen((prev) => !prev);
-  }, [isMobile, sidebarOpen, sidebarPanel.panelRef]);
+  }, [closeRightPane, isMobile, sidebarOpen, sidebarPanel.panelRef]);
 
   const handleMobileSidebarClose = useCallback(() => {
     mobileSidebarOpeningRef.current = false;
@@ -1261,9 +1285,8 @@ export function AppShell({ search }: AppShellProps) {
     openSubagentPanel(activity.childSessionId);
   }, [openSubagentPanel]);
   const handleCloseSubagentPanel = useCallback(() => {
-    setRightPane(null);
-    setSelectedChildSessionId(null);
-  }, []);
+    closeRightPane();
+  }, [closeRightPane]);
 
   const handleMobileSidebarTransitionEnd = useCallback((event: React.TransitionEvent<HTMLDivElement>) => {
     if (!isMobile || sidebarOpen || event.target !== event.currentTarget) return;
@@ -1583,14 +1606,51 @@ export function AppShell({ search }: AppShellProps) {
           </div>
         ) : null}
         <div className="right-panel-content">
-          <div className="right-panel-surface" hidden={!fileBrowserOpen}>
+          <div className="right-panel-surface" hidden={!fileBrowserOpen || previewFile !== null}>
             <ExplorerPanel
               cwd={filesCwd}
               canFiles={canFiles}
               visible={fileBrowserOpen}
               onOpenFile={handleOpenFile}
+              revealPath={revealPath}
             />
           </div>
+          {fileBrowserOpen && previewFile !== null && filesCwd !== undefined ? (
+            <section className="subagent-panel" aria-label={t("desktop.previewFile", { file: getFileName(previewFile) })}>
+              <header className="subagent-panel-head">
+                <button
+                  type="button"
+                  className="subagent-icon-button"
+                  onClick={closeFilePreview}
+                  title={t("desktop.backToFiles")}
+                  aria-label={t("desktop.backToFiles")}
+                >
+                  <ArrowLeftIcon size={16} aria-hidden="true" />
+                </button>
+                <span className="subagent-panel-heading" title={previewFile}>{getFileName(previewFile)}</span>
+                <span className="subagent-panel-head-spacer" />
+                {isMobile ? (
+                  <button
+                    type="button"
+                    className="subagent-icon-button"
+                    onClick={closeRightPane}
+                    title={t("desktop.close")}
+                    aria-label={t("desktop.close")}
+                  >
+                    <XIcon size={15} aria-hidden="true" />
+                  </button>
+                ) : null}
+              </header>
+              <FileViewer
+                key={`${previewFile}:${previewDisplayMode ?? "source"}`}
+                filePath={previewFile}
+                cwd={filesCwd}
+                sourceSessionId={viewSessionId}
+                {...(previewDisplayMode === undefined ? {} : { initialDisplayMode: previewDisplayMode })}
+                onOpenFile={handlePreviewFile}
+              />
+            </section>
+          ) : null}
           {subagentPanelOpen && viewSessionId !== null ? (
             <SubagentPanel
               activities={subagentActivity.activities}
@@ -1608,32 +1668,6 @@ export function AppShell({ search }: AppShellProps) {
               closable={isMobile}
               childStream={subagentActivity.childStream(selectedChildSessionId)}
             />
-          ) : null}
-          {rightPane === "preview" && previewFile !== null && filesCwd !== undefined ? (
-            <section className="subagent-panel" aria-label={t("desktop.previewFile", { file: getFileName(previewFile) })}>
-              <header className="subagent-panel-head">
-                <span className="subagent-panel-heading" title={previewFile}>{getFileName(previewFile)}</span>
-                <span className="subagent-panel-head-spacer" />
-                {isMobile ? (
-                  <button
-                    type="button"
-                    className="subagent-icon-button"
-                    onClick={() => setRightPane(null)}
-                    title={t("desktop.close")}
-                    aria-label={t("desktop.close")}
-                  >
-                    <XIcon size={15} aria-hidden="true" />
-                  </button>
-                ) : null}
-              </header>
-              <FileViewer
-                key={previewFile}
-                filePath={previewFile}
-                cwd={filesCwd}
-                sourceSessionId={viewSessionId}
-                onOpenFile={handlePreviewFile}
-              />
-            </section>
           ) : null}
           {rightPane === "side_chat" && canSideChat && activeRuntime !== null ? (
             <SideChatPanel
