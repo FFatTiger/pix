@@ -3,8 +3,8 @@ import { BellSimple, X } from "@phosphor-icons/react";
 import type { ExtensionNotificationItem } from "@fffattiger/pix-protocol";
 import { useI18n } from "@/hooks/useI18n";
 
-/** How long a new notice stays before it starts fading. Hover pauses it. */
-const TOAST_AUTO_HIDE_MS = 6000;
+/** How long a new notice stays before it fades. The bell holds the full text. */
+const TOAST_AUTO_HIDE_MS = 4000;
 /** Must match the toast opacity transition. */
 const TOAST_FADE_MS = 200;
 
@@ -43,9 +43,6 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
   const latestKey = latest === undefined ? null : noticeKey(latest);
   const [phase, setPhase] = useState<"visible" | "fading" | "hidden">("visible");
   const [listOpen, setListOpen] = useState(false);
-  const [paused, setPaused] = useState(false);
-  // Expanded shows the full message in a card under the pill; auto-hide stays paused while on.
-  const [expanded, setExpanded] = useState(false);
   const autoHideTimer = useRef<number | null>(null);
   const fadeTimer = useRef<number | null>(null);
 
@@ -72,12 +69,11 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
   useEffect(() => {
     setPhase("visible");
     setListOpen(false);
-    setExpanded(false);
     return clearTimers;
   }, [clearTimers, latestKey]);
 
   useEffect(() => {
-    if (phase !== "visible" || listOpen || paused || expanded || latestKey === null) return;
+    if (phase !== "visible" || listOpen || latestKey === null) return;
     autoHideTimer.current = window.setTimeout(() => {
       autoHideTimer.current = null;
       beginFade();
@@ -88,13 +84,11 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
         autoHideTimer.current = null;
       }
     };
-  }, [beginFade, expanded, latestKey, listOpen, paused, phase]);
+  }, [beginFade, latestKey, listOpen, phase]);
 
   useEffect(() => () => clearTimers(), [clearTimers]);
 
   if (latest === undefined) return null;
-
-  const toggleExpanded = () => setExpanded((current) => !current);
 
   const showToast = phase !== "hidden" && !listOpen;
   const recent = [...notices].reverse();
@@ -107,42 +101,11 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
           data-testid="extension-notices"
           data-level={latest.level}
           data-phase={phase}
-          data-expanded={expanded ? "true" : undefined}
           role="status"
           aria-label={latest.message}
-          onMouseEnter={() => setPaused(true)}
-          onMouseLeave={() => setPaused(false)}
         >
           <span className="extension-notice-level-dot" aria-hidden="true" />
-          <span
-            className="extension-notice-message"
-            title={latest.message}
-            role="button"
-            tabIndex={0}
-            aria-expanded={expanded}
-            onClick={toggleExpanded}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                toggleExpanded();
-              }
-            }}
-          >
-            {latest.message}
-          </span>
-          <button
-            type="button"
-            className="extension-notice-dismiss"
-            aria-label={t("desktop.close")}
-            onClick={beginFade}
-          >
-            <X size={12} aria-hidden="true" />
-          </button>
-          {expanded ? (
-            <div className="extension-notice-detail" data-testid="extension-notice-detail">
-              {noticeBody(latest.message)}
-            </div>
-          ) : null}
+          <span className="extension-notice-message">{latest.message}</span>
         </div>
       ) : null}
       {phase === "hidden" && !listOpen ? (

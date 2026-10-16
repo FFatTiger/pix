@@ -5,7 +5,7 @@ import type { ExtensionNotificationItem } from "@fffattiger/pix-protocol";
 import { I18nProvider } from "@/hooks/useI18n";
 import { ExtensionNotices } from "./ExtensionNotices";
 
-const TOAST_AUTO_HIDE_MS = 6000;
+const TOAST_AUTO_HIDE_MS = 4000;
 const TOAST_FADE_MS = 200;
 
 function notice(message: string, at: number, level: ExtensionNotificationItem["level"] = "info"): ExtensionNotificationItem {
@@ -65,74 +65,17 @@ describe("ExtensionNotices", () => {
     expect(screen.getByTestId("extension-notices").textContent).toContain("next");
   });
 
-  it("keeps long notices visually compact while preserving the full message for accessibility", () => {
-    const message = `Smart Compact: ${"continuity warning ".repeat(40)}`;
+  it("is a fixed one-line note that takes no input; links live in the bell history", () => {
+    vi.useFakeTimers();
+    const message = `Lore connected: https://api.loremem.com ${"continuity warning ".repeat(20)}`;
     mount([notice(message, 1, "warning")]);
-
     const toast = screen.getByTestId("extension-notices");
-    const text = toast.querySelector(".extension-notice-message");
-    expect(text).toBeTruthy();
     expect(toast.getAttribute("aria-label")).toBe(message);
-    expect(text?.textContent).toBe(message);
-    expect(text?.getAttribute("title")).toBe(message);
-    // Collapsed stays one line; the full text stays in the DOM for the card.
-    expect(toast.getAttribute("data-expanded")).toBeNull();
-    expect(text?.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByTestId("extension-notice-detail")).toBeNull();
-  });
-
-  it("expands the full message on tap and pauses auto-hide until collapsed", () => {
-    vi.useFakeTimers();
-    const message = `Smart Compact: ${"continuity warning ".repeat(40)}`;
-    mount([notice(message, 1)]);
-
-    const toast = screen.getByTestId("extension-notices");
-    const text = toast.querySelector(".extension-notice-message");
-    fireEvent.click(text!);
-    expect(toast.getAttribute("data-expanded")).toBe("true");
-    expect(text?.getAttribute("aria-expanded")).toBe("true");
-    const detail = screen.getByTestId("extension-notice-detail");
-    expect(detail.textContent).toBe(message);
-    expect(text?.textContent).toBe(message);
-
-    // Expanded pauses the fade: the full auto-hide window passes, still visible.
+    expect(toast.querySelectorAll("button, a, [role=button]")).toHaveLength(0);
     act(() => { vi.advanceTimersByTime(TOAST_AUTO_HIDE_MS + TOAST_FADE_MS); });
-    expect(screen.getByTestId("extension-notices").getAttribute("data-phase")).toBe("visible");
-
-    // Collapsing re-arms the timer.
-    fireEvent.click(text!);
-    expect(toast.getAttribute("data-expanded")).toBeNull();
-    act(() => { vi.advanceTimersByTime(TOAST_AUTO_HIDE_MS); });
-    expect(screen.getByTestId("extension-notices").getAttribute("data-phase")).toBe("fading");
-    act(() => { vi.advanceTimersByTime(TOAST_FADE_MS); });
-    expect(screen.queryByTestId("extension-notices")).toBeNull();
-  });
-
-  it("toggles expansion from the keyboard too", () => {
-    mount([notice("short notice", 1)]);
-    const text = screen.getByTestId("extension-notices").querySelector(".extension-notice-message");
-    fireEvent.keyDown(text!, { key: "Enter" });
-    expect(screen.getByTestId("extension-notices").getAttribute("data-expanded")).toBe("true");
-    fireEvent.keyDown(text!, { key: " " });
-    expect(screen.getByTestId("extension-notices").getAttribute("data-expanded")).toBeNull();
-  });
-
-  it("turns urls into links in the expanded card and dismisses immediately", () => {
-    vi.useFakeTimers();
-    mount([notice("authorize https://example.test/oauth now", 1)]);
-    expect(screen.queryByRole("button", { name: "Copy link" })).toBeNull();
-
-    fireEvent.click(screen.getByTestId("extension-notices").querySelector(".extension-notice-message")!);
-    const link = screen.getByRole("link", { name: "https://example.test/oauth" });
-    expect(link.getAttribute("href")).toBe("https://example.test/oauth");
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toContain("noopener");
-    expect(screen.getByTestId("extension-notice-detail").textContent).toBe("authorize https://example.test/oauth now");
-
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    act(() => { vi.advanceTimersByTime(TOAST_FADE_MS); });
-    expect(screen.queryByTestId("extension-notices")).toBeNull();
-    expect(screen.getByTestId("extension-notices-dot")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("extension-notices-dot"));
+    const link = screen.getByTestId("extension-notices-list").querySelector("a");
+    expect(link?.getAttribute("href")).toBe("https://api.loremem.com");
   });
 
   it("renders nothing when there are no notices", () => {
