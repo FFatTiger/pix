@@ -805,14 +805,21 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
       assert.equal(new ProjectTrustStore(agentDir).get(projectCwd), true);
       assert.equal((await readdir(agentDir)).some((name) => name.endsWith(".tmp")), false);
 
+      // POSIX keeps the bare rename: a replace failure is never retried and
+      // surfaces as TRUST_WRITE_FAILED. win32 cannot host the POSIX half
+      // against NTFS (every file reads 0o666 and trips the POSIX mode gates
+      // before the rename), so on a win32 host the same no-retry contract is
+      // proven with a code outside the win32 retry ladder (EIO); the POSIX
+      // half runs on POSIX hosts/CI.
+      const posixShape = process.platform !== "win32";
       await assert.rejects(
         createPiSdkTrustMutationStore({
           agentDir,
-          platform: "linux", // POSIX-style: no EPERM retry (the win32 host default would take it)
+          platform: posixShape ? "linux" : "win32",
           faultInjection: {
             failRename: () => {
               const error = new Error("replace denied") as NodeJS.ErrnoException;
-              error.code = "EPERM";
+              error.code = posixShape ? "EPERM" : "EIO";
               throw error;
             },
           },

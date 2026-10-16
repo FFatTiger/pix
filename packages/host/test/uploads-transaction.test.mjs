@@ -32,6 +32,21 @@ function assertNoUploadArtifacts(dir) {
   assert.deepEqual(leftovers, [], `no temp/backup leftovers in ${dir}`);
 }
 
+/** Directory-rename with a bounded retry. On NTFS the directory can be
+ * transiently held (AV/indexing scanning the just-written staged temp;
+ * EPERM/EBUSY/EACCES) — the swap the hook plants must still happen before
+ * the commit's identity re-verify, so retry briefly instead of failing the
+ * hook (which would surface as an unrelated 500). */
+async function renameDirStably(from, to, attempts = 20, delayMs = 50) {
+  for (let attempt = 0; ; attempt++) {
+    try { renameSync(from, to); return; }
+    catch (error) {
+      if (attempt >= attempts || !["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 test("transactional upload rolls back a created file when a later commit fails", async () => {
   const { root, app } = await fixture();
   setUploadFaultHooks({ beforeCommit: async (index) => { if (index === 1) throw new Error("simulated commit failure"); } });
@@ -126,7 +141,7 @@ test("upload refuses root/directory replacement between preflight and commit", a
   const movedRoot = `${root}-old`; temporary.push(movedRoot);
   const roots = await createAllowedRootService({ roots: [root] });
   const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots } }).app;
-  setUploadFaultHooks({ beforeCommit: async () => { renameSync(root, movedRoot); mkdirSync(root); } });
+  setUploadFaultHooks({ beforeCommit: async () => { await renameDirStably(root, movedRoot); mkdirSync(root); } });
   let res = await upload(app, root, [["a.txt", "aaa"]], "error");
   assert.equal(res.status, 403);
   assert.equal(readdirSync(root).length, 0, "replacement root untouched");
@@ -138,7 +153,7 @@ test("upload refuses root/directory replacement between preflight and commit", a
   const movedSub = `${sub}-old`; temporary.push(movedSub);
   const roots2 = await createAllowedRootService({ roots: [parentRoot] });
   const app2 = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots2 } }).app;
-  setUploadFaultHooks({ beforeCommit: async () => { renameSync(sub, movedSub); mkdirSync(sub); } });
+  setUploadFaultHooks({ beforeCommit: async () => { await renameDirStably(sub, movedSub); mkdirSync(sub); } });
   res = await upload(app2, sub, [["a.txt", "aaa"]], "error");
   assert.equal(res.status, 409);
   assert.equal((await res.json()).code, "DIRECTORY_REPLACED");
