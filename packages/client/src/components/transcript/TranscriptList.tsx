@@ -142,6 +142,7 @@ export function TranscriptList({
   const externalPartial = !isLive && externalStreaming != null ? externalStreaming : null;
   const running = (isLive && (liveState?.isStreaming === true || liveState?.isPromptRunning === true))
     || externalPartial !== null;
+  const lastTurnAborted = isLive ? liveState?.lastTurnAborted === true : false;
 
   // Fail-closed: while the sessions capability is retracted the transcript
   // never derives rows from cached history (stale) and never trusts a
@@ -246,6 +247,7 @@ export function TranscriptList({
         entryIds,
         streamingMessage,
         running,
+        ...(lastTurnAborted ? { lastTurnAborted: true } : {}),
         ...(cwd === undefined ? {} : { cwd }),
       });
       // Externally-driven tail (running subagent child in a read-only pane):
@@ -264,7 +266,7 @@ export function TranscriptList({
       }
       return built;
     },
-    [messages, entryIds, streamingMessage, running, cwd, isLive, tailActive, externalPartial],
+    [messages, entryIds, streamingMessage, running, lastTurnAborted, cwd, isLive, tailActive, externalPartial],
   );
 
   // ── Scroll-owner policy ────────────────────────────────────────────────
@@ -768,6 +770,7 @@ export function ChatTranscriptRowView({
       {...(row.prevTimestamp === undefined ? {} : { prevTimestamp: row.prevTimestamp })}
       {...(sessionId === undefined ? {} : { sessionId })}
       {...(row.writtenFiles === undefined ? {} : { writtenFiles: row.writtenFiles })}
+      {...(row.turnStopped === undefined ? {} : { turnStopped: row.turnStopped })}
       {...(mentionValidators === undefined ? {} : { mentionValidators })}
       skillInfo={skillInfo}
       {...(loadDeferredThinking === undefined ? {} : { loadDeferredThinking })}

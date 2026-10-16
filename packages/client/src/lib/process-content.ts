@@ -32,7 +32,8 @@ export type ProcessContentBlock =
       toolName: string;
       input: Record<string, unknown>;
       result?: ToolResultMessage | undefined;
-      duration?: number | undefined;
+      /** Recorded execution time in milliseconds; absent for legacy results. */
+      durationMs?: number | undefined;
       status: "running" | "success" | "error" | "unfinished";
       nested?: { parentToolCallId: string; call: NestedToolCalls["calls"][number] } | undefined;
       sharedBatch?: { input: unknown; result: ToolResultMessage; complete: boolean } | undefined;
@@ -54,7 +55,7 @@ export function expandNestedToolBlocks(block: ToolBlock): ToolBlock[] {
       toolName: call.name,
       input: typeof input === "object" && input !== null && !Array.isArray(input) ? input as Record<string, unknown> : {},
       status: call.status === "ok" ? "success" : call.status === "error" ? "error" : "unfinished",
-      duration: call.durationMs === undefined ? undefined : call.durationMs / 1000,
+      durationMs: call.durationMs,
       origin: { ...block.origin, groupId: block.toolCallId },
       nested: { parentToolCallId: block.toolCallId, call },
       sharedBatch: index === summary.calls.length - 1 ? { input: block.input, result: block.result!, complete: summary.complete } : undefined,
@@ -91,12 +92,6 @@ function displayableAssistantBlocks(message: AssistantMessage, isStreaming: bool
 
 function blockId(entryId: string | undefined, messageIndex: number, blockIndex: number): string {
   return `${entryId ?? `message-${messageIndex}`}:${blockIndex}`;
-}
-
-function toolDuration(message: AssistantMessage, result: ToolResultMessage | undefined): number | undefined {
-  if (!message.timestamp || !result?.timestamp) return undefined;
-  const seconds = Math.round((result.timestamp - message.timestamp) / 1000);
-  return seconds > 0 ? seconds : undefined;
 }
 
 export function messageToProcessContentBlocks(
@@ -164,7 +159,7 @@ export function messageToProcessContentBlocks(
       // process view model keeps the source's record shape.
       input: block.input as Record<string, unknown>,
       result,
-      duration: toolDuration(assistant, result),
+      durationMs: result?.durationMs,
       status: result?.isError ? "error" : result ? "success" : "running",
       origin: { ...originBase, groupId: block.toolCallId },
     });

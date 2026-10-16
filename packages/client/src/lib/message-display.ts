@@ -33,6 +33,22 @@ export function getAssistantErrorMessage(
   return message.errorMessage?.trim() || "Unknown provider error";
 }
 
+/** Duration formatter type shared with the process summary (i18n `t`). */
+export type DurationT = (key: string, params?: Record<string, string | number>) => string;
+
+/**
+ * Exact tool-execution duration for a tool row's meta position, from the
+ * recorded `durationMs` of the final result (Pi 1.1+). Sub-second values
+ * keep one decimal ("0.4 秒"); a minute or more reads "1 分 5 秒". Callers
+ * render nothing when `durationMs` is absent (legacy results).
+ */
+export function formatToolDurationMs(t: DurationT, durationMs: number): string {
+  if (durationMs < 1000) return t("desktop.toolDurationSeconds", { count: (durationMs / 1000).toFixed(1) });
+  const totalSeconds = Math.round(durationMs / 1000);
+  if (totalSeconds < 60) return t("desktop.toolDurationSeconds", { count: totalSeconds });
+  return t("desktop.toolDurationMinutes", { minutes: Math.floor(totalSeconds / 60), seconds: totalSeconds % 60 });
+}
+
 /**
  * Fallback answer for an INTERRUPTED turn: the final assistant message ends
  * with tool calls (stopReason "toolUse") and no later answer message exists —

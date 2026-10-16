@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MarkdownBody } from "./MarkdownBody";
 import { MessageView, ThinkingBlock, ToolCallBlock } from "./MessageView";
+import { formatToolDurationMs } from "@/lib/message-display";
 import { CodemodeScriptOutputRow } from "./NestedToolDetails";
 import { CodexProcessContent } from "./CodexProcessContent";
 import { useDisclosurePresence } from "./DisclosureCollapse";
@@ -668,7 +669,7 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
             input: step.block.input,
           } as ToolCallContent}
           result={step.block.result}
-          duration={step.block.duration}
+          durationMs={step.block.durationMs}
           displayBlock={step.block}
           processStyle
         />
@@ -696,7 +697,7 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
                 input: block.input,
               } as ToolCallContent}
               result={block.result}
-              duration={block.duration}
+              durationMs={block.durationMs}
               displayBlock={block}
               processStyle
             />
@@ -1099,8 +1100,8 @@ export function ProcessGroup({
                               {step.label}
                             </span>
                           )}
-                          {step.kind === "tool" && step.block.duration !== undefined && (
-                            <span className="shrink-0 text-[11px] tabular-nums text-text-dim">{step.block.duration}s</span>
+                          {step.kind === "tool" && step.block.durationMs !== undefined && (
+                            <span className="shrink-0 text-[11px] tabular-nums text-text-dim">{formatToolDurationMs(t, step.block.durationMs)}</span>
                           )}
                           {isError && (
                             <span className="shrink-0 text-[11px] font-medium text-red-400">{t("desktop.processFailedStep")}</span>

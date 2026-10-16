@@ -9,7 +9,7 @@ import { copyText } from "@/lib/clipboard";
 import { cssPx, cssViewportSize } from "@/lib/ui-scale";
 import { urls } from "@/api/urls";
 
-import { isEmptyThinkingBlock } from "@/lib/message-display";
+import { formatToolDurationMs, isEmptyThinkingBlock } from "@/lib/message-display";
 import { parseSkillBlock } from "@/lib/skill-block";
 import type { MentionValidators } from "@/lib/mention-tokens";
 import { CompactionSummary } from "./CompactionSummary";
@@ -242,6 +242,8 @@ interface Props {
   prevTimestamp?: number;
   sessionId?: string;
   writtenFiles?: WrittenFile[];
+  /** pix adapter: this turn's settle was aborted (user stop) — settled-tail answer rows only. */
+  turnStopped?: boolean | undefined;
   /** pix adapter: mention validity injected instead of a project-context data hook. */
   mentionValidators?: MentionValidators | undefined;
   /** pix adapter: skill tooltip metadata injected instead of a skills data hook. */
@@ -279,12 +281,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, turnStopped, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} mentionValidators={mentionValidators} skillInfo={skillInfo} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} loadDeferredThinking={loadDeferredThinking} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} turnStopped={turnStopped} loadDeferredThinking={loadDeferredThinking} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -322,6 +324,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.skillInfo === next.skillInfo
     && prev.loadDeferredThinking === next.loadDeferredThinking
     && prev.loadBashFullOutput === next.loadBashFullOutput
+    && prev.turnStopped === next.turnStopped
     && haveSameWrittenFiles(prev.writtenFiles, next.writtenFiles);
 });
 
@@ -714,6 +717,7 @@ function AssistantMessageView({
   sessionId,
   entryId,
   writtenFiles,
+  turnStopped,
   loadDeferredThinking,
 }: {
   message: AssistantMessage;
@@ -727,6 +731,8 @@ function AssistantMessageView({
   sessionId?: string | undefined;
   entryId?: string | undefined;
   writtenFiles?: WrittenFile[] | undefined;
+  /** True when the turn's settle was aborted (user stop) — settled-tail answer rows only. */
+  turnStopped?: boolean | undefined;
   loadDeferredThinking?: DeferredThinkingLoader | undefined;
 }) {
   const { t } = useI18n();
@@ -775,21 +781,6 @@ function AssistantMessageView({
     const secs = Math.round((message.timestamp - prevTimestamp) / 1000);
     return secs > 0 ? secs : undefined;
   }, [message.timestamp, prevTimestamp]);
-
-  // Tool call durations derived from session file timestamps (accurate for completed messages)
-  // assistant message timestamp = when generation ended = when tools started running
-  // toolResult timestamp = when tool execution finished
-  const toolCallDurations = useMemo<Map<string, number>>(() => {
-    const map = new Map<string, number>();
-    if (!toolResults || !message.timestamp) return map;
-    for (const [callId, result] of toolResults) {
-      if (result.timestamp && message.timestamp) {
-        const secs = Math.round((result.timestamp - message.timestamp) / 1000);
-        if (secs > 0) map.set(callId, secs);
-      }
-    }
-    return map;
-  }, [toolResults, message.timestamp]);
 
   const textContent = blocks
     .filter((b): b is TextContent => b.type === "text")
@@ -898,7 +889,7 @@ function AssistantMessageView({
           </div>
         )}
         {blockItems.map(({ block, originalIndex }) => (
-          <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} loadDeferredThinking={loadDeferredThinking} />
+          <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} loadDeferredThinking={loadDeferredThinking} />
         ))}
       </div>
 
@@ -906,8 +897,13 @@ function AssistantMessageView({
         <TurnWrittenFiles files={writtenFiles} onOpenFile={onOpenFile} />
       )}
 
-      {!isStreaming && (textContent || time || message.provider) && (
+      {!isStreaming && (textContent || time || message.provider || turnStopped) && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+          {turnStopped && (
+            <span className="chat-turn-stopped" data-testid="chat-turn-stopped" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              {t("desktop.turnStopped")}
+            </span>
+          )}
           {message.provider && (
             <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
               {modelNames?.[`${message.provider}:${message.model}`] ?? modelNames?.[message.model] ?? message.model}
@@ -943,7 +939,7 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, sessionId, entryId, blockIndex, loadDeferredThinking }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage> | undefined; isStreaming?: boolean | undefined; streamingDuration?: number | undefined; toolCallDurations?: Map<string, number> | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined; sessionId?: string | undefined; entryId?: string | undefined; blockIndex: number; loadDeferredThinking?: DeferredThinkingLoader | undefined }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, cwd, onOpenFile, sessionId, entryId, blockIndex, loadDeferredThinking }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage> | undefined; isStreaming?: boolean | undefined; streamingDuration?: number | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined; sessionId?: string | undefined; entryId?: string | undefined; blockIndex: number; loadDeferredThinking?: DeferredThinkingLoader | undefined }) {
   if (block.type === "text") {
     return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
   }
@@ -953,15 +949,14 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
   if (block.type === "toolCall") {
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
-    const duration = toolCallDurations?.get(tc.toolCallId);
     const items = expandNestedToolBlocks({
       id: tc.toolCallId, type: "toolCall", toolCallId: tc.toolCallId, toolName: tc.toolName,
-      input: tc.input as Record<string, unknown>, result, duration,
+      input: tc.input as Record<string, unknown>, result, durationMs: result?.durationMs,
       status: result?.isError ? "error" : result ? "success" : "running",
       origin: { phase: "process", placement: "inline", sourceMessageIndex: 0, sourceBlockIndex: blockIndex },
     });
     const scriptBatch = items.find((item) => item.sharedBatch !== undefined)?.sharedBatch;
-    return <>{items.map((item) => <ToolCallBlock key={item.toolCallId} block={{ type: "toolCall", toolCallId: item.toolCallId, toolName: item.toolName, input: item.input }} result={item.result} duration={item.duration} displayBlock={item} />)}{scriptBatch !== undefined && <CodemodeScriptOutputRow batch={scriptBatch} />}</>;
+    return <>{items.map((item) => <ToolCallBlock key={item.toolCallId} block={{ type: "toolCall", toolCallId: item.toolCallId, toolName: item.toolName, input: item.input }} result={item.result} durationMs={item.durationMs} displayBlock={item} />)}{scriptBatch !== undefined && <CodemodeScriptOutputRow batch={scriptBatch} />}</>;
   }
   return null;
 }
@@ -1101,7 +1096,7 @@ function ThinkingContentBody({ block, sessionId, entryId, blockIndex, isStreamin
 // let the user opt into the full payload so expanding a 45K result stays snappy.
 const RESULT_PREVIEW_CHARS = 8000;
 
-export const ToolCallBlock = memo(function ToolCallBlock({ block, result, duration, processStyle = false, displayBlock }: { block: ToolCallContent; result?: ToolResultMessage | undefined; duration?: number | undefined; processStyle?: boolean; displayBlock?: Extract<ProcessContentBlock, { type: "toolCall" }> | undefined }) {
+export const ToolCallBlock = memo(function ToolCallBlock({ block, result, durationMs, processStyle = false, displayBlock }: { block: ToolCallContent; result?: ToolResultMessage | undefined; durationMs?: number | undefined; processStyle?: boolean; displayBlock?: Extract<ProcessContentBlock, { type: "toolCall" }> | undefined }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const inputStr = useMemo(() => JSON.stringify(block.input, null, 2), [block.input]);
@@ -1134,8 +1129,8 @@ export const ToolCallBlock = memo(function ToolCallBlock({ block, result, durati
         <span className="tool-call-preview">
           {getToolPreview(block)}
         </span>
-        {duration !== undefined && (
-          <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{duration}s</span>
+        {durationMs !== undefined && (
+          <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{formatToolDurationMs(t, durationMs)}</span>
         )}
         {displayBlock?.status === "unfinished" && <span className="tool-call-preview">{t("desktop.nestedToolCallUnfinished")}</span>}
         {displayBlock?.sharedBatch?.result.isError && <span className="tool-call-preview">{t("desktop.codemodeBatchFailed")}</span>}
