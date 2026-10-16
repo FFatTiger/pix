@@ -893,7 +893,6 @@ export const enLocale = {
     "desktop.filesWritten": "Files changed",
     "desktop.filesShown": "Files shown",
     "desktop.openWrittenFile": "Open {name}",
-    "desktop.backToFiles": "Back to files",
     "desktop.editFromHere": "Edit from here — branches within this session",
     "desktop.creatingNewSession": "Creating new session…",
     "desktop.newSessionFromHere": "New session — creates an independent copy from here",

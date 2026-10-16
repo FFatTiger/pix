@@ -893,7 +893,6 @@ export const zhCNLocale = {
     "desktop.filesWritten": "改动的文件",
     "desktop.filesShown": "展示的文件",
     "desktop.openWrittenFile": "打开 {name}",
-    "desktop.backToFiles": "返回文件",
     "desktop.editFromHere": "从此处编辑 — 在此会话内创建分支",
     "desktop.creatingNewSession": "正在创建新会话…",
     "desktop.newSessionFromHere": "新建会话 — 从此处创建独立副本",

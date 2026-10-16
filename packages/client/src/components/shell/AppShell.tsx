@@ -61,7 +61,7 @@ import { useVisualViewportFrame } from "@/hooks/useVisualViewportHeight";
 import { useGateStatus } from "@/features/gate/useGate";
 import { useHttpClient } from "@/app/http-context";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
-import { ArrowLeftIcon, ChatsCircleIcon, FilesIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
+import { ChatsCircleIcon, FilesIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
 import { AssistantEntryChip } from "@/components/shell/AssistantEntryChip";
 import { setDraft } from "@/lib/draft-store";
 import {
@@ -79,7 +79,7 @@ export interface AppShellProps {
   search: WorkspaceSearch;
 }
 
-type RightPane = "files" | "subagents" | "side_chat" | null;
+type RightPane = "files" | "subagents" | "side_chat" | "preview" | null;
 
 /** Shared session-label fallback: explicit title → first message → short id. */
 function sessionLabelFor(session: { title?: string | undefined; firstMessage?: string | undefined; sessionId: string }): string {
@@ -405,11 +405,9 @@ export function AppShell({ search }: AppShellProps) {
   // ── Shared right panel (Files, Agents, or Side chat) ─────────────────────
   const [rightPane, setRightPane] = useState<RightPane>(null);
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
-  /** File previewed inside the files pane. Null shows the tree. Cleared when the pane closes. */
+  /** File the preview pane shows (any allowed path, not only the workspace). Cleared when the pane closes. */
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [previewDisplayMode, setPreviewDisplayMode] = useState<"diff" | undefined>(undefined);
-  /** Path the tree should expand to after leaving a preview that lives inside filesCwd. */
-  const [revealPath, setRevealPath] = useState<string | null>(null);
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
@@ -1020,7 +1018,6 @@ export function AppShell({ search }: AppShellProps) {
     setRightPane(null);
     setPreviewFile(null);
     setPreviewDisplayMode(undefined);
-    setRevealPath(null);
     setSelectedChildSessionId(null);
   }, []);
 
@@ -1072,8 +1069,7 @@ export function AppShell({ search }: AppShellProps) {
       if (options?.source === "turn-files") {
         setPreviewFile(filePath);
         setPreviewDisplayMode(options.initialDisplayMode);
-        setRevealPath(null);
-        setRightPane("files");
+        setRightPane("preview");
         return;
       }
       handleOpenFile(filePath, getFileName(filePath), {
@@ -1089,19 +1085,8 @@ export function AppShell({ search }: AppShellProps) {
     if (!canFiles) return;
     setPreviewFile(filePath);
     setPreviewDisplayMode(undefined);
-    setRevealPath(null);
-    setRightPane("files");
+    setRightPane("preview");
   }, [canFiles]);
-
-  const closeFilePreview = useCallback(() => {
-    const cwd = filesCwdRef.current;
-    if (previewFile !== null && cwd !== undefined) {
-      const root = cwd.replace(/\/$/, "");
-      if (previewFile === root || previewFile.startsWith(`${root}/`)) setRevealPath(previewFile);
-    }
-    setPreviewFile(null);
-    setPreviewDisplayMode(undefined);
-  }, [previewFile]);
 
   // Live tool results of the session the user is looking at. The first scan
   // after mount (and after every session switch) only records what is already
@@ -1125,8 +1110,7 @@ export function AppShell({ search }: AppShellProps) {
         if (open !== null && canFiles) {
           setPreviewFile(open);
           setPreviewDisplayMode(undefined);
-          setRevealPath(null);
-          setRightPane("files");
+          setRightPane("preview");
         }
       } else if (effect.toolName === "open_session" && isAssistantView) {
         const target = openSessionTarget(effect.details);
@@ -1606,40 +1590,28 @@ export function AppShell({ search }: AppShellProps) {
           </div>
         ) : null}
         <div className="right-panel-content">
-          <div className="right-panel-surface" hidden={!fileBrowserOpen || previewFile !== null}>
+          <div className="right-panel-surface" hidden={!fileBrowserOpen}>
             <ExplorerPanel
               cwd={filesCwd}
               canFiles={canFiles}
               visible={fileBrowserOpen}
               onOpenFile={handleOpenFile}
-              revealPath={revealPath}
             />
           </div>
-          {fileBrowserOpen && previewFile !== null && filesCwd !== undefined ? (
+          {rightPane === "preview" && previewFile !== null && filesCwd !== undefined ? (
             <section className="subagent-panel" aria-label={t("desktop.previewFile", { file: getFileName(previewFile) })}>
               <header className="subagent-panel-head">
+                <span className="subagent-panel-heading" title={previewFile}>{getFileName(previewFile)}</span>
+                <span className="subagent-panel-head-spacer" />
                 <button
                   type="button"
                   className="subagent-icon-button"
-                  onClick={closeFilePreview}
-                  title={t("desktop.backToFiles")}
-                  aria-label={t("desktop.backToFiles")}
+                  onClick={closeRightPane}
+                  title={t("desktop.close")}
+                  aria-label={t("desktop.close")}
                 >
-                  <ArrowLeftIcon size={16} aria-hidden="true" />
+                  <XIcon size={15} aria-hidden="true" />
                 </button>
-                <span className="subagent-panel-heading" title={previewFile}>{getFileName(previewFile)}</span>
-                <span className="subagent-panel-head-spacer" />
-                {isMobile ? (
-                  <button
-                    type="button"
-                    className="subagent-icon-button"
-                    onClick={closeRightPane}
-                    title={t("desktop.close")}
-                    aria-label={t("desktop.close")}
-                  >
-                    <XIcon size={15} aria-hidden="true" />
-                  </button>
-                ) : null}
               </header>
               <FileViewer
                 key={`${previewFile}:${previewDisplayMode ?? "source"}`}
