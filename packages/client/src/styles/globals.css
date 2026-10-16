@@ -1264,12 +1264,6 @@ pre, code {
 .group\/process .codex-tool-group-items:empty {
   display: none;
 }
-.group\/process .codex-image-strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(112px, 160px));
-  gap: 8px;
-  padding-top: 10px;
-}
 .group\/process .codex-tool-group-scroll {
   max-height: min(320px, 42vh);
   padding-right: 4px;
@@ -1278,15 +1272,6 @@ pre, code {
   overscroll-behavior: contain;
   scrollbar-color: var(--border) transparent;
   scrollbar-width: thin;
-}
-.group\/process .codex-image-strip img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 1;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-subtle);
-  object-fit: cover;
 }
 .group\/process .codex-tool-row.is-error .codex-tool-icon,
 .group\/process .codex-tool-row.is-error .codex-tool-row-label {
@@ -1389,17 +1374,12 @@ pre, code {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.group\/process .codex-tool-images,
 .group\/process .codex-custom-content {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
   gap: 8px;
 }
-.group\/process .codex-tool-images {
-  padding: 0 9px 9px;
-}
-.group\/process .codex-tool-images img,
 .group\/process .codex-custom-content img,
 .group\/process .codex-process-image {
   display: block;

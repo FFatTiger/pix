@@ -1078,12 +1078,12 @@ export function createAssistantToolsExtension(
 
     pi.registerTool({
       name: "open_session",
-      label: "建议打开会话",
+      label: "打开会话",
       description: [
-        "建议用户打开某个会话（不直接执行）。工具解析目标并返回信息；界面会渲染「打开」按钮，用户点击后才会切换。",
+        "在用户界面以标签页打开某个会话。只在用户确实需要去看那个会话时调用，不要每次都帮用户打开。",
         "session 用 search_sessions 拿到的 id，或标题。",
       ].join(""),
-      promptSnippet: "生成「打开会话」按钮，用户点击后跳转。",
+      promptSnippet: "在用户界面以标签页打开一个会话。",
       parameters: Type.Object({
         session: Type.String({ description: "会话 id 或标题" }),
       }),
@@ -1091,7 +1091,15 @@ export function createAssistantToolsExtension(
         const resolved = await resolveTarget(params.session, signal);
         if ("error" in resolved) return resolved.error;
         const target = resolved.target;
-        return toolText(`已建议打开会话（等用户点击「打开」按钮）：\n${targetLine(target)}\n\n如果用户没有点击，请继续在当前对话里帮助他。`);
+        const title = target.name ?? target.firstMessage;
+        return {
+          content: [{ type: "text" as const, text: `已为用户打开会话：\n${targetLine(target)}` }],
+          details: {
+            sessionId: target.id,
+            cwd: target.cwd,
+            ...(title === undefined || title.trim() === "" ? {} : { title: concise(title, 80) }),
+          },
+        };
       },
     });
 

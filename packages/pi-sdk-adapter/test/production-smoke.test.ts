@@ -12,7 +12,7 @@ import { THINKING_LEVELS } from "@fffattiger/pix-runtime-core";
 // tools (smart_recall / smart_save_memory) are excluded — Pix memory has one
 // owner, the memory provider.
 const EXPECTED_SELECTED_WITH_CURATED = [
-  "Agent", "SendMessage", "TaskOutput", "TaskStop", "ask_user_question", "edit", "read", "todo",
+  "Agent", "SendMessage", "TaskOutput", "TaskStop", "ask_user_question", "edit", "read", "show_files", "todo",
   "smart_tools", "smart_navigation", "smart_context", "smart_compact",
   // These tests pin pixMemoryProvider to "local", so the bundled pi-memory
   // surface (minus the filtered memory_search) is part of the active set.

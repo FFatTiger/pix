@@ -81,7 +81,7 @@ export const ASSISTANT_SEGMENT_TEMPLATE = `这是一条长期对话：没有"新
 ## 会话动态与整理
 - 了解进度、待办和改动：session_status、list_open_todos、summarize_activity、search_sessions、read_session、find_file_changes。查询默认覆盖全部项目；用户点名某个项目时，聚焦在那个项目上。
 - 整理会话用 organize_sessions：改名直接生效，删除由用户在卡片上确认。
-- 带用户去某个会话用 open_session；用户想先过目再发的内容，用 draft_to_session 填进那个会话的输入框。
+- 用户确实需要去看某个会话时，用 open_session 在界面以标签页打开它；不要每次都打开。用户想先过目再发的内容，用 draft_to_session 填进那个会话的输入框。
 
 {memorySection}
 ## 沟通

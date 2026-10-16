@@ -69,11 +69,6 @@ type Translate = ReturnType<typeof useI18n>["t"];
 const DETAIL_PREVIEW_CHARS = 8_000;
 const MAX_GROUP_ACTIONS = 3;
 
-interface CodexGroupImage {
-  key: string;
-  src: string;
-}
-
 /** Codex mode preserves source order and batches tools until visible model text appears. */
 export function buildCodexFlowItems(
   blocks: ProcessContentBlock[],
@@ -168,10 +163,11 @@ function displayToolName(toolName: string): string {
     : normalized || toolName;
 }
 
+/** A tool whose purpose is viewing an image. Its result images are not rendered. */
 function isImageViewTool(block: ToolBlock): boolean {
-  if (toolResultImages(block.result).length > 0) return true;
   const normalized = block.toolName.toLowerCase().replace(/[^a-z0-9]+/g, "_");
-  return normalized === "view_image" || normalized.endsWith("_view_image") || normalized.endsWith("viewimage");
+  return normalized === "view_image" || normalized.endsWith("_view_image") || normalized.endsWith("viewimage")
+    || (normalized === "read" && /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(toolTarget(block) ?? ""));
 }
 
 function toolTone(block: ToolBlock): StepTone | undefined {
@@ -229,17 +225,13 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
   }
 
   if (isImageViewTool(block)) {
-    const imageCount = Math.max(1, toolResultImages(block.result).length);
     return {
       action: t("desktop.codexProcessGroupViewedImages"),
       completedAction: t("desktop.codexProcessCompletedViewedImages"),
       continuedAction: t("desktop.codexProcessGroupViewedImages"),
       detail: block.status === "running"
         ? t("desktop.codexProcessToolViewingImages")
-        : t(
-            imageCount === 1 ? "desktop.codexProcessToolViewedImage" : "desktop.codexProcessToolViewedImages",
-            { count: imageCount },
-          ),
+        : t("desktop.codexProcessCompletedViewedImages"),
       iconName: "image",
       tone,
       target,
@@ -458,31 +450,10 @@ function toolResultText(result: ToolResultMessage | undefined): string | undefin
     .join("\n");
 }
 
-function toolResultImages(result: ToolResultMessage | undefined): ImageContent[] {
-  if (!result) return [];
-  return result.content.filter((part): part is ImageContent => part.type === "image");
-}
-
 function imageSource(source: ImageContent["source"]): string | undefined {
   if (source.type === "url") return source.url;
   if (!source.data) return undefined;
   return `data:${source.media_type};base64,${source.data}`;
-}
-
-function imageOnlyGroup(entries: SequenceBlock[]): CodexGroupImage[] | undefined {
-  const images: CodexGroupImage[] = [];
-  for (const entry of entries) {
-    if (entry.type !== "toolCall" || entry.status !== "success") return undefined;
-    const entryImages = toolResultImages(entry.result)
-      .map((image, index) => {
-        const src = imageSource(image.source);
-        return src ? { key: `${entry.id}:${index}`, src } : undefined;
-      })
-      .filter((image): image is CodexGroupImage => image !== undefined);
-    if (entryImages.length === 0) return undefined;
-    images.push(...entryImages);
-  }
-  return images.length > 0 ? images : undefined;
 }
 
 function uniqueActions(
@@ -579,7 +550,6 @@ function CodexToolDetails({ block }: { block: ToolBlock }) {
   const resultText = toolResultText(block.result) ?? "";
   const truncated = resultText.length > DETAIL_PREVIEW_CHARS && !showFull;
   const visibleResult = truncated ? resultText.slice(0, DETAIL_PREVIEW_CHARS) : resultText;
-  const images = toolResultImages(block.result);
   const hasInput = Object.keys(block.input).length > 0;
 
   return (
@@ -599,17 +569,6 @@ function CodexToolDetails({ block }: { block: ToolBlock }) {
         <div className="codex-tool-detail-section">
           <div className="codex-tool-detail-label">{t("desktop.codexProcessOutput")}</div>
           {visibleResult.trim() ? <pre>{visibleResult}</pre> : <div className="codex-tool-empty">{t("desktop.noOutput")}</div>}
-          {images.length > 0 && (
-            <div className="codex-tool-images">
-              {images.map((image, index) => {
-                const src = imageSource(image.source);
-                return src ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img key={index} src={src} alt="" loading="lazy" decoding="async" />
-                ) : null;
-              })}
-            </div>
-          )}
           {truncated && (
             <button type="button" className="codex-tool-show-more" onClick={() => setShowFull(true)}>
               {t("desktop.loadFullOutput")}
@@ -676,7 +635,6 @@ function CodexToolGroup({ blocks, entries, cwd, onOpenFile, isStreaming }: {
 }) {
   const { locale, t } = useI18n();
   const presentations = useMemo(() => blocks.map((block) => classifyPresentation(block, t)), [blocks, t]);
-  const groupImages = useMemo(() => imageOnlyGroup(entries), [entries]);
   const hasRunning = blocks.some((block) => block.status === "running");
   // Groups never auto-expand either: a running group signals itself through
   // the subtle `is-running` highlight instead of blowing open its rows.
@@ -684,21 +642,13 @@ function CodexToolGroup({ blocks, entries, cwd, onOpenFile, isStreaming }: {
   const actionSummary = summarizeGroupActions(blocks, presentations, locale, t);
   const hasFailure = blocks.some(isPresentationFailure);
 
-  const headerIcon = groupImages
-    ? "image"
-    : presentations.find((item) => item.iconName === "warning")?.iconName ?? presentations[0]?.iconName ?? "toolbox";
-  const groupLabel = groupImages
-    ? t(
-        groupImages.length === 1 ? "desktop.codexProcessToolViewedImage" : "desktop.codexProcessToolViewedImages",
-        { count: groupImages.length },
-      )
-    : actionSummary;
+  const headerIcon = presentations.find((item) => item.iconName === "warning")?.iconName ?? presentations[0]?.iconName ?? "toolbox";
+  const groupLabel = actionSummary;
 
   return (
     <section
-      className={`codex-tool-group${groupImages ? " is-image-group" : ""}${blocks.length === 1 && isCommandInvocation(blocks[0]!) ? " is-command-group" : ""}${hasFailure ? " is-error" : ""}${hasRunning ? " is-running" : ""}`}
+      className={`codex-tool-group${blocks.length === 1 && isCommandInvocation(blocks[0]!) ? " is-command-group" : ""}${hasFailure ? " is-error" : ""}${hasRunning ? " is-running" : ""}`}
       data-tool-count={blocks.length}
-      {...(groupImages ? { "data-image-count": groupImages.length } : {})}
     >
       <button
         type="button"
@@ -712,14 +662,6 @@ function CodexToolGroup({ blocks, entries, cwd, onOpenFile, isStreaming }: {
       </button>
       <DisclosureCollapse open={expanded} className="codex-tool-group-collapse">
         <div className="codex-tool-group-scroll" tabIndex={0} aria-label={groupLabel}>
-          {groupImages ? (
-            <div className="codex-image-strip">
-              {groupImages.map((image) => (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img key={image.key} src={image.src} alt="" loading="lazy" decoding="async" />
-              ))}
-            </div>
-          ) : (
             <div className="codex-tool-group-items">
               {entries.flatMap((entry) => {
                 if (entry.type === "toolCall") {
@@ -739,7 +681,6 @@ function CodexToolGroup({ blocks, entries, cwd, onOpenFile, isStreaming }: {
                 ) : null;
               })}
             </div>
-          )}
         </div>
       </DisclosureCollapse>
     </section>

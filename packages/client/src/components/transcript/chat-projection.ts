@@ -19,7 +19,7 @@ import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolResultM
 import type { ProcessContentBlock } from "@/lib/process-content";
 import { collectProcessContentBlocks, messageToProcessContentBlocks, splitAssistantContentBlocks } from "@/lib/process-content";
 import { getAssistantErrorMessage, getDisplayableAssistantBlocks, lastContiguousTextRun, splitFinalAssistantBlocks } from "@/lib/message-display";
-import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
+import { extractTurnShownFiles, extractTurnWrittenFiles, mergeTurnFileRows, type TurnFileRow, type WrittenFile } from "@/lib/turn-written-files";
 
 export interface ChatTranscriptMessageRow {
   kind: "message";
@@ -30,6 +30,8 @@ export interface ChatTranscriptMessageRow {
   prevAssistantEntryId?: string | undefined;
   /** Written files attached to the turn's final answer (source behavior). */
   writtenFiles?: WrittenFile[] | undefined;
+  /** Written files plus files the turn showed the user, in display order. */
+  turnFiles?: TurnFileRow[] | undefined;
   showTimestamp?: boolean | undefined;
   prevTimestamp?: number | undefined;
   isStreaming?: boolean | undefined;
@@ -348,6 +350,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       keyPrefix?: string;
       messageOverride?: AgentMessage;
       writtenFiles?: WrittenFile[];
+      turnFiles?: TurnFileRow[];
       isStreaming?: boolean;
       turnStopped?: boolean;
     } = {},
@@ -380,6 +383,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       ...(entryIdAt(entryIds, idx) === undefined ? {} : { entryId: entryIdAt(entryIds, idx) }),
       ...(running || prevAssistantEntryId === undefined ? {} : { prevAssistantEntryId }),
       ...(options.writtenFiles === undefined ? {} : { writtenFiles: options.writtenFiles }),
+      ...(options.turnFiles === undefined || options.turnFiles.length === 0 ? {} : { turnFiles: options.turnFiles }),
       showTimestamp,
       prevTimestamp: idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined,
       ...(options.isStreaming === undefined ? {} : { isStreaming: options.isStreaming }),
@@ -584,6 +588,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
         }
       }
       const writtenFiles = extractTurnWrittenFiles(turnContent, toolResults, cwd);
+      const turnFiles = mergeTurnFileRows(writtenFiles, extractTurnShownFiles(turnContent, toolResults, cwd));
       // The settled-tail "stopped" marker needs BOTH signals: the runtime's
       // last settle was aborted AND this turn's final assistant message was
       // the aborted one. The state flag alone could mislabel the previous
@@ -592,7 +597,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       const turnStopped = lastTurnAborted
         && endIdx === messages.length
         && finalAssistant.stopReason === "aborted";
-      rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles, ...(turnStopped ? { turnStopped: true } : {}) }));
+      rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles, turnFiles, ...(turnStopped ? { turnStopped: true } : {}) }));
     }
     // Trailing entries after the final assistant (custom notifications,
     // further assistant segments, toolResults) are all collected into the

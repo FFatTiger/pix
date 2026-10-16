@@ -165,7 +165,7 @@ describe("assistant workspace catalog hiding", () => {
 interface RegisteredTool {
   name: string;
   parameters?: unknown;
-  execute: (id: string, params: Record<string, never>, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>;
+  execute: (id: string, params: Record<string, never>, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean; details?: unknown }>;
 }
 
 /** Register the extension against a capturing ExtensionAPI. */
@@ -670,7 +670,10 @@ describe("assistant session capabilities (round 3 tools)", () => {
     resetAssistantToolsListCacheForTests();
     const ok = await runTool(tools, "open_session", { session: "目标会话" });
     assert.equal(ok.isError, undefined);
-    assert.match(ok.content[0]!.text!, /已建议打开会话/);
+    assert.match(ok.content[0]!.text!, /已为用户打开会话/);
+    const details = ok.details as { sessionId?: unknown; cwd?: unknown };
+    assert.equal(typeof details.sessionId, "string");
+    assert.equal(details.cwd, resolve("/repos/dest"));
     const miss = await runTool(tools, "open_session", { session: "不存在的" });
     assert.equal(miss.isError, true);
     assert.match(miss.content[0]!.text!, /没有找到会话/);

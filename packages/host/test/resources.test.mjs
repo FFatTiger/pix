@@ -150,6 +150,11 @@ test("file routes list/read/meta and ranges are bounded and correct", async () =
   assert.equal(list.status, 200); assert.deepEqual((await list.json()).entries.map((e) => e.name), ["dir", "hello.txt"]);
   const read = await app.request(`http://localhost/v1/files?op=read&path=${encodeURIComponent(join(root, "hello.txt"))}`, { headers: headers() });
   assert.equal(read.status, 200); assert.equal((await read.json()).content, "hello world");
+  writeFileSync(join(root, "page.html"), "<p>hi</p>"); writeFileSync(join(root, "page.htm"), "<p>hi</p>");
+  for (const name of ["page.html", "page.htm"]) {
+    const html = await app.request(`http://localhost/v1/files?op=read&path=${encodeURIComponent(join(root, name))}`, { headers: headers() });
+    assert.equal(html.status, 200); assert.equal((await html.json()).language, "html");
+  }
   const range = await app.request(`http://localhost/v1/files?op=raw&path=${encodeURIComponent(join(root, "hello.txt"))}`, { headers: headers({ range: "bytes=6-10" }) });
   assert.equal(range.status, 206); assert.equal(range.headers.get("content-range"), "bytes 6-10/11"); assert.equal(await range.text(), "world");
   const suffix = await app.request(`http://localhost/v1/files?op=raw&path=${encodeURIComponent(join(root, "hello.txt"))}`, { headers: headers({ range: "bytes=-5" }) });

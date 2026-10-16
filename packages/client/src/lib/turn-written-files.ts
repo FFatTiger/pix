@@ -1,4 +1,5 @@
 import type { AssistantContentBlock, ToolResultMessage } from "./chat-view-model";
+import { isImagePath } from "./file-types";
 import { resolveLocalFilePath } from "./file-links";
 import { isEditToolName, isWriteToolName } from "./tool-names";
 
@@ -10,6 +11,17 @@ export interface WrittenFile {
   /** Removed lines across this turn's edits to the file (when determinable). */
   deletions?: number;
 }
+
+/** A file the turn handed to the user through `show_files`. */
+export interface ShownFile {
+  filePath: string;
+  /** Image files render a thumbnail; everything else is a plain chip. */
+  kind: "image" | "file";
+}
+
+export type TurnFileRow =
+  | ({ source: "written" } & WrittenFile)
+  | ({ source: "shown" } & ShownFile);
 
 function isFileWritingToolName(toolName: string): boolean {
   return isWriteToolName(toolName) || isEditToolName(toolName);
@@ -122,4 +134,66 @@ export function extractTurnWrittenFiles(
     if (deletions > 0) file.deletions = deletions;
     return file;
   });
+}
+
+function shownFileKind(path: string, declared: unknown): ShownFile["kind"] {
+  if (declared === "image" || declared === "file") return declared;
+  return isImagePath(path) ? "image" : "file";
+}
+
+/**
+ * Files a turn showed the user, from successful `show_files` calls.
+ *
+ * Paths come from the tool result's `details.files` (absolute, already
+ * resolved by the tool) and fall back to the call's own `files` input, so a
+ * reloaded history still renders after media was deferred. Deduped, first
+ * seen order. The tool never returns file bytes.
+ */
+export function extractTurnShownFiles(
+  content: AssistantContentBlock[],
+  toolResults: Map<string, ToolResultMessage> | undefined,
+  cwd?: string,
+): ShownFile[] {
+  const byPath = new Map<string, ShownFile>();
+  for (const block of content) {
+    if (block.type !== "toolCall" || block.toolName !== "show_files") continue;
+    const result = toolResults?.get(block.toolCallId);
+    if (!result || result.isError) continue;
+    const details = result.details;
+    const detailed = typeof details === "object" && details !== null
+      ? (details as { files?: unknown }).files
+      : undefined;
+    if (Array.isArray(detailed)) {
+      for (const entry of detailed) {
+        if (typeof entry !== "object" || entry === null) continue;
+        const raw = (entry as { path?: unknown }).path;
+        if (typeof raw !== "string" || raw.length === 0) continue;
+        const filePath = resolveLocalFilePath(raw, cwd) ?? raw;
+        if (byPath.has(filePath)) continue;
+        byPath.set(filePath, { filePath, kind: shownFileKind(filePath, (entry as { kind?: unknown }).kind) });
+      }
+      continue;
+    }
+    const input = block.input as { files?: unknown } | undefined;
+    if (!Array.isArray(input?.files)) continue;
+    for (const raw of input.files) {
+      if (typeof raw !== "string" || raw.length === 0) continue;
+      const filePath = resolveLocalFilePath(raw, cwd);
+      if (!filePath || byPath.has(filePath)) continue;
+      byPath.set(filePath, { filePath, kind: isImagePath(filePath) ? "image" : "file" });
+    }
+  }
+  return [...byPath.values()];
+}
+
+/** Written files first, then files the turn showed, deduped by path. */
+export function mergeTurnFileRows(written: readonly WrittenFile[], shown: readonly ShownFile[]): TurnFileRow[] {
+  const rows: TurnFileRow[] = written.map((file) => ({ source: "written", ...file }));
+  const seen = new Set(written.map((file) => file.filePath));
+  for (const file of shown) {
+    if (seen.has(file.filePath)) continue;
+    seen.add(file.filePath);
+    rows.push({ source: "shown", ...file });
+  }
+  return rows;
 }

@@ -26,7 +26,7 @@ export const chatInputHandle: RefObject<ChatInputHandle | null> = { current: nul
 /** Shared transcript scroll element — set by TranscriptList, read by ChatInput. */
 export const transcriptScrollRef: RefObject<HTMLDivElement | null> = { current: null };
 
-export type ChatOpenFileHandler = (filePath: string, options?: { initialDisplayMode?: "diff" }) => void;
+export type ChatOpenFileHandler = (filePath: string, options?: { initialDisplayMode?: "diff"; source?: "turn-files" }) => void;
 
 let openFileTarget: ChatOpenFileHandler | null = null;
 const openFileListeners = new Set<() => void>();

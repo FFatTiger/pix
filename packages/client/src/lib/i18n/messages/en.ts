@@ -184,7 +184,7 @@ export const enLocale = {
     "desktop.codexAssistantProjects": "Reviewed the project list",
     "desktop.codexAssistantProjectsDetail": "Find the \"{value}\" project",
     "desktop.codexAssistantProjectsDetailEmpty": "List all projects",
-    "desktop.codexAssistantOpenSession": "Suggested opening a session",
+    "desktop.codexAssistantOpenSession": "Opened a session",
     "desktop.codexAssistantOpenSessionDetail": "Open \"{value}\"",
     "desktop.codexAssistantOrganize": "Organized sessions",
     "desktop.codexAssistantOrganizeDetail": "Organize \"{value}\"",

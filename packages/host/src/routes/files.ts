@@ -136,7 +136,7 @@ function mimeFor(filePath: string): string {
 
 function languageFor(filePath: string): string {
   const ext = extname(filePath).slice(1).toLowerCase();
-  const map: Record<string, string> = { ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript", py: "python", md: "markdown", json: "json", yml: "yaml", yaml: "yaml", sh: "bash" };
+  const map: Record<string, string> = { ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript", py: "python", md: "markdown", json: "json", yml: "yaml", yaml: "yaml", sh: "bash", html: "html", htm: "html" };
   return map[ext] ?? "text";
 }
 

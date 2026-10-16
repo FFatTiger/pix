@@ -14,7 +14,7 @@ import { parseSkillBlock } from "@/lib/skill-block";
 import type { MentionValidators } from "@/lib/mention-tokens";
 import { CompactionSummary } from "./CompactionSummary";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
-import type { WrittenFile } from "@/lib/turn-written-files";
+import type { TurnFileRow, WrittenFile } from "@/lib/turn-written-files";
 import { isEditToolName } from "@/lib/tool-names";
 import { AssistantNoticeCard } from "./AssistantNoticeCard";
 import { assistantUserMessageKind, stripAssistantMarker } from "@/lib/assistant-message";
@@ -231,7 +231,7 @@ interface Props {
   toolResults?: Map<string, ToolResultMessage> | undefined;
   modelNames?: Record<string, string> | undefined;
   cwd?: string | undefined;
-  onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff" }) => void) | undefined;
+  onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff"; source?: "turn-files" }) => void) | undefined;
   entryId?: string;
   onFork?: (entryId: string) => void;
   forking?: boolean;
@@ -242,6 +242,8 @@ interface Props {
   prevTimestamp?: number;
   sessionId?: string;
   writtenFiles?: WrittenFile[];
+  /** Written files plus files the turn showed the user. */
+  turnFiles?: TurnFileRow[];
   /** pix adapter: this turn's settle was aborted (user stop) — settled-tail answer rows only. */
   turnStopped?: boolean | undefined;
   /** pix adapter: mention validity injected instead of a project-context data hook. */
@@ -281,12 +283,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, turnStopped, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, turnFiles, turnStopped, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} mentionValidators={mentionValidators} skillInfo={skillInfo} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} turnStopped={turnStopped} loadDeferredThinking={loadDeferredThinking} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} turnFiles={turnFiles} turnStopped={turnStopped} loadDeferredThinking={loadDeferredThinking} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -325,8 +327,15 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.loadDeferredThinking === next.loadDeferredThinking
     && prev.loadBashFullOutput === next.loadBashFullOutput
     && prev.turnStopped === next.turnStopped
-    && haveSameWrittenFiles(prev.writtenFiles, next.writtenFiles);
+    && haveSameWrittenFiles(prev.writtenFiles, next.writtenFiles)
+    && haveSameTurnFiles(prev.turnFiles, next.turnFiles);
 });
+
+function haveSameTurnFiles(previous: TurnFileRow[] | undefined, next: TurnFileRow[] | undefined): boolean {
+  if (previous === next) return true;
+  if (!previous || !next || previous.length !== next.length) return false;
+  return previous.every((file, i) => file.filePath === next[i]?.filePath && file.source === next[i]?.source);
+}
 
 function haveSameWrittenFiles(previous: WrittenFile[] | undefined, next: WrittenFile[] | undefined): boolean {
   if (previous === next) return true;
@@ -716,7 +725,7 @@ function AssistantMessageView({
   prevTimestamp,
   sessionId,
   entryId,
-  writtenFiles,
+  turnFiles,
   turnStopped,
   loadDeferredThinking,
 }: {
@@ -725,12 +734,12 @@ function AssistantMessageView({
   toolResults?: Map<string, ToolResultMessage> | undefined;
   modelNames?: Record<string, string> | undefined;
   cwd?: string | undefined;
-  onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff" }) => void) | undefined;
+  onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff"; source?: "turn-files" }) => void) | undefined;
   showTimestamp?: boolean | undefined;
   prevTimestamp?: number | undefined;
   sessionId?: string | undefined;
   entryId?: string | undefined;
-  writtenFiles?: WrittenFile[] | undefined;
+  turnFiles?: TurnFileRow[] | undefined;
   /** True when the turn's settle was aborted (user stop) — settled-tail answer rows only. */
   turnStopped?: boolean | undefined;
   loadDeferredThinking?: DeferredThinkingLoader | undefined;
@@ -893,8 +902,8 @@ function AssistantMessageView({
         ))}
       </div>
 
-      {writtenFiles && writtenFiles.length > 0 && (
-        <TurnWrittenFiles files={writtenFiles} onOpenFile={onOpenFile} />
+      {turnFiles && turnFiles.length > 0 && (
+        <TurnWrittenFiles files={turnFiles} onOpenFile={onOpenFile} sessionId={sessionId} />
       )}
 
       {!isStreaming && (textContent || time || message.provider || turnStopped) && (

@@ -629,10 +629,13 @@ describe("ProcessGroup — expanded lifecycle", () => {
     expect(view.container.querySelectorAll(".codex-tool-group")).toHaveLength(0);
     expect(rows).toHaveLength(2);
     expect(rows[0]!.querySelector(".codex-tool-row-label")?.textContent).toBe("已读取 a.ts");
-    expect(rows[1]!.querySelector(".codex-tool-row-label")?.textContent).toBe("已查看 1 张图像");
+    expect(rows[1]!.querySelector(".codex-tool-row-label")?.textContent).toBe("已查看图像");
+    // A read result's image bytes are never rendered; the label is the record.
+    fireEvent.click(rows[1]!.querySelector<HTMLButtonElement>(".codex-tool-row-trigger")!);
+    expect(rows[1]!.querySelector("img")).toBeNull();
   });
 
-  it("renders a completed image-only group as one counted thumbnail strip", () => {
+  it("keeps an image-only group as ordinary rows and never renders the images", () => {
     window.localStorage.setItem("pi-process-display-mode", "codex");
     window.localStorage.setItem("pi-locale", "zh-CN");
     const urls = Array.from({ length: 5 }, (_, index) => `https://example.test/${index + 1}.png`);
@@ -649,11 +652,12 @@ describe("ProcessGroup — expanded lifecycle", () => {
 
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     const group = view.container.querySelector<HTMLElement>(".codex-tool-group")!;
-    expect(group.dataset.imageCount).toBe("5");
-    expect(group.querySelector(".codex-tool-group-label")?.textContent).toBe("已查看 5 张图像");
+    expect(group.dataset.imageCount).toBeUndefined();
+    expect(group.querySelector(".codex-tool-group-label")?.textContent).toBe("已查看图像");
     fireEvent.click(group.querySelector<HTMLButtonElement>(".codex-tool-group-trigger")!);
-    expect(Array.from(group.querySelectorAll<HTMLImageElement>(".codex-image-strip img"), (image) => image.src)).toEqual(urls);
-    expect(group.querySelector(".codex-tool-row")).toBeNull();
+    expect(group.querySelector(".codex-image-strip")).toBeNull();
+    expect(group.querySelectorAll("img")).toHaveLength(0);
+    expect(group.querySelectorAll(".codex-tool-row")).toHaveLength(5);
   });
 
   it("keeps mixed image and non-image calls in the ordinary tool-row structure", () => {
@@ -677,6 +681,7 @@ describe("ProcessGroup — expanded lifecycle", () => {
     const group = view.container.querySelector<HTMLElement>(".codex-tool-group")!;
     expect(group.dataset.imageCount).toBeUndefined();
     expect(group.querySelector(".codex-tool-group-label")?.textContent).toBe("已查看图像读取文件");
+    expect(group.querySelector("img")).toBeNull();
     fireEvent.click(group.querySelector<HTMLButtonElement>(".codex-tool-group-trigger")!);
     expect(group.querySelectorAll(".codex-tool-row")).toHaveLength(2);
     expect(group.querySelector(".codex-image-strip")).toBeNull();

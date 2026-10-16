@@ -770,6 +770,7 @@ export function ChatTranscriptRowView({
       {...(row.prevTimestamp === undefined ? {} : { prevTimestamp: row.prevTimestamp })}
       {...(sessionId === undefined ? {} : { sessionId })}
       {...(row.writtenFiles === undefined ? {} : { writtenFiles: row.writtenFiles })}
+      {...(row.turnFiles === undefined ? {} : { turnFiles: row.turnFiles })}
       {...(row.turnStopped === undefined ? {} : { turnStopped: row.turnStopped })}
       {...(mentionValidators === undefined ? {} : { mentionValidators })}
       skillInfo={skillInfo}

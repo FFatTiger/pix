@@ -22,6 +22,7 @@ import { LoginPage } from "@/components/shell/LoginPage";
 import { ProjectTrustDialog } from "@/features/settings/ProjectTrustDialog";
 import { ExtensionRequests } from "@/features/extension-request/ExtensionRequests";
 import { registerChatOpenFileTarget } from "@/components/chat/chat-experience-bridge";
+import { openSessionTarget, scanLiveToolEffects, showFilesOpenPath } from "@/lib/live-tool-effects";
 import { FileViewer } from "@/features/workspace/viewer/FileViewer";
 import { ExplorerPanel } from "@/features/workspace/explorer/ExplorerPanel";
 import { SideChatPanel } from "@/features/side-chat/SideChatPanel";
@@ -60,7 +61,7 @@ import { useVisualViewportFrame } from "@/hooks/useVisualViewportHeight";
 import { useGateStatus } from "@/features/gate/useGate";
 import { useHttpClient } from "@/app/http-context";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
-import { ChatsCircleIcon, FilesIcon, RobotIcon } from "@phosphor-icons/react";
+import { ChatsCircleIcon, FilesIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
 import { AssistantEntryChip } from "@/components/shell/AssistantEntryChip";
 import { setDraft } from "@/lib/draft-store";
 import {
@@ -78,7 +79,7 @@ export interface AppShellProps {
   search: WorkspaceSearch;
 }
 
-type RightPane = "files" | "subagents" | "side_chat" | null;
+type RightPane = "files" | "subagents" | "side_chat" | "preview" | null;
 
 /** Shared session-label fallback: explicit title → first message → short id. */
 function sessionLabelFor(session: { title?: string | undefined; firstMessage?: string | undefined; sessionId: string }): string {
@@ -404,6 +405,8 @@ export function AppShell({ search }: AppShellProps) {
   // ── Shared right panel (Files, Agents, or Side chat) ─────────────────────
   const [rightPane, setRightPane] = useState<RightPane>(null);
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
+  /** File the right pane previews. Set only by a live tool result or a chip click. */
+  const [previewFile, setPreviewFile] = useState<string | null>(null);
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
@@ -1053,12 +1056,59 @@ export function AppShell({ search }: AppShellProps) {
   useEffect(() => {
     if (!canFiles) return registerChatOpenFileTarget(null);
     return registerChatOpenFileTarget((filePath, options) => {
+      // The chip row under an answer stays in the conversation: it previews
+      // in the right pane. Every other chat link still opens a main-area tab.
+      if (options?.source === "turn-files") {
+        setPreviewFile(filePath);
+        setRightPane("preview");
+        return;
+      }
       handleOpenFile(filePath, getFileName(filePath), {
         ...options,
         sourceSessionId: activeSessionId,
       });
     });
   }, [canFiles, handleOpenFile, activeSessionId]);
+
+  // Chips under an answer open in the right pane instead of taking over the
+  // main area, so the conversation (and the assistant view) stays put.
+  const handlePreviewFile = useCallback((filePath: string): void => {
+    if (!canFiles) return;
+    setPreviewFile(filePath);
+    setRightPane("preview");
+  }, [canFiles]);
+
+  // Live tool results of the session the user is looking at. The first scan
+  // after mount (and after every session switch) only records what is already
+  // there, so history, resync and refresh never reopen a pane or a tab.
+  const liveEffectSeenRef = useRef(new Set<string>());
+  const liveEffectPrimedRef = useRef(false);
+  useEffect(() => {
+    liveEffectSeenRef.current = new Set();
+    liveEffectPrimedRef.current = false;
+  }, [viewSessionId]);
+  const liveEntries = activeRuntime?.liveEntries;
+  useEffect(() => {
+    if (viewSessionId === null || liveEntries === undefined) return;
+    const scan = scanLiveToolEffects(liveEntries.map((entry) => entry.message), liveEffectSeenRef.current, liveEffectPrimedRef.current);
+    for (const id of scan.seen) liveEffectSeenRef.current.add(id);
+    liveEffectPrimedRef.current = true;
+    for (const effect of scan.fresh) {
+      if (effect.isError) continue;
+      if (effect.toolName === "show_files") {
+        const open = showFilesOpenPath(effect.details);
+        if (open !== null && canFiles) {
+          setPreviewFile(open);
+          setRightPane("preview");
+        }
+      } else if (effect.toolName === "open_session" && isAssistantView) {
+        const target = openSessionTarget(effect.details);
+        if (target !== null) {
+          setTabs((prev) => openSessionWorkspaceTab(prev, target.sessionId, target.cwd));
+        }
+      }
+    }
+  }, [canFiles, isAssistantView, liveEntries, viewSessionId]);
 
   // Revision-guarded viewer state save (shared file-tab semantics).
   const handleFileViewerStateChange = useCallback((tabId: string, viewerRevision: number, viewerState: FileViewerState): void => {
@@ -1558,6 +1608,32 @@ export function AppShell({ search }: AppShellProps) {
               closable={isMobile}
               childStream={subagentActivity.childStream(selectedChildSessionId)}
             />
+          ) : null}
+          {rightPane === "preview" && previewFile !== null && filesCwd !== undefined ? (
+            <section className="subagent-panel" aria-label={t("desktop.previewFile", { file: getFileName(previewFile) })}>
+              <header className="subagent-panel-head">
+                <span className="subagent-panel-heading" title={previewFile}>{getFileName(previewFile)}</span>
+                <span className="subagent-panel-head-spacer" />
+                {isMobile ? (
+                  <button
+                    type="button"
+                    className="subagent-icon-button"
+                    onClick={() => setRightPane(null)}
+                    title={t("desktop.close")}
+                    aria-label={t("desktop.close")}
+                  >
+                    <XIcon size={15} aria-hidden="true" />
+                  </button>
+                ) : null}
+              </header>
+              <FileViewer
+                key={previewFile}
+                filePath={previewFile}
+                cwd={filesCwd}
+                sourceSessionId={viewSessionId}
+                onOpenFile={handlePreviewFile}
+              />
+            </section>
           ) : null}
           {rightPane === "side_chat" && canSideChat && activeRuntime !== null ? (
             <SideChatPanel

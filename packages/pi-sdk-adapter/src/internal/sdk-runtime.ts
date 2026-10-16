@@ -16,6 +16,7 @@ import type {
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES, BUILTIN_CAPABILITY_REGISTRY } from "@fffattiger/pix-runtime-core";
 import { effectiveAssistantSystemPromptFor, ensureAssistantToolsActive, assistantExtensionFactoriesForCwd } from "./assistant-tools.js";
+import { createShowFilesExtension } from "./show-files.js";
 import { renderAssistantPreamble } from "./assistant-system-prompt.js";
 import { NESTED_RESULTS_CUSTOM_TYPE } from "./nested-results.js";
 import { redactText } from "./sanitize.js";
@@ -1315,7 +1316,8 @@ function defaultComposition(
           // The memory guard is LAST so its session_start handler runs after
           // pi-smart-compact's own exposure apply (inline factories load
           // after package extensions; the event fires in that order).
-          extensionFactories: [createToolPolicyExtension(toolPolicy), ...assistantExtensions, ...nativeBuiltinExtensionFactories(), createSmartCompactMemoryGuard()],
+          // show_files is a product tool of every session, assistant included.
+          extensionFactories: [createToolPolicyExtension(toolPolicy), createShowFilesExtension(), ...assistantExtensions, ...nativeBuiltinExtensionFactories(), createSmartCompactMemoryGuard()],
           ...(assistantExtensions.length > 0
             ? {
                 systemPromptOverride: (base: string | undefined) =>

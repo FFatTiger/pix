@@ -184,7 +184,7 @@ export const zhCNLocale = {
     "desktop.codexAssistantProjects": "查看了项目列表",
     "desktop.codexAssistantProjectsDetail": "查找项目「{value}」",
     "desktop.codexAssistantProjectsDetailEmpty": "列出全部项目",
-    "desktop.codexAssistantOpenSession": "建议打开会话",
+    "desktop.codexAssistantOpenSession": "打开了会话",
     "desktop.codexAssistantOpenSessionDetail": "打开「{value}」",
     "desktop.codexAssistantOrganize": "整理了会话",
     "desktop.codexAssistantOrganizeDetail": "整理「{value}」",
