@@ -149,6 +149,14 @@ export interface PiRuntimeDriver {
     expectedRole: string,
     count: number,
   ): readonly { entryId: string; parentEntryId?: string }[] | undefined;
+  /**
+   * Persist one batch of adapter-collected nested-call results as a plain
+   * SDK `custom` entry (`pix-nested-results`) right after the committed
+   * parent tool-result entry. Optional: display-only enrichment — when a
+   * driver cannot persist it, the live event still carries the results and
+   * only reload enrichment is absent.
+   */
+  appendNestedResults?(payload: { version: 1; toolCallId: string; calls: readonly { id: string; text: string; truncated: boolean; imageCount: number; isError: boolean }[] }): void;
   bash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<{
     output: string;
     exitCode?: number;

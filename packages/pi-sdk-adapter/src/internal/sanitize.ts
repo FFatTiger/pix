@@ -16,6 +16,22 @@ export function redactText(value: string): string {
     .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|credential|code)["']?\s*[:=]\s*)(?:"(?:\\[\s\S]?|[^"\\])*(?:"|$)|'(?:\\[\s\S]?|[^'\\])*(?:'|$)|[^\s,;\]}]+)/gi, "$1[REDACTED]");
 }
 
+/**
+ * Same secret-redaction chain as {@link redactText} but with a caller-owned
+ * cap that can exceed the generic 2048 display bound (e.g. nested-call result
+ * text at 4000 chars). Redaction runs on the WHOLE value first so a secret
+ * straddling the cut can never survive in the kept prefix.
+ */
+export function redactTextBounded(value: string, maxChars: number): string {
+  if (!Number.isSafeInteger(maxChars) || maxChars < 0) return "";
+  const redacted = value
+    .replace(/secret-token-[A-Za-z0-9_-]+/gi, "[REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .replace(/\b(Bearer|Basic)\s+[^\s,;\]}"']+/gi, "$1 [REDACTED]")
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|credential|code)["']?\s*[:=]\s*)(?:"(?:\\[\s\S]?|[^"\\])*(?:"|$)|'(?:\\[\s\S]?|[^'\\])*(?:'|$)|[^\s,;\]}]+)/gi, "$1[REDACTED]");
+  return redacted.length > maxChars ? redacted.slice(0, maxChars) : redacted;
+}
+
 export function sanitizeUnknown(value: unknown, depth = 0, key?: string): unknown {
   if (SECRET_KEY.test(key ?? "")) return "[REDACTED]";
   if (value === null || typeof value === "boolean" || typeof value === "number") return value;

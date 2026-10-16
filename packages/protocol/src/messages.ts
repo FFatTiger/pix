@@ -33,6 +33,19 @@ export type TokenUsage = z.infer<typeof TokenUsageSchema>;
 export const NESTED_TOOL_CALL_STATUSES = ["ok", "error", "unfinished"] as const;
 export const MAX_NESTED_TOOL_CALLS = 256;
 export const MAX_NESTED_TOOL_ERROR_CHARS = 500;
+export const MAX_NESTED_RESULT_TEXT_CHARS = 4000;
+/** Wire mirror of runtime-core's persisted nested-results budget (UTF-8 bytes). */
+export const MAX_NESTED_RESULTS_ENTRY_BYTES = 64 * 1024;
+
+/** Bounded adapter-collected output of one nested call (text capped, images counted). */
+export const NestedToolCallResultSchema = z.strictObject({
+  text: z.string().max(MAX_NESTED_RESULT_TEXT_CHARS),
+  truncated: z.boolean(),
+  imageCount: z.number().int().nonnegative(),
+  isError: z.boolean(),
+});
+export type NestedToolCallResult = z.infer<typeof NestedToolCallResultSchema>;
+
 export const NestedToolCallsSchema = z.strictObject({
   calls: z.array(z.strictObject({
     id: NonEmptyStringSchema,
@@ -42,6 +55,7 @@ export const NestedToolCallsSchema = z.strictObject({
     status: z.enum(NESTED_TOOL_CALL_STATUSES),
     durationMs: z.number().finite().nonnegative().optional(),
     error: z.string().max(MAX_NESTED_TOOL_ERROR_CHARS).optional(),
+    result: NestedToolCallResultSchema.optional(),
   })).max(MAX_NESTED_TOOL_CALLS),
   complete: z.boolean(),
 }).superRefine((value, ctx) => {

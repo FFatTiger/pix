@@ -156,6 +156,27 @@ export const NESTED_TOOL_CALL_STATUSES = ["ok", "error", "unfinished"] as const;
 export const MAX_NESTED_TOOL_CALLS = 256;
 export const MAX_NESTED_TOOL_ERROR_CHARS = 500;
 
+/** Per-call captured child output text cap (adapter-collected nested results). */
+export const MAX_NESTED_RESULT_TEXT_CHARS = 4000;
+/** Whole-batch budget for the persisted nested-results record (UTF-8 bytes). */
+export const MAX_NESTED_RESULTS_ENTRY_BYTES = 64 * 1024;
+
+/**
+ * Bounded output of ONE nested call, collected by the adapter from the
+ * runtime `tool_execution_end` event (the SDK's `nestedCalls` record never
+ * carries results). Text is redacted and capped; images are counted only.
+ */
+export interface NestedToolCallResult {
+  /** Redacted text blocks joined with `\n`, capped at {@link MAX_NESTED_RESULT_TEXT_CHARS} chars. */
+  text: string;
+  /** `true` when the source text exceeded the per-call cap and was cut. */
+  truncated: boolean;
+  /** Number of image content blocks in the child result (bytes never stored). */
+  imageCount: number;
+  /** Whether the child tool execution reported an error. */
+  isError: boolean;
+}
+
 /** Execution summaries belong to the parent tool result; they are not transcript entries. */
 export interface NestedToolCalls {
   calls: readonly {
@@ -166,6 +187,8 @@ export interface NestedToolCalls {
     status: typeof NESTED_TOOL_CALL_STATUSES[number];
     durationMs?: number;
     error?: string;
+    /** Adapter-collected child output; absent for old records and over-budget calls. */
+    result?: NestedToolCallResult;
   }[];
   complete: boolean;
 }

@@ -3,7 +3,7 @@ import { memo, useState, useRef, useEffect, useMemo, useCallback, type MouseEven
 import { createPortal } from "react-dom";
 import { MarkdownBody } from "./MarkdownBody";
 import { NestedToolCallSummary } from "./NestedToolCallSummary";
-import { NestedToolDetails } from "./NestedToolDetails";
+import { CodemodeScriptOutputRow, NestedToolDetails } from "./NestedToolDetails";
 import { expandNestedToolBlocks, type ProcessContentBlock } from "@/lib/process-content";
 import { copyText } from "@/lib/clipboard";
 import { cssPx, cssViewportSize } from "@/lib/ui-scale";
@@ -960,7 +960,8 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
       status: result?.isError ? "error" : result ? "success" : "running",
       origin: { phase: "process", placement: "inline", sourceMessageIndex: 0, sourceBlockIndex: blockIndex },
     });
-    return <>{items.map((item) => <ToolCallBlock key={item.toolCallId} block={{ type: "toolCall", toolCallId: item.toolCallId, toolName: item.toolName, input: item.input }} result={item.result} duration={item.duration} displayBlock={item} />)}</>;
+    const scriptBatch = items.find((item) => item.sharedBatch !== undefined)?.sharedBatch;
+    return <>{items.map((item) => <ToolCallBlock key={item.toolCallId} block={{ type: "toolCall", toolCallId: item.toolCallId, toolName: item.toolName, input: item.input }} result={item.result} duration={item.duration} displayBlock={item} />)}{scriptBatch !== undefined && <CodemodeScriptOutputRow batch={scriptBatch} />}</>;
   }
   return null;
 }

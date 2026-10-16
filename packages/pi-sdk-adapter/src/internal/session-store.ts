@@ -124,6 +124,7 @@ import type {
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, matchesAssistantWorkspacePattern, normalizeAssistantWorkspacePath } from "@fffattiger/pix-runtime-core";
 import { mapMessage } from "../mappers/index.js";
+import { mergeNestedResults, nestedResultsIndexFromSdkEntries, type NestedResultsPayload } from "./nested-results.js";
 import { projectSessionTree } from "./session-tree.js";
 import type { PiSdkSessionStore } from "../sessions/index.js";
 
@@ -276,17 +277,25 @@ function rowToInfo(row: ProjectedSession): SdkSessionInfo {
 
 /**
  * Project a single SDK session entry onto zero or more canonical catalog
- * entries. Message entries are mapped via the shared `mapMessage`; custom
- * message, compaction and branch-summary entries are projected as canonical
- * custom messages; structural entries (model/thinking/label/session-info
- * changes, plain custom state) carry no context message and are dropped.
+ * entries. Message entries are mapped via the shared `mapMessage` (with
+ * persisted `pix-nested-results` custom entries merged back onto their
+ * parent tool result's nestedCalls); custom message, compaction and
+ * branch-summary entries are projected as canonical custom messages;
+ * structural entries (model/thinking/label/session-info changes, plain
+ * custom state) carry no context message and are dropped.
  */
-function mapEntry(entry: SdkEntry): SessionEntry[] {
+function mapEntry(entry: SdkEntry, nestedResults?: Map<string, NestedResultsPayload>): SessionEntry[] {
   if (entry.type === "message") {
+    const message = mapMessage(entry.message) as AgentMessage;
+    const merged = nestedResults === undefined || message.role !== "toolResult" || message.nestedCalls === undefined
+      ? message
+      : nestedResults.has(message.toolCallId)
+        ? { ...message, nestedCalls: mergeNestedResults(message.nestedCalls, nestedResults.get(message.toolCallId)) }
+        : message;
     return [{
       entryId: entry.id,
       ...(entry.parentId === null ? {} : { parentEntryId: entry.parentId }),
-      message: mapMessage(entry.message) as AgentMessage,
+      message: merged,
     }];
   }
   if (entry.type === "custom_message") {
@@ -1114,7 +1123,8 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     const opened = await this.openSession(sessionId);
     if (!opened) throw notFound(sessionId);
     const { manager, info } = opened;
-    return { ...toHeader(info, await this.provenanceFor(manager)), entries: manager.getEntries().flatMap(mapEntry) };
+    const nestedResults = nestedResultsIndexFromSdkEntries(manager.getEntries());
+    return { ...toHeader(info, await this.provenanceFor(manager)), entries: manager.getEntries().flatMap((entry) => mapEntry(entry, nestedResults)) };
   }
 
   async readSessionContext(
@@ -1152,6 +1162,10 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     const selected = leafId === undefined
       ? manager.buildContextEntries()
       : buildSdkContextEntries(entries, leafId, byId);
+    // Persisted nested results are keyed by parent tool call id across the
+    // WHOLE entry list (all branches): the enrichment belongs to that exact
+    // tool call even when the custom entry sits on a sibling branch.
+    const nestedResults = nestedResultsIndexFromSdkEntries(entries);
     const selectedLeaf = leafId ?? manager.getLeafId();
     // ONE SDK context read feeds BOTH the branch settings and the context-token
     // numerator (context-usage consistency): the estimator runs on the FULL RAW
@@ -1166,7 +1180,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
         manager.getBranch(selectedLeaf),
         sessionContext.messages as SdkContextMessage[],
       );
-    const projected = selected.flatMap(mapEntry);
+    const projected = selected.flatMap((entry) => mapEntry(entry, nestedResults));
     const beforeIndex = before === undefined
       ? projected.length
       : projected.findIndex((entry) => entry.entryId === before);
