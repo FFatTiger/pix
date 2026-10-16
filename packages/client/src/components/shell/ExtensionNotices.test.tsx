@@ -75,6 +75,43 @@ describe("ExtensionNotices", () => {
     expect(toast.getAttribute("aria-label")).toBe(message);
     expect(text?.textContent).toBe(message);
     expect(text?.getAttribute("title")).toBe(message);
+    // Collapsed = clamped to two lines (visual only; the full text stays in the DOM).
+    expect(toast.getAttribute("data-expanded")).toBeNull();
+    expect(text?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("expands the full message on tap and pauses auto-hide until collapsed", () => {
+    vi.useFakeTimers();
+    const message = `Smart Compact: ${"continuity warning ".repeat(40)}`;
+    mount([notice(message, 1)]);
+
+    const toast = screen.getByTestId("extension-notices");
+    const text = toast.querySelector(".extension-notice-message");
+    fireEvent.click(text!);
+    expect(toast.getAttribute("data-expanded")).toBe("true");
+    expect(text?.getAttribute("aria-expanded")).toBe("true");
+    expect(text?.textContent).toBe(message);
+
+    // Expanded pauses the fade: the full auto-hide window passes, still visible.
+    act(() => { vi.advanceTimersByTime(TOAST_AUTO_HIDE_MS + TOAST_FADE_MS); });
+    expect(screen.getByTestId("extension-notices").getAttribute("data-phase")).toBe("visible");
+
+    // Collapsing re-arms the timer.
+    fireEvent.click(text!);
+    expect(toast.getAttribute("data-expanded")).toBeNull();
+    act(() => { vi.advanceTimersByTime(TOAST_AUTO_HIDE_MS); });
+    expect(screen.getByTestId("extension-notices").getAttribute("data-phase")).toBe("fading");
+    act(() => { vi.advanceTimersByTime(TOAST_FADE_MS); });
+    expect(screen.queryByTestId("extension-notices")).toBeNull();
+  });
+
+  it("toggles expansion from the keyboard too", () => {
+    mount([notice("short notice", 1)]);
+    const text = screen.getByTestId("extension-notices").querySelector(".extension-notice-message");
+    fireEvent.keyDown(text!, { key: "Enter" });
+    expect(screen.getByTestId("extension-notices").getAttribute("data-expanded")).toBe("true");
+    fireEvent.keyDown(text!, { key: " " });
+    expect(screen.getByTestId("extension-notices").getAttribute("data-expanded")).toBeNull();
   });
 
   it("copies a notice url and dismisses immediately", async () => {
