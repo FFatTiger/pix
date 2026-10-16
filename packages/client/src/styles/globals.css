@@ -2905,6 +2905,7 @@ span.linenumber {
   color: var(--accent-red);
 }
 
+/* Reads as a link, not a section label. */
 .status-agents-all {
   display: block;
   width: 100%;
@@ -2912,14 +2913,15 @@ span.linenumber {
   padding: 0 12px;
   border: 0;
   background: transparent;
-  color: var(--text-dim);
+  color: var(--accent);
   font-size: 12px;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
 }
 
 .status-agents-all:hover {
-  color: var(--text);
+  text-decoration: underline;
 }
 
 .subagent-running-icon,
@@ -3586,7 +3588,9 @@ html.pi-booted body::before {
   background: var(--text-dim);
 }
 .extension-notice-message {
-  flex: 1 1 auto;
+  /* Basis 0: in the wrapping row the message shrinks to an ellipsis instead of
+     dropping below the pill (only the detail takes its own line). */
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -3599,22 +3603,18 @@ html.pi-booted body::before {
   border-radius: 4px;
 }
 .extension-notice-detail {
+  /* The expanded toast itself is the card: header row, then the full text. */
   flex: 1 0 100%;
   box-sizing: border-box;
   max-height: 40vh;
-  margin: 0 -4px 6px -10px;
-  padding: 8px 12px;
+  padding: 0 8px 10px 2px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  border: 1px solid var(--surface-hairline);
-  border-radius: 12px;
-  background: var(--surface-content);
   color: var(--text);
   font-size: 13px;
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   cursor: default;
 }
 .extension-notice-detail a {

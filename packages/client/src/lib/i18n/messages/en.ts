@@ -622,7 +622,7 @@ export const enLocale = {
     "desktop.statusDisplayModeAuto": "Auto",
     "desktop.minimizeStatus": "Minimize status",
     "desktop.statusTodos": "To-do",
-    "desktop.statusAgentsAll": "All",
+    "desktop.statusAgentsAll": "View all {count}",
     "desktop.showSubagentActivity": "Show agent activity",
     "desktop.finishedSubagents": "Finished agents",
     "desktop.subagentDirectory": "Agent sessions",

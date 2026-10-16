@@ -264,7 +264,7 @@ describe("SubagentActivityCard", () => {
     expect(note.getAttribute("title")).toBe("Explore");
     expect(ended.closest(".subagent-activity-row")?.className).toContain("is-ended");
     expect(screen.queryByRole("button", { name: /^Ended/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "All" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^View all/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime" }));
     expect(onOpenActivity).toHaveBeenCalledWith(RUNNING);
@@ -278,7 +278,7 @@ describe("SubagentActivityCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const row = screen.getByText("Check tests").closest(".subagent-activity-row");
     expect(row?.className).toContain("is-ended");
-    expect(screen.queryByRole("button", { name: "All" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^View all/ })).toBeNull();
     expect(onOpenDirectory).not.toHaveBeenCalled();
   });
 
@@ -295,7 +295,7 @@ describe("SubagentActivityCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     expect(screen.getByTestId("status-progress-section")).toBeTruthy();
     expect(screen.queryByTestId("status-agents-section")).toBeNull();
-    expect(screen.queryByRole("button", { name: "All" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^View all/ })).toBeNull();
   });
 
   it("keeps a running task pending until its validated child session arrives", () => {
@@ -353,7 +353,7 @@ describe("SubagentActivityCard", () => {
     const oldestShown = within(agents).getByText("Ended 1");
     expect(running.compareDocumentPosition(oldestShown) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    fireEvent.click(within(agents).getByRole("button", { name: "All" }));
+    fireEvent.click(within(agents).getByRole("button", { name: /^View all/ }));
     expect(onOpenDirectory).toHaveBeenCalledOnce();
   });
 });

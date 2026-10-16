@@ -28,17 +28,18 @@ const EMPTY_TODOS: readonly StatusTodoItem[] = [];
 /** Ended agents stay on the card, faded, but only the most recent few. */
 const ENDED_PREVIEW_LIMIT = 3;
 
-function elapsedLabel(startedAt: number | undefined, now: number, t: ReturnType<typeof useI18n>["t"]): string {
-  if (startedAt === undefined) return "";
-  const totalSeconds = Math.max(1, Math.floor((now - startedAt) / 1000));
+/** Run time of an agent: start to finish once ended, start to now while running. Two units at most. */
+function elapsedLabel(activity: SubagentActivity, now: number, t: ReturnType<typeof useI18n>["t"]): string {
+  if (activity.startedAt === undefined) return "";
+  const end = activity.status === "running" ? now : activity.completedAt;
+  if (end === undefined) return "";
+  const totalSeconds = Math.max(1, Math.floor((end - activity.startedAt) / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  const parts: string[] = [];
-  if (hours > 0) parts.push(t("desktop.processDurationHours", { hours }));
-  if (hours > 0 || minutes > 0) parts.push(t("desktop.processDurationMinutes", { minutes }));
-  parts.push(t("desktop.processDurationSeconds", { seconds }));
-  return parts.join(" ");
+  if (hours > 0) return [t("desktop.processDurationHours", { hours }), ...(minutes > 0 ? [t("desktop.processDurationMinutes", { minutes })] : [])].join(" ");
+  if (minutes > 0) return [t("desktop.processDurationMinutes", { minutes }), ...(seconds > 0 ? [t("desktop.processDurationSeconds", { seconds })] : [])].join(" ");
+  return t("desktop.processDurationSeconds", { seconds });
 }
 
 function capsuleSummary(
@@ -226,9 +227,7 @@ export function SubagentActivityCard({
         {activity.agentType ? (
           <span className="subagent-activity-note" title={activity.agentType}>{activity.agentType}</span>
         ) : null}
-        {activity.startedAt === undefined ? null : (
-          <span className="subagent-activity-elapsed">{elapsedLabel(activity.startedAt, now, t)}</span>
-        )}
+        <span className="subagent-activity-elapsed">{elapsedLabel(activity, now, t)}</span>
       </>
     );
     return activity.childSessionId === undefined ? (
@@ -310,7 +309,7 @@ export function SubagentActivityCard({
                 </div>
                 {endedCount > ENDED_PREVIEW_LIMIT ? (
                   <button type="button" className="status-agents-all" onClick={onOpenDirectory}>
-                    {t("desktop.statusAgentsAll")}
+                    {t("desktop.statusAgentsAll", { count: activities.length })}
                   </button>
                 ) : null}
               </section>
