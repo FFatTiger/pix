@@ -20,13 +20,12 @@ function fixture(t) {
   put("client/index.html", "<html>client</html>\n");
   put("THIRD_PARTY_NOTICES.md", "notices\n");
   put("node_modules/@fffattiger/pix-host/package.json", { name: "@fffattiger/pix-host", version: "0.2.0", dependencies: { "@fffattiger/pix-pi-sdk-adapter": "0.2.0", hono: "^4.9.0" } });
-  put("node_modules/@fffattiger/pix-pi-sdk-adapter/package.json", { name: "@fffattiger/pix-pi-sdk-adapter", version: "0.2.0", dependencies: { "pi-claude-subagents": "file:../../vendor/pinned.tgz", "pi-smart-compact": "file:../../vendor/smart.tgz", "@earendil-works/pi-tui": "1.0.0" } });
+  put("node_modules/@fffattiger/pix-pi-sdk-adapter/package.json", { name: "@fffattiger/pix-pi-sdk-adapter", version: "0.2.0", dependencies: { "pi-claude-subagents": "file:../../vendor/pinned.tgz", "pi-smart-compact": "file:../../vendor/smart.tgz", "@earendil-works/pi-tui": "1.3.0" } });
   put("node_modules/@fffattiger/pix-pi-sdk-adapter/dist/index.js", "// runtime\n");
   put("node_modules/pi-claude-subagents/package.json", { name: "pi-claude-subagents", version: "0.3.9", peerDependencies: { "@earendil-works/pi-tui": ">=1.0.0 <2", typebox: "*" }, devDependencies: { typescript: "5.9.3" } });
   put("node_modules/typebox/package.json", { name: "typebox", version: "1.1.38" });
-  put("node_modules/@earendil-works/pi-coding-agent/package.json", { name: "@earendil-works/pi-coding-agent", version: "1.0.0", dependencies: { "@earendil-works/pi-tui": "^1.0.0", chalk: "6.0.0", typebox: "1.1.38" } });
+  put("node_modules/@earendil-works/pi-coding-agent/package.json", { name: "@earendil-works/pi-coding-agent", version: "1.3.0", dependencies: { "@earendil-works/pi-tui": "1.3.0", chalk: "6.0.0", typebox: "1.1.38" } });
   put("node_modules/@earendil-works/pi-coding-agent/dist/index.js", "// SDK runtime\n");
-  put("node_modules/@earendil-works/pi-coding-agent/npm-shrinkwrap.json", "{}\n");
   put("node_modules/@earendil-works/pi-coding-agent/node_modules/unneeded/index.js", "must not copy\n");
   put("node_modules/pi-claude-subagents/src/runtime.ts", "// patched plugin\n");
   put("node_modules/pi-smart-compact/package.json", { name: "pi-smart-compact", version: "10.3.0", peerDependencies: { "@earendil-works/pi-coding-agent": ">=0.87.1", "@oh-my-pi/pi-mnemopi": "18.3.1", typebox: "*" }, peerDependenciesMeta: { "@oh-my-pi/pi-mnemopi": { optional: true } } });
@@ -41,17 +40,16 @@ function fixture(t) {
 
 test("registry package bundles Pix and patched plugin while declaring external dependencies", (t) => {
   const { source, destination } = fixture(t);
-  const manifest = createRegistryPackage(source, destination, { "@earendil-works/pi-tui": "1.0.0" });
+  const manifest = createRegistryPackage(source, destination, { "@earendil-works/pi-tui": "1.3.0" });
   assert.equal(manifest.private, undefined);
   assert.equal(manifest.dependencies.hono, "^4.9.0");
   assert.equal(manifest.dependencies["pi-claude-subagents"], "0.3.9");
   assert.equal(manifest.dependencies["pi-smart-compact"], "10.3.0");
   assert.deepEqual(manifest.bundledDependencies, ["@fffattiger/pix-host", "@fffattiger/pix-pi-sdk-adapter", "@earendil-works/pi-coding-agent", "pi-claude-subagents", "pi-smart-compact", "pi-memory", "@local/lore-pi-extension", "@juicesharp/rpiv-todo", "@juicesharp/rpiv-ask-user-question"]);
-  assert.equal(existsSync(join(destination, "node_modules/@earendil-works/pi-coding-agent/npm-shrinkwrap.json")), false);
   assert.equal(existsSync(join(destination, "node_modules/@earendil-works/pi-coding-agent/node_modules")), false);
   assert.equal(readFileSync(join(destination, "node_modules/@earendil-works/pi-coding-agent/dist/index.js"), "utf8"), "// SDK runtime\n");
   assert.equal(manifest.dependencies.chalk, "6.0.0");
-  assert.deepEqual(manifest.overrides, { "@earendil-works/pi-tui": "1.0.0" });
+  assert.deepEqual(manifest.overrides, { "@earendil-works/pi-tui": "1.3.0" });
   assert.equal(existsSync(join(destination, "node_modules/dev-only")), false);
   assert.equal(readFileSync(join(destination, "node_modules/pi-claude-subagents/src/runtime.ts"), "utf8"), "// patched plugin\n");
   assert.equal(readFileSync(join(destination, "node_modules/pi-smart-compact/dist/index.js"), "utf8"), "// smart compact\n");
@@ -72,25 +70,24 @@ test("registry package bundles Pix and patched plugin while declaring external d
   assert.equal(plugin.peerDependencies, undefined);
   assert.equal(plugin.devDependencies, undefined);
   assert.equal(manifest.peerDependencies, undefined);
-  assert.equal(manifest.dependencies["@earendil-works/pi-tui"], "1.0.0");
+  assert.equal(manifest.dependencies["@earendil-works/pi-tui"], "1.3.0");
   assert.equal(manifest.dependencies.typebox, "1.1.38");
   assert.equal(JSON.parse(readFileSync(join(source, "node_modules/@fffattiger/pix-pi-sdk-adapter/package.json"), "utf8")).dependencies["pi-claude-subagents"], "file:../../vendor/pinned.tgz");
 });
 
-test("SDK dependencies are pinned to the versions its tree resolved, not their ranges", (t) => {
+test("SDK dependencies must be exact versions, never ranges", (t) => {
   const { source, destination, put } = fixture(t);
-  put("node_modules/@earendil-works/pi-coding-agent/package.json", { name: "@earendil-works/pi-coding-agent", version: "1.0.0", dependencies: { "@earendil-works/pi-tui": "^1.0.0", "@earendil-works/pi-codemode": "^1.0.0", chalk: "6.0.0", typebox: "1.1.38" } });
-  put("node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-codemode/package.json", { name: "@earendil-works/pi-codemode", version: "1.0.0" });
-  const manifest = createRegistryPackage(source, destination, {});
-  assert.equal(manifest.dependencies["@earendil-works/pi-codemode"], "1.0.0");
-  assert.equal(manifest.dependencies.chalk, "6.0.0");
+  put("node_modules/@earendil-works/pi-coding-agent/package.json", { name: "@earendil-works/pi-coding-agent", version: "1.3.0", dependencies: { "@earendil-works/pi-codemode": "^1.3.0", chalk: "6.0.0", typebox: "1.1.38" } });
+  put("node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-codemode/package.json", { name: "@earendil-works/pi-codemode", version: "1.3.0" });
+  assert.throws(() => createRegistryPackage(source, destination, {}), /SDK dependency is not an exact version: @earendil-works\/pi-codemode/);
+  assert.equal(existsSync(destination), false);
 });
 
 test("bundled plugins may declare different ranges for one shared peer the installed copy satisfies", (t) => {
   const { source, destination, put } = fixture(t);
-  put("node_modules/@earendil-works/pi-tui/package.json", { name: "@earendil-works/pi-tui", version: "1.0.0" });
+  put("node_modules/@earendil-works/pi-tui/package.json", { name: "@earendil-works/pi-tui", version: "1.3.0" });
   put("node_modules/pi-memory/package.json", { name: "pi-memory", version: "0.4.2", peerDependencies: { "@earendil-works/pi-tui": ">=0.81.1" } });
-  assert.equal(createRegistryPackage(source, destination, {}).dependencies["@earendil-works/pi-tui"], "1.0.0");
+  assert.equal(createRegistryPackage(source, destination, {}).dependencies["@earendil-works/pi-tui"], "1.3.0");
   put("node_modules/pi-memory/package.json", { name: "pi-memory", version: "0.4.2", peerDependencies: { "@earendil-works/pi-tui": ">=2" } });
   assert.throws(() => createRegistryPackage(source, destination, {}), /conflicting runtime peer: @earendil-works\/pi-tui/);
 });
@@ -102,13 +99,6 @@ test("invalid versions and dependency conflicts fail before creating a registry 
   assert.equal(existsSync(destination), false);
   put("node_modules/@fffattiger/pix-host/package.json", { name: "@fffattiger/pix-host", version: "0.2.0", dependencies: { "@earendil-works/pi-tui": "0.87.1" } });
   assert.throws(() => createRegistryPackage(source, destination), /conflicting runtime dependency/);
-  assert.equal(existsSync(destination), false);
-});
-
-test("SDK shrinkwrap bridge cannot silently survive a version upgrade", (t) => {
-  const { source, destination, put } = fixture(t);
-  put("node_modules/@earendil-works/pi-coding-agent/package.json", { name: "@earendil-works/pi-coding-agent", version: "1.0.1" });
-  assert.throws(() => createRegistryPackage(source, destination), /remove the SDK 1.0.0 shrinkwrap bridge/);
   assert.equal(existsSync(destination), false);
 });
 
