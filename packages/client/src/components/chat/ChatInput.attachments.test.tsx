@@ -381,7 +381,7 @@ describe("ChatInput pending file attachments", () => {
     });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "/skill:test" } });
-    fireEvent.click(screen.getByLabelText("Follow-up"));
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
 
     await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onPromptWithStreamingBehavior).toHaveBeenCalledWith(
@@ -404,24 +404,22 @@ describe("ChatInput pending file attachments", () => {
     expect(await screen.findByText("notes.txt")).toBeTruthy();
     expect(uploadAttachment).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByLabelText("Follow-up"));
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
     await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onFollowUp).toHaveBeenCalledWith("[Attached file saved at: /store/notes.txt]", undefined));
     expect(screen.queryByText("notes.txt")).toBeNull();
   });
 
-  it.each([
-    ["steer", "steer"],
-    ["follow-up", "followup"],
-  ] as const)("sends Enter while streaming as %s", (preference, expected) => {
-    window.localStorage.setItem("pi-streaming-send-mode", preference);
+  it("queues Enter while streaming as a follow-up even when the steer preference is stored", () => {
+    window.localStorage.setItem("pi-streaming-send-mode", "steer");
     const onSteer = vi.fn();
     const onFollowUp = vi.fn();
     renderInput({ isStreaming: true, onSteer, onFollowUp });
     const textarea = screen.getByRole("textbox");
     fireEvent.change(textarea, { target: { value: "during run" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(expected === "steer" ? onSteer : onFollowUp).toHaveBeenCalledWith("during run", undefined);
+    expect(onFollowUp).toHaveBeenCalledWith("during run", undefined);
+    expect(onSteer).not.toHaveBeenCalled();
   });
 
   it("references an in-project desktop file and uploads one outside the project", async () => {

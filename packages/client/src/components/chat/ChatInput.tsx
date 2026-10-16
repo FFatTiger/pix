@@ -1,7 +1,6 @@
 
-import { getStreamingSendMode, type StreamingSendMode } from "@/lib/chat-input-preferences";
 import React, { useMemo, useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, type KeyboardEvent } from "react";
-import type { BuiltinSlashCommandResult, ChatFileIndexSnapshot, CompactResultInfo, QueuedMessages, SkillDormancyResponse, SlashCommandInfo } from "@/lib/chat-view-model";
+import type { BuiltinSlashCommandResult, ChatFileIndexSnapshot, CompactResultInfo, SkillDormancyResponse, SlashCommandInfo } from "@/lib/chat-view-model";
 import { clearDraft, getDraft, getDraftFiles, setDraft, setDraftFiles, type ChatDraftFile, type ChatDraftImage } from "@/lib/draft-store";
 import { continueMarkdownList } from "@/lib/markdown-list";
 import {
@@ -39,15 +38,12 @@ import { useI18n } from "@/hooks/useI18n";
 import { ModelSelector, ThinkingLevelSelector } from "./composer-selectors";
 import { IconButton, ToolbarButton } from "@/components/ui/buttons";
 import { MenuItem, Popover, anchorRectOf, type AnchorRect } from "@/components/ui/menu";
-import { ArrowBendUpLeftIcon } from "@phosphor-icons/react/ArrowBendUpLeft";
 import { ArrowClockwiseIcon } from "@phosphor-icons/react/ArrowClockwise";
-import { ArrowElbowUpLeftIcon } from "@phosphor-icons/react/ArrowElbowUpLeft";
 import { ArrowsInIcon } from "@phosphor-icons/react/ArrowsIn";
 import { ArrowsOutIcon } from "@phosphor-icons/react/ArrowsOut";
 import { AtIcon } from "@phosphor-icons/react/At";
 import { ImageIcon } from "@phosphor-icons/react/Image";
 import { UploadSimpleIcon } from "@phosphor-icons/react/UploadSimple";
-import { SortDescendingIcon } from "@phosphor-icons/react/SortDescending";
 
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
 import { CheckIcon } from "@phosphor-icons/react/Check";
@@ -109,9 +105,7 @@ interface Props {
   availableThinkingLevels?: string[] | null;
   thinkingLevelMap?: Record<string, string | null> | null;
   retryInfo?: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
-  queuedMessages?: QueuedMessages | null;
   inputHistory?: string[];
-  onRecallQueue?: () => void;
   slashCommands?: SlashCommandInfo[];
   slashCommandsLoading?: boolean;
   onLoadSlashCommands?: () => Promise<SlashCommandInfo[]> | SlashCommandInfo[];
@@ -365,44 +359,11 @@ export function getUserMessageDraftImages(message: UserMessage): ChatDraftImage[
   });
 }
 
-function QueuedMessageRow({ kind, text, label }: { kind: "steer" | "follow-up"; text: string; label: string }) {
-  return (
-    <div
-      title={text}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "3px 10px",
-        fontSize: 12,
-        color: "var(--text-muted)",
-        minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          flexShrink: 0,
-          fontSize: 10,
-          fontFamily: "var(--font-mono)",
-          padding: "1px 7px",
-          borderRadius: 999,
-          border: `1px solid ${kind === "steer" ? "color-mix(in srgb, var(--accent) 45%, transparent)" : "var(--border)"}`,
-          color: kind === "steer" ? "var(--accent)" : "var(--text-dim)",
-        }}
-      >
-        {label}
-      </span>
-      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{text}</span>
-    </div>
-  );
-}
-
-
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, toolbarAccessory, variant = "main", placeholder: placeholderOverride, labels, controlsLocked = false, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange,
   compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
-  retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
+  retryInfo, inputHistory = [],
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
   builtinSlashCommands: builtinSlashCommandsProp = [],
@@ -478,7 +439,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       return localStorage.getItem("pi-input-shortcut") === "ctrl-enter" ? "ctrl-enter" : "enter";
     } catch { return "enter"; }
   });
-  const [streamingSendMode, setStreamingSendMode] = useState<StreamingSendMode>(getStreamingSendMode);
   // Markdown list continuation on new lines (Settings → Chat toggle). Stored as
   // "on"/"off"; absent means enabled.
   const [markdownListContinue, setMarkdownListContinue] = useState(() => {
@@ -1020,7 +980,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const handler = () => {
       try {
         setInputShortcut(localStorage.getItem("pi-input-shortcut") === "ctrl-enter" ? "ctrl-enter" : "enter");
-        setStreamingSendMode(getStreamingSendMode());
       } catch { setInputShortcut("enter"); }
     };
     window.addEventListener("storage", handler);
@@ -1247,13 +1206,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     return () => { cancelled = true; };
   }, [cwd, slashMenuOpen, listSkills]);
 
-  const hasInputText = Boolean(value.trim());
   const hasAttachments = attachedImages.length > 0 || pendingFiles.length > 0;
   // Popup height caps: once the space above the input is measured, it wins
   // over the static viewport-relative caps.
   const atMenuHeightCap = popupMaxHeight === null ? "min(calc(30vh / var(--app-ui-scale, 1)), 240px)" : Math.min(240, popupMaxHeight);
   const slashMenuHeightCap = popupMaxHeight === null ? "min(calc(38vh / var(--app-ui-scale, 1)), 300px)" : Math.min(300, popupMaxHeight);
-  const canQueueStreamingMessage = hasInputText || hasAttachments;
 
   // ── @ file autocomplete ──────────────────────────────────────────────────
   // Recomputed from the text before the caret on every change/caret move.
@@ -1442,8 +1399,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const imagesSnapshot = attachedImages;
     const files = pendingFiles;
     // Images and staged files can be delivered mid-stream (pi accepts them in
-    // steering / follow-up prompts). Upload first; the action buttons are
-    // gated by canQueueStreamingMessage.
+    // steering / follow-up prompts). Upload first, then queue the message.
     if (!msg && !imagesSnapshot.length && !files.length) return;
     const identityRevision = composerIdentityRef.current.revision;
     if (activeSubmissionRef.current?.identityRevision === identityRevision) return;
@@ -1641,22 +1597,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (isStreaming && (onSteer || onFollowUp)) {
-          // While the agent runs, Enter QUEUES the message (follow-up) so it
-          // only shows in the queued-preview strip above the composer and is
-          // delivered after the current turn finishes. Immediate steering
-          // stays an explicit action (the inject-now button).
-          const mode = streamingSendMode === "steer" && onSteer
-            ? "steer"
-            : onFollowUp
-              ? "followup"
-              : "steer";
-          sendQueued(mode);
+          // While the agent runs, Enter always queues the message. It shows
+          // in the status capsule and is delivered after this turn finishes.
+          // Steering one queued message is an action on that capsule row.
+          sendQueued(onFollowUp ? "followup" : "steer");
         } else {
           handleSend();
         }
       }
     },
-    [isStreaming, onSteer, onFollowUp, streamingSendMode, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, inputShortcut, markdownListContinue, cwd, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, openAtCompletion, applyAutoHeight]
+    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, inputShortcut, markdownListContinue, cwd, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, openAtCompletion, applyAutoHeight]
   );
 
   const handleInput = useCallback(() => {
@@ -1875,64 +1825,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
           >
             {modelScopeWarnings.join(" ")}
-          </div>
-        )}
-        {/* Queued steering / follow-up messages (delivered by pi on upcoming turns) */}
-        {((queuedMessages?.steering.length ?? 0) + (queuedMessages?.followUp.length ?? 0)) > 0 && (
-          <div style={{
-            marginBottom: 8,
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            background: "var(--bg-panel)",
-            padding: "5px 0",
-          }}>
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 8,
-              padding: "2px 8px 4px 10px",
-            }}>
-              <span style={{
-                fontSize: 10,
-                fontFamily: "var(--font-mono)",
-                color: "var(--text-dim)",
-                textTransform: "uppercase",
-                letterSpacing: 0.4,
-              }}>
-                {t("desktop.queued")} · {(queuedMessages?.steering.length ?? 0) + (queuedMessages?.followUp.length ?? 0)}
-              </span>
-              {onRecallQueue && (
-                <button
-                  className="chat-input-queue-recall"
-                  onClick={onRecallQueue}
-                  title={t("desktop.recallQueuedMessages")}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "4px 12px",
-                    fontSize: 12,
-                    color: "var(--text)",
-                    background: "transparent",
-                    border: "1px solid var(--border)",
-                    borderRadius: 7,
-                    cursor: "pointer",
-                    transition: "background 0.12s, border-color 0.12s",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  <ArrowBendUpLeftIcon size={13} />
-                  {t("desktop.recallToInput")}
-                </button>
-              )}
-            </div>
-            {queuedMessages?.steering.map((text, i) => (
-              <QueuedMessageRow key={`steer-${i}`} kind="steer" label={t("desktop.steer")} text={text} />
-            ))}
-            {queuedMessages?.followUp.map((text, i) => (
-              <QueuedMessageRow key={`followup-${i}`} kind="follow-up" label={t("desktop.followUp")} text={text} />
-            ))}
           </div>
         )}
         {/* Retry banner */}
@@ -2213,11 +2105,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             className={`chat-input-resize-handle${inputHeightResizer.isResizing ? " is-resizing" : ""}`}
           />
           {isStreaming && <div className="chat-input-streaming-overlay hatch-45" aria-hidden="true" />}
-          {/* Floating controls above the composer's top-right corner: the
-              steer/follow-up group only appears while the agent runs; the
-              maximize group appears only while the input box is focused.
+          {/* Maximize / restore floats above the composer's top-right
+              corner, and only while the input is tall enough to need it.
               Styled inline because Turbopack does not hot-reload globals.css
               in the Electron dev setup — inline tweaks ride the JS HMR instead. */}
+          {(inputOverflowing || (maximizedByButton && manualHeight !== null)) && (
           <div
             style={{
               position: "absolute",
@@ -2228,90 +2120,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               right: isMobile ? 12 : 20,
               display: "flex",
               alignItems: "stretch",
-              gap: 6,
             }}
           >
-            {(isStreaming && (onSteer || onFollowUp)) && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "stretch",
-                  overflow: "hidden",
-                  border: "1px solid var(--surface-hairline)",
-                  borderRadius: 7,
-                  background: "var(--bg-panel)",
-                  boxShadow: "none",
-                }}
-              >
-                {isStreaming && onSteer && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canQueueStreamingMessage) return;
-                      sendQueued("steer");
-                    }}
-                    // onMouseDown preventDefault keeps focus in the textarea so
-                    // the maximize group (which is focus-gated and must stay
-                    // collapsed with zero space while unfocused) does not unmount
-                    // and shift the right-anchored actions row under the cursor.
-                    // The button is intentionally NOT `disabled`: a disabled
-                    // button swallows mouse events (no mousedown fires), so the
-                    // blur could not be prevented and the maximize group would
-                    // still collapse under the cursor. `aria-disabled` + the
-                    // onClick guard below preserve the disabled semantics while
-                    // keeping the pointer event path live.
-                    onMouseDown={(e) => e.preventDefault()}
-                    aria-disabled={!canQueueStreamingMessage}
-                    tabIndex={canQueueStreamingMessage ? 0 : -1}
-                    title={t("desktop.injectMessageNow")}
-                    aria-label={t("desktop.steer")}
-                    className="composer-floating-btn"
-                    style={{
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      width: 36, height: 28, padding: 0,
-                      border: 0,
-                      background: "transparent",
-                      cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                      opacity: canQueueStreamingMessage ? 1 : 0.55,
-                      ["--fbtn-color" as string]: canQueueStreamingMessage ? "var(--accent)" : "var(--text-dim)",
-                      ["--fbtn-hover-color" as string]: canQueueStreamingMessage ? "var(--accent)" : undefined,
-                    } as React.CSSProperties}
-                  >
-                    <ArrowElbowUpLeftIcon size={15} />
-                  </button>
-                )}
-                {isStreaming && onFollowUp && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canQueueStreamingMessage) return;
-                      sendQueued("followup");
-                    }}
-                    // Same focus-preservation guard as the steer button above:
-                    // never `disabled`, keeps the pointer event path live.
-                    onMouseDown={(e) => e.preventDefault()}
-                    aria-disabled={!canQueueStreamingMessage}
-                    tabIndex={canQueueStreamingMessage ? 0 : -1}
-                    title={t("desktop.queueMessageAfterFinish")}
-                    aria-label={t("desktop.followUp")}
-                    className="composer-floating-btn"
-                    style={{
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      width: 36, height: 28, padding: 0,
-                      border: 0,
-                      borderLeft: "1px solid color-mix(in srgb, var(--border) 62%, transparent)",
-                      background: "transparent",
-                      cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                      opacity: canQueueStreamingMessage ? 1 : 0.55,
-                      ["--fbtn-color" as string]: canQueueStreamingMessage ? "var(--text-muted)" : "var(--text-dim)",
-                    } as React.CSSProperties}
-                  >
-                    <SortDescendingIcon size={15} />
-                  </button>
-                )}
-              </div>
-            )}
-            {(inputOverflowing || (maximizedByButton && manualHeight !== null)) && (
             <div
               style={{
                 display: "flex",
@@ -2354,8 +2164,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 {manualHeight !== null ? <ArrowsInIcon size={15} /> : <ArrowsOutIcon size={15} />}
               </button>
             </div>
-            )}
           </div>
+          )}
           {/* Image previews + pending ordinary-file chips live inside the input box,
               so nothing sits between the status tab and the composer. */}
           {(attachedImages.length > 0 || pendingFiles.length > 0) && (
@@ -2475,7 +2285,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onPaste={handlePaste}
             placeholder={
               isStreaming && (onSteer || onFollowUp)
-                ? t("desktop.steerOrQueueFollowUp")
+                ? t("desktop.queueWhileRunning")
                 : isStreaming ? t("desktop.agentRunning")
                 : placeholderOverride ?? (isMobile ? t("desktop.messagePlaceholderShort") : t("desktop.messageWithCommands"))
             }

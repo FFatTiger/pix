@@ -775,8 +775,8 @@ pre, code {
      without assigning a z-index. A z-index here would create a stacking
      context that traps the fixed-position dropdown menus (model /
      thinking / tools, z-index 2000+) inside the toolbar's z-index: 1
-     layer, letting the floating steer/follow-up and maximize buttons
-     (z-index 4, shell-level) paint over them while the agent runs. The
+     layer, letting the floating maximize button (z-index 4, shell-level)
+     paint over it. The
      overlay stays beneath all content anyway: z-index 0 / auto positioned
      boxes share a paint layer and later siblings win. */
   position: relative;
@@ -2377,15 +2377,14 @@ span.linenumber {
   container-type: inline-size;
 }
 
-/* Composer top-right floating controls (ChatInput: steer/follow-up group
-   while streaming + maximize group while focused, anchored at the shell's
-   top-right). Worst-case footprint — right offset 20 + steer group ~75 +
-   gap 6 + maximize group ~38 + breathing room — reserved on the status
-   strip row so the capsule can never overlap them at any width. The button
-   widths live in ChatInput's inline styles (36px); if they change, adjust
-   this single variable. */
+/* Composer top-right floating control (ChatInput: the maximize button,
+   shown only while the input is tall enough to need it, anchored at the
+   shell's top-right). Footprint — right offset 20 + the 36px button +
+   breathing room — reserved on the status strip row so the capsule can
+   never overlap it. The button width lives in ChatInput's inline styles;
+   if it changes, adjust this single variable. */
 :root {
-  --composer-floating-controls-reserve: 160px;
+  --composer-floating-controls-reserve: 72px;
 }
 
 /* Subagent activity: status pill above the composer, content-width and
@@ -2568,7 +2567,8 @@ span.linenumber {
 }
 
 .status-capsule-count,
-.status-capsule-agents {
+.status-capsule-agents,
+.status-capsule-queue {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -2578,7 +2578,9 @@ span.linenumber {
   font-variant-numeric: tabular-nums;
 }
 
-.status-capsule-count + .status-capsule-agents::before {
+.status-capsule-count + .status-capsule-agents::before,
+.status-capsule-count + .status-capsule-queue::before,
+.status-capsule-agents + .status-capsule-queue::before {
   content: "";
   width: 1px;
   height: 10px;
@@ -2587,6 +2589,98 @@ span.linenumber {
 }
 
 .status-capsule-agents { color: var(--accent); }
+
+.status-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 14px 2px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.status-queue-recall {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.status-queue-recall:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.status-queue-list {
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.status-queue-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 2px 8px 2px 8px;
+}
+
+.status-queue-text {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font-size: 13px;
+  line-height: 17px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-queue-text:hover {
+  background: var(--bg-hover);
+}
+
+.status-queue-text > span {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-queue-text > span.is-expanded {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.status-queue-steer {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-top: 1px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.status-queue-steer:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+}
 
 .subagent-activity-capsule:hover,
 .subagent-icon-button:hover:not(:disabled) {
@@ -2599,7 +2693,10 @@ span.linenumber {
 .subagent-activity-row:focus-visible,
 .subagent-ended-row:focus-visible,
 .subagent-directory-row:focus-visible,
-.status-todo-fold:focus-visible {
+.status-todo-fold:focus-visible,
+.status-queue-recall:focus-visible,
+.status-queue-text:focus-visible,
+.status-queue-steer:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -3858,16 +3955,10 @@ html.pi-booted body::before {
 .ui-menu-item:hover .model-star { opacity: 1; }
 .ui-menu-item .model-star:hover { color: var(--accent); }
 
-/* Composer floating pills (steer / follow-up / maximize) above the shell. */
+/* Composer floating pill (maximize) above the shell. */
 .composer-floating-btn { color: var(--fbtn-color, var(--text-muted)); transition: background 0.12s, color 0.12s; }
 .composer-floating-btn:hover { background: var(--bg-hover); color: var(--fbtn-hover-color, var(--text)); }
 .composer-floating-btn[aria-disabled="true"]:hover { background: transparent; color: var(--fbtn-color, var(--text-muted)); }
-
-/* Queue-recall pill: one-off hover (border + fill). */
-.chat-input-queue-recall:hover {
-  background: var(--bg-hover);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
 
 /* Send / Stop: 28px rounded-10 square. Filled accent only when sendable;
    stop/compact use a quiet tint. Scoped under the toolbar so leftover

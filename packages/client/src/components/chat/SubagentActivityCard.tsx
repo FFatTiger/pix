@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
+import { ArrowBendUpLeftIcon } from "@phosphor-icons/react/ArrowBendUpLeft";
+import { ArrowElbowUpLeftIcon } from "@phosphor-icons/react/ArrowElbowUpLeft";
 import { ArrowRightIcon } from "@phosphor-icons/react/ArrowRight";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckCircleIcon } from "@phosphor-icons/react/CheckCircle";
@@ -8,11 +10,18 @@ import { CircleNotchIcon } from "@phosphor-icons/react/CircleNotch";
 import { RobotIcon } from "@phosphor-icons/react/Robot";
 import { useI18n } from "@/hooks/useI18n";
 import { shortModelName } from "@/lib/model-display";
+import type { QueuedMessages } from "@/lib/chat-view-model";
 import type { StatusTodoItem, SubagentActivity } from "@/lib/subagent-activity";
 
 export interface SubagentActivityCardProps {
   activities: readonly SubagentActivity[];
   todos?: readonly StatusTodoItem[];
+  /** Steering messages first, then follow-ups, in queue order. */
+  queuedMessages?: QueuedMessages | null;
+  /** Steer one queued message now (clear the queue, steer it, re-queue the rest). */
+  onSteerQueued?: (index: number) => void;
+  /** Clear the queue and put every message back into the composer. */
+  onRecallQueue?: () => void;
   onOpenActivity: (activity: SubagentActivity) => void;
   onOpenDirectory: () => void;
 }
@@ -67,8 +76,15 @@ function capsuleSummary(
   todos: readonly StatusTodoItem[],
   running: readonly SubagentActivity[],
   endedCount: number,
+  queuedCount: number,
   t: ReturnType<typeof useI18n>["t"],
 ): { icon: ReactNode; label: string } | null {
+  if (todos.length === 0 && running.length === 0 && endedCount === 0 && queuedCount > 0) {
+    return {
+      icon: <ArrowBendUpLeftIcon size={15} aria-hidden="true" />,
+      label: t("desktop.pendingMessagesCount", { count: queuedCount }),
+    };
+  }
   const inProgress = todos.find((item) => item.status === "in_progress");
   if (inProgress) {
     return {
@@ -124,6 +140,9 @@ function TodoStatusIcon({ status }: { status: StatusTodoItem["status"] }) {
 export function SubagentActivityCard({
   activities,
   todos = EMPTY_TODOS,
+  queuedMessages = null,
+  onSteerQueued,
+  onRecallQueue,
   onOpenActivity,
   onOpenDirectory,
 }: SubagentActivityCardProps) {
@@ -136,13 +155,18 @@ export function SubagentActivityCard({
   const [tabWidth, setTabWidth] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [allTodosOpen, setAllTodosOpen] = useState(false);
+  const [expandedQueuedIndex, setExpandedQueuedIndex] = useState<number | null>(null);
+  const queued = useMemo(
+    () => [...(queuedMessages?.steering ?? []), ...(queuedMessages?.followUp ?? [])],
+    [queuedMessages],
+  );
   const running = useMemo(() => activities.filter((activity) => activity.status === "running"), [activities]);
   const endedCount = activities.length - running.length;
   const completedTodoCount = useMemo(
     () => todos.filter((item) => item.status === "completed").length,
     [todos],
   );
-  const summary = capsuleSummary(todos, running, endedCount, t);
+  const summary = capsuleSummary(todos, running, endedCount, queued.length, t);
   const todoWindow = todoFocusWindow(todos);
   const hasRunning = running.length > 0;
 
@@ -184,7 +208,7 @@ export function SubagentActivityCard({
     };
   }, [open]);
 
-  if (todos.length === 0 && activities.length === 0) return null;
+  if (todos.length === 0 && activities.length === 0 && queued.length === 0) return null;
 
   const capsuleContent = summary ? (
     <>
@@ -200,6 +224,14 @@ export function SubagentActivityCard({
         >
           <CircleNotchIcon className="subagent-running-icon" size={12} aria-hidden="true" />
           {running.length}
+        </span>
+      ) : null}
+      {queued.length > 0 && (todos.length > 0 || activities.length > 0) ? (
+        <span
+          className="status-capsule-queue"
+          title={t("desktop.pendingMessagesCount", { count: queued.length })}
+        >
+          {t("desktop.pendingMessagesCount", { count: queued.length })}
         </span>
       ) : null}
     </>
@@ -279,9 +311,59 @@ export function SubagentActivityCard({
                 </ul>
               </section>
             ) : null}
-            {hasRunning ? (
+            {queued.length > 0 ? (
               <section
                 className={`status-card-section${todos.length > 0 ? " is-separated" : ""}`}
+                data-testid="status-queue-section"
+              >
+                <div className="status-queue-head">
+                  <span>{t("desktop.pendingMessages")}</span>
+                  {onRecallQueue ? (
+                    <button
+                      type="button"
+                      className="status-queue-recall"
+                      onClick={onRecallQueue}
+                      title={t("desktop.recallQueuedMessages")}
+                    >
+                      <ArrowBendUpLeftIcon size={13} aria-hidden="true" />
+                      {t("desktop.recallToInput")}
+                    </button>
+                  ) : null}
+                </div>
+                <ul className="status-queue-list">
+                  {queued.map((text, index) => {
+                    const expanded = expandedQueuedIndex === index;
+                    return (
+                      <li key={`${index}:${text}`} className="status-queue-row">
+                        <button
+                          type="button"
+                          className="status-queue-text"
+                          aria-expanded={expanded}
+                          title={text}
+                          onClick={() => setExpandedQueuedIndex(expanded ? null : index)}
+                        >
+                          <span className={expanded ? "is-expanded" : undefined}>{text}</span>
+                        </button>
+                        {onSteerQueued ? (
+                          <button
+                            type="button"
+                            className="status-queue-steer"
+                            aria-label={t("desktop.steerQueuedMessage")}
+                            title={t("desktop.steerQueuedMessage")}
+                            onClick={() => onSteerQueued(index)}
+                          >
+                            <ArrowElbowUpLeftIcon size={14} aria-hidden="true" />
+                          </button>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ) : null}
+            {hasRunning ? (
+              <section
+                className={`status-card-section${todos.length > 0 || queued.length > 0 ? " is-separated" : ""}`}
                 data-testid="status-agents-section"
               >
                 <div className="subagent-activity-body">
