@@ -1168,14 +1168,12 @@ describe("pi-sdk sessions cache hardening (injected SDK)", () => {
 
   it("deleteSession maps non-ENOENT filesystem failures to a sanitized error without leaking the path", async () => {
     const root = await mkdtemp(join(tmpdir(), "pix-sessions-adapter-"));
-    // A non-ENOENT rm failure, portably: POSIX routes through a regular file
-    // as a parent (ENOTDIR); win32 normalizes that to ENOENT, so use a file
-    // name Windows itself rejects (EINVAL) instead.
-    const blocker = join(root, "blocker");
-    await writeFile(blocker, "x"); // a regular file where a directory is needed
-    const sessionFile = process.platform === "win32"
-      ? join(root, "s1<invalid>.jsonl")
-      : join(blocker, "sub", "s1.jsonl"); // rm → ENOTDIR (not ENOENT)
+    // A portable non-ENOENT rm failure: the session path exists but is a
+    // DIRECTORY — non-recursive rm fails with EISDIR/EPERM on every platform
+    // (the old POSIX trick of routing through a regular-file parent normalizes
+    // to ENOENT on win32).
+    const sessionFile = join(root, "s1.jsonl");
+    await mkdir(sessionFile, { recursive: true });
     const sdk: PiSdkSessionsSurface = {
       async listAll() {
         return [mkInfo({ path: sessionFile, id: "s1" })];
