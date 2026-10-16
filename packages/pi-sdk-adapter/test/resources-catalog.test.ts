@@ -8,6 +8,7 @@ import { DefaultPackageManager, DefaultResourceLoader, loadSkillsFromDir, Settin
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { createPiSdkGlobalResourceCatalog, createPiSdkResourceCatalog, type PiSdkResourceCatalogOptions } from "../src/resources/index.js";
 import type {
@@ -382,7 +383,8 @@ describe("read-only resource catalog (D3B-R1A)", () => {
           `writeFileSync(${JSON.stringify(markerPath)}, "executed");`,
         "utf8",
       );
-      await import(probe);
+      // Windows absolute paths are not valid ESM specifiers — use a file URL.
+      await import(pathToFileURL(probe).href);
       assert.equal(existsSync(markerPath), true, "control marker must fire on import");
     } finally {
       await rm(root, { recursive: true, force: true });

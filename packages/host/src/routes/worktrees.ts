@@ -4,7 +4,7 @@ import type { Context, Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import { unregisterTrustedCreatedRoot, type AllowedRootService } from "../resources/allowed-roots.js";
-import { canonicalizeRealpath } from "../resources/path-canonical.js";
+import { canonicalizeRealpath, samePath } from "../resources/path-canonical.js";
 import type { ManagedWorktreesService } from "../resources/managed-worktrees.js";
 import { ManagedWorktreesLedgerError } from "../resources/managed-worktrees-ledger.js";
 import { createProcessRunner, type ProcessRunner } from "../resources/process-runner.js";
@@ -232,14 +232,14 @@ export function registerWorktreeRoutes(app: Hono<HostEnv>, deps: WorktreeDeps): 
         try {
           const baseInfo = await lstat(base);
           if (!baseInfo.isDirectory() || baseInfo.isSymbolicLink()) throw new HttpError(409, "UNSAFE_WORKTREE_BASE", "Worktree base must be a real directory, not a symlink");
-          baseCanonical = await realpath(base);
-          if (baseCanonical !== resolve(base)) throw new HttpError(409, "UNSAFE_WORKTREE_BASE", "Worktree base changed identity");
+          baseCanonical = canonicalizeRealpath(await realpath(base));
+          if (!samePath(baseCanonical, resolve(base))) throw new HttpError(409, "UNSAFE_WORKTREE_BASE", "Worktree base changed identity");
         } catch (error) {
           if (error instanceof HttpError) throw error;
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           await mkdir(base, { recursive: false });
           ledger.createdBase = true;
-          baseCanonical = await realpath(base);
+          baseCanonical = canonicalizeRealpath(await realpath(base));
         }
         target = join(baseCanonical, dirName(branch));
         try { await lstat(target); throw new HttpError(409, "WORKTREE_EXISTS", "Worktree directory already exists"); }
@@ -258,14 +258,14 @@ export function registerWorktreeRoutes(app: Hono<HostEnv>, deps: WorktreeDeps): 
         ledger.addedWorktree = true;
         const postBranch = await branchExists(runner, root, branch, max, c.req.raw.signal);
         const postWorktrees = await list(runner, root, max, c.req.raw.signal);
-        const postTarget = postWorktrees.find((item) => item.path === resolve(target!));
+        const postTarget = postWorktrees.find((item) => samePath(item.path, resolve(target!)));
         if (!postBranch || !postTarget || prePaths.has(postTarget.path)) throw new HttpError(409, "WORKTREE_VERIFY_FAILED", "Git did not report a transaction-owned worktree");
 
         const targetInfo = await lstat(target);
         if (!targetInfo.isDirectory() || targetInfo.isSymbolicLink()) throw new HttpError(409, "UNSAFE_WORKTREE_TARGET", "Git created an unsafe worktree target");
-        if (await realpath(base) !== baseCanonical) throw new HttpError(409, "UNSAFE_WORKTREE_BASE", "Worktree base was replaced during creation");
-        const canonical = await realpath(target);
-        if (dirname(canonical) !== baseCanonical) throw new HttpError(409, "UNSAFE_WORKTREE_TARGET", "Worktree target escaped its verified base");
+        if (!samePath(canonicalizeRealpath(await realpath(base)), baseCanonical)) throw new HttpError(409, "UNSAFE_WORKTREE_BASE", "Worktree base was replaced during creation");
+        const canonical = canonicalizeRealpath(await realpath(target));
+        if (!samePath(dirname(canonical), baseCanonical)) throw new HttpError(409, "UNSAFE_WORKTREE_TARGET", "Worktree target escaped its verified base");
         // Capture exact managed evidence, persist the managed record (disk
         // FIRST), then publish memory authorization. NO trusted-root claim is
         // created for a new managed worktree — the managed record is the only

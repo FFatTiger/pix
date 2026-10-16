@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test, { afterEach } from "node:test";
 import { LocalAuthorityError } from "@fffattiger/pix-local-authority/state";
 import { SessiondError } from "../src/errors.js";
@@ -27,7 +27,11 @@ afterEach(() => {
 const isForbidden = (error: unknown): boolean =>
   error instanceof SessiondError && error.code === "forbidden";
 
-test("startDaemon fails closed on an existing 0755 runtime dir (forbidden, fixed message, mode untouched, no partial files)", async () => {
+test("startDaemon fails closed on an existing 0755 runtime dir (forbidden, fixed message, mode untouched, no partial files)", async (t) => {
+  if (isWindows) {
+    t.skip("the 0700 mode gate is POSIX-only; the win32 acceptance equivalent is in local-posix.test.mjs");
+    return;
+  }
   const dir = await tempDir();
   chmodSync(dir, 0o755);
   try {
@@ -91,7 +95,9 @@ test("startDaemon fails closed on a symlink runtime-dir leaf (fixed SYMLINK→fo
         return true;
       },
     );
-    assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+    if (process.platform !== "win32") {
+      assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+    }
     assert.equal(await readFile(marker, "utf8"), "payload", "target content untouched");
   } finally {
     await rmSync(base, { recursive: true, force: true });
@@ -104,6 +110,13 @@ test("secret marker probe: no raw path/errno leakage in any daemon-level thrown 
   // 0755 existing dir → NOT_PRIVATE mapped to a fixed message; must not echo path.
   chmodSync(dir, 0o755);
   try {
+    if (process.platform === "win32") {
+      // NTFS cannot hold the 0755 shape (mode gate is POSIX-only): the same
+      // directory boots cleanly and shuts down — no leak.
+      const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+      await handle.shutdown();
+      return;
+    }
     await assert.rejects(
       startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
       (error: unknown) => {
@@ -127,7 +140,7 @@ test("acquireInstanceLock with a swapped directory ctx fails closed (bounded re-
     const ctx = await ensureSessiondPrivateDirectory(dir);
     // Swap the directory after preflight; the lock acquire must re-verify and
     // fail closed (UNSAFE_COMPONENT) instead of mutating the replacement.
-    const moved = join(dirname(dir), `.${dir.split("/").pop()}.moved`);
+    const moved = join(dirname(dir), `.${basename(dir)}.moved`);
     renameSync(dir, moved);
     temporary.push(moved);
     mkdirSync(dir, { mode: 0o700 });
@@ -147,7 +160,7 @@ test("loadOrCreateLocalSecret with a swapped directory ctx fails closed", async 
   const paths = sessiondPaths(dir);
   try {
     const ctx = await ensureSessiondPrivateDirectory(dir);
-    const moved = join(dirname(dir), `.${dir.split("/").pop()}.moved`);
+    const moved = join(dirname(dir), `.${basename(dir)}.moved`);
     renameSync(dir, moved);
     temporary.push(moved);
     mkdirSync(dir, { mode: 0o700 });

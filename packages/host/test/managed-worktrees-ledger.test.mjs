@@ -189,10 +189,15 @@ test("managed ledger: wrong-permission / hard-linked / symlink sidecar fail clos
   let ledger = await openManagedWorktreesLedger({ hostDir });
   await ledger.writeAll([mrecord()]);
   await ledger.close();
-  chmodSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME), 0o644);
-  const beforeBytes = await (await import("node:fs/promises")).readFile(join(hostDir, MANAGED_WORKTREES_FILE_NAME));
-  await assert.rejects(() => openManagedWorktreesLedger({ hostDir }), (e) => e.code === "MANAGED_PERMISSIONS");
-  assert.deepEqual(await (await import("node:fs/promises")).readFile(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), beforeBytes);
+  if (process.platform !== "win32") {
+    chmodSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME), 0o644);
+    const beforeBytes = await (await import("node:fs/promises")).readFile(join(hostDir, MANAGED_WORKTREES_FILE_NAME));
+    await assert.rejects(() => openManagedWorktreesLedger({ hostDir }), (e) => e.code === "MANAGED_PERMISSIONS");
+    assert.deepEqual(await (await import("node:fs/promises")).readFile(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), beforeBytes);
+  }
+  // NTFS: chmod cannot set group/other bits, so the 0644 gate is POSIX-only
+  // (the product accepts win32's unavoidable 0o666); hard-link + symlink
+  // tamper checks below remain enforced on every platform.
 
   // hard-linked → MANAGED_HARD_LINK.
   const hostDir2 = temp("mwt-hlink-");

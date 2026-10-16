@@ -27,6 +27,11 @@ const locator = {
   async resolveLeafId() { return "leaf"; },
 };
 
+/** Platform-portable absolute path: `/repos/x` on POSIX, `C:\repos\x` on win32. */
+function repoPath(posixStyle: string): string {
+  return process.platform === "win32" ? `C:${posixStyle.replace(/\//g, "\\")}` : posixStyle;
+}
+
 function makeService(cwdFor: (sessionId: string) => string) {
   const workers = new FakeWorkerFactory({});
   const service = new SessiondService({
@@ -150,9 +155,12 @@ test("worker.statusQuery: a crashed worker's session disappears from the snapsho
 test("workspace flags: durable store write, authoritative read-back, global sessions_changed push, fail-closed input", async () => {
   const store = new InMemoryWorkspaceStateStore();
   const workers = new FakeWorkerFactory({});
+  const repoT = repoPath("/repos/t");
+  const repoX = repoPath("/repos/x");
+  const repoRoot = repoPath("/repos");
   const service = new SessiondService({
     sessionLocator: locator,
-    activationContext: { async resolve(sessionId) { return { cwd: sessionId === "t" ? "/repos/t" : "/repos/x", projectRoot: "/repos" }; } },
+    activationContext: { async resolve(sessionId) { return { cwd: sessionId === "t" ? repoT : repoX, projectRoot: repoRoot }; } },
     workerFactory: workers,
     workspaceState: store,
   }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
@@ -164,14 +172,14 @@ test("workspace flags: durable store write, authoritative read-back, global sess
     assert.deepEqual(partial, { sessionId: "t", pinned: true, archived: false, revision: 2 });
 
     // Project flags: same store, same push.
-    const project = await service.setProjectFlags("/repos/t", { pinned: true });
-    assert.deepEqual(project, { projectRoot: "/repos/t", pinned: true, archived: false, revision: 3 });
+    const project = await service.setProjectFlags(repoT, { pinned: true });
+    assert.deepEqual(project, { projectRoot: repoT, pinned: true, archived: false, revision: 3 });
 
     // Unified read.
     const flags = service.getWorkspaceFlags();
     assert.equal(flags.revision, 3);
     assert.deepEqual(flags.sessions, { t: { pinned: true, archived: false } });
-    assert.deepEqual(flags.projects, { "/repos/t": { pinned: true } });
+    assert.deepEqual(flags.projects, { [repoT]: { pinned: true } });
 
     // No flags at all → structured invalid_input, no write, no revision bump.
     await assert.rejects(service.setSessionFlags("t", {}), (error: { code?: string }) => error.code === "invalid_input");
@@ -183,7 +191,7 @@ test("workspace flags: durable store write, authoritative read-back, global sess
     const watch = service.prepareRunningWatch();
     await watch.flushTo((push) => { pushes.push(push.type); });
     await service.setSessionFlags("t", { pinned: false });
-    await service.setProjectFlags("/repos/t", { archived: true });
+    await service.setProjectFlags(repoT, { archived: true });
     await wait(150);
     assert.ok(pushes.includes("sessions_changed"), `pushes=${JSON.stringify(pushes)}`);
     watch.close();

@@ -130,6 +130,23 @@ async function inspectRegularFile(path: string): Promise<RegularFileInspection> 
   }
 }
 
+// Node ships TWO realpath implementations with different win32 behavior:
+// the JS one (fs.realpath callback / fs.realpathSync) preserves the on-disk
+// spelling of every existing component — an 8.3 short name like `RUNNER~1`
+// stays — while node:fs/promises realpath is the libuv native one
+// (GetFinalPathNameByHandleW) that rewrites components to long names. The
+// canonical form is the JS spelling: it is what realpathSync callers (tests,
+// ledgers, env-derived paths like TEMP) compare against, so a canonical path
+// never flips spelling underneath them.
+// (Cast only bridges the promise realpath's option-overloaded type; the
+// helper always uses the default utf8 encoding, matching every call site.)
+const realpathJs = ((path: string) => new Promise<string>((resolvePromise, rejectPromise) => {
+  realpathCb(path, (error, resolved) => {
+    if (error) rejectPromise(error);
+    else resolvePromise(resolved as string);
+  });
+})) as typeof realpath;
+
 function errnoCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException).code;
 }
@@ -159,7 +176,7 @@ function errnoCode(error: unknown): string | undefined {
 export async function canonicalizeAbsolutePath(
   path: string,
   platform: NodeJS.Platform | string = process.platform,
-  fs: { lstat: typeof lstat; realpath: typeof realpath } = { lstat, realpath },
+  fs: { lstat: typeof lstat; realpath: typeof realpath } = { lstat, realpath: realpathJs },
 ): Promise<string> {
   const plat = securePathPlatform(platform);
   const papi = securePathApi(plat);
@@ -233,11 +250,13 @@ export async function canonicalizeAbsolutePath(
 
   let canonicalPrefix: string;
   try {
-    // realpath keeps an 8.3 short name (`RUNNER~1`); the long name is the
-    // canonical form every later compare and ledger stores. longPathName is a
-    // no-op when the native lookup fails, so an injected realpath result that
-    // does not exist on disk still flows through.
-    canonicalPrefix = stripWindowsExtendedPrefix(await longPathName(await fs.realpath(existing)));
+    // The JS realpath result IS the canonical form, verbatim: on win32 it
+    // keeps an 8.3 short name (`RUNNER~1`) exactly as the input spelled it —
+    // the contract is "nearest existing ancestor realpath + validated missing
+    // tail", nothing more. ensurePrivateDirectory's final equality is the one
+    // place a short/long pair could split identities, and it expands BOTH
+    // sides via longPathName before comparing (see its walk below).
+    canonicalPrefix = stripWindowsExtendedPrefix(await fs.realpath(existing));
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Existing ancestor cannot be canonicalized");
   }

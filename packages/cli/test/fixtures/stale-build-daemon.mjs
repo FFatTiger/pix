@@ -143,11 +143,15 @@ const server = createServer((socket) => {
       } else if (method === "system.hello") {
         const build = buildBlock();
         if (exitAfterHello) {
-          // Race-fence determinism: remove the lock + public socket BEFORE the
+          // Race-fence determinism: remove the lock + public endpoint BEFORE the
           // hello answer is written, so by the time the CLI can possibly act
           // on a "current" classification the instance is provably gone.
+          // win32: the endpoint is a named pipe — there is no socket file to
+          // unlink (rm on `\\.\\pipe\\` is EINVAL); closing the listener is
+          // the removal.
           rmSync(lockFile, { force: true });
-          rmSync(endpoint, { force: true });
+          if (process.platform !== "win32") rmSync(endpoint, { force: true });
+          else server.close();
         }
         const helloLine = JSON.stringify({
           id: request.id,
@@ -184,7 +188,7 @@ const server = createServer((socket) => {
           if (authorized) {
             setTimeout(() => {
               rmSync(lockFile, { force: true });
-              rmSync(endpoint, { force: true });
+              if (process.platform !== "win32") rmSync(endpoint, { force: true });
               server.close();
               process.exit(0);
             }, 20);

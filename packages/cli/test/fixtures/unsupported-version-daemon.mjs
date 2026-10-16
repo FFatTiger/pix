@@ -69,7 +69,8 @@ const server = createServer((socket) => {
         if (accepted) {
           setTimeout(() => {
             rmSync(lockFile, { force: true });
-            rmSync(endpoint, { force: true });
+            // win32: the endpoint is a named pipe (no socket file to unlink).
+            if (process.platform !== "win32") rmSync(endpoint, { force: true });
             server.close();
             process.exit(0);
           }, 20);

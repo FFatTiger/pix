@@ -34,12 +34,11 @@
  * residual window, NOT claimed fail-closed. Cross-user boundaries are never
  * weakened.
  */
-import { constants, type Stats } from "node:fs";
+import { constants, realpath as realpathCb, type Stats } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import {
   canonicalCompareKey,
   canonicalizeAbsolutePath,
-  currentPrincipal,
   decomposeAbsolutePath,
   hasControlChar,
   isOwnedByCurrentUser,
@@ -190,13 +189,17 @@ export async function ensureSessiondPrivateDirectoryWithFs(
   fs: EnsurePrivateDirectoryFs,
   platform: NodeJS.Platform | string = process.platform,
 ): Promise<{ path: string; created: boolean; identity: PosixFileIdentity }> {
-  const requireOwnedByCurrentUser = currentPrincipal().uid !== undefined;
   const plat = securePathPlatform(platform);
   const papi = securePathApi(plat);
   // NTFS carries no POSIX mode bits and no uid; on win32 the frozen 0700/owner
   // enforcement is skipped (symlink/junction rejection and dev/ino identity
   // pinning stay), matching the local-authority walk semantics.
   const enforceUnixPermissions = plat === "posix";
+  // Owner enforcement follows the walk PLATFORM, not the host's uid
+  // capability: a posix-platform walk always consults the (injectable)
+  // fs.isOwnedByCurrentUser; a win32 walk has no uid semantics. On POSIX hosts
+  // this is identical to the previous host-uid condition (getuid always exists).
+  const requireOwnedByCurrentUser = plat === "posix";
   const normalized = papi.resolve(plat === "win32" ? stripWindowsExtendedPrefix(path) : path);
   if (
     typeof path !== "string"
@@ -420,16 +423,36 @@ export async function ensureSessiondPrivateDirectoryWithFs(
   }
 
   // Final re-verify the leaf is still a real canonical non-symlink directory.
-  let finalReal;
+  // win32: the canonicalize/walk side may carry an 8.3 short name (`RUNNER~1`)
+  // while node:fs/promises realpath is the native call that expands it to the
+  // long name (`runneradmin`). Expand BOTH sides via the native lookup (a
+  // failed lookup keeps the original string) so a short/long pair is the same
+  // directory, never a swap — the same pattern as local-authority's walk.
+  let finalReal: string;
+  let currentLong: string;
   try {
-    finalReal = await fs.realpath(current);
+    finalReal = await longPathName(await fs.realpath(current));
+    currentLong = await longPathName(current);
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
   }
-  if (canonicalCompareKey(finalReal, plat) !== canonicalCompareKey(current, plat)) {
+  if (canonicalCompareKey(finalReal, plat) !== canonicalCompareKey(currentLong, plat)) {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
   }
   return { path: current, created: leafCreated, identity: toIdentity(finalRecheck) };
+}
+
+/**
+ * Expand a Windows 8.3 short name to the long path via the native realpath
+ * (no-op on POSIX; keeps the original string when the lookup fails, e.g. for
+ * injected fake paths in tests). Mirrors local-authority's longPathName.
+ */
+function longPathName(path: string): Promise<string> {
+  return new Promise((resolve) => {
+    realpathCb.native(path, (error, resolved) => {
+      resolve(error || typeof resolved !== "string" ? path : stripWindowsExtendedPrefix(resolved));
+    });
+  });
 }
 
 /** Real-fs injection for the production entry point. */

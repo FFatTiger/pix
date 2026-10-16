@@ -1569,7 +1569,14 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     if (!args || typeof args !== "object") return undefined;
     const path = (args as Record<string, unknown>).path;
     if (typeof path !== "string" || path.trim().length === 0 || path.includes("\0")) return undefined;
-    return normalizeWrittenPathInto(this.driver.identity.cwd, path);
+    // The SESSION cwd's shape decides the path semantics, never process.platform:
+    // a drive-letter/UNC-absolute cwd composes with win32 rules, any other cwd
+    // (a POSIX `/a/b` session — which win32.isAbsolute would still call
+    // absolute) stays POSIX-pure even when the adapter host is win32. Otherwise
+    // the projection would mint a drive-qualified path that matches no real
+    // location of that session.
+    const isWin32ShapedCwd = /^([A-Za-z]:[\\/]|\\\\)/.test(this.driver.identity.cwd);
+    return normalizeWrittenPathInto(this.driver.identity.cwd, path, isWin32ShapedCwd ? "win32" : "darwin");
   }
 
   private publishCommittedBashTerminals(terminals: readonly PendingBashTerminal[]): void {

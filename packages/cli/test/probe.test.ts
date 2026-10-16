@@ -15,10 +15,11 @@ import { resolveCliPackageRoot } from "../src/paths.js";
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "pix-probe-"));
 
 /** A raw net server that AUTHs but never answers any request (hello hangs). */
-function startHangingServer(): Promise<{ socketPath: string; secret: string; server: ReturnType<typeof createServer> }> {
+function startHangingServer(): Promise<{ socketPath: string; secret: string; server: ReturnType<typeof createServer>; dir: string }> {
   return new Promise((resolve) => {
     // Short prefix: macOS sun_path is ~104 bytes and tmpdir() is already long.
-    const socketPath = fixtureEndpoint(mkdtempSync(join(tmpdir(), "ph-")));
+    const dir = mkdtempSync(join(tmpdir(), "ph-"));
+    const socketPath = fixtureEndpoint(dir);
     const secret = "s".repeat(43);
     const server = createServer((socket) => {
       socket.setNoDelay(true);
@@ -40,7 +41,7 @@ function startHangingServer(): Promise<{ socketPath: string; secret: string; ser
         }
       });
     });
-    server.listen(socketPath, () => resolve({ socketPath, secret, server }));
+    server.listen(socketPath, () => resolve({ socketPath, secret, server, dir }));
   });
 }
 
@@ -50,9 +51,10 @@ function startHangingServer(): Promise<{ socketPath: string; secret: string; ser
  * positively authenticated daemon whose version is NOT current and NOT the
  * supported legacy v1 (future major, 0, or a non-integer).
  */
-function startVersionedServer(version: unknown): Promise<{ socketPath: string; secret: string; server: ReturnType<typeof createServer> }> {
+function startVersionedServer(version: unknown): Promise<{ socketPath: string; secret: string; server: ReturnType<typeof createServer>; dir: string }> {
   return new Promise((resolve) => {
-    const socketPath = fixtureEndpoint(mkdtempSync(join(tmpdir(), "pv-")));
+    const dir = mkdtempSync(join(tmpdir(), "pv-"));
+    const socketPath = fixtureEndpoint(dir);
     const secret = "s".repeat(43);
     const server = createServer((socket) => {
       socket.setNoDelay(true);
@@ -84,7 +86,7 @@ function startVersionedServer(version: unknown): Promise<{ socketPath: string; s
         }
       });
     });
-    server.listen(socketPath, () => resolve({ socketPath, secret, server }));
+    server.listen(socketPath, () => resolve({ socketPath, secret, server, dir }));
   });
 }
 
@@ -175,7 +177,7 @@ test("probeSessiondCompatibility: a transient hello timeout is unverifiable(time
     assert.equal(compat.reason, "timeout");
   } finally {
     hanging.server.close();
-    rm(hanging.socketPath, { force: true });
+    await rm(hanging.dir, { recursive: true, force: true });
   }
 });
 
@@ -188,7 +190,7 @@ test("probeSessiondCompatibility: a positively-authenticated FUTURE version (3) 
     assert.equal(await isProtocolCurrent(srv.socketPath, srv.secret, 500), false);
   } finally {
     srv.server.close();
-    rm(srv.socketPath, { force: true });
+    await rm(srv.dir, { recursive: true, force: true });
   }
 });
 
@@ -201,7 +203,7 @@ test("probeSessiondCompatibility: an unsupported numeric version (0) is unverifi
     assert.equal(await isProtocolCurrent(srv.socketPath, srv.secret, 500), false);
   } finally {
     srv.server.close();
-    rm(srv.socketPath, { force: true });
+    await rm(srv.dir, { recursive: true, force: true });
   }
 });
 
@@ -214,7 +216,7 @@ test("probeSessiondCompatibility: a non-integer numeric version is unverifiable(
     assert.equal(await isProtocolCurrent(srv.socketPath, srv.secret, 500), false);
   } finally {
     srv.server.close();
-    rm(srv.socketPath, { force: true });
+    await rm(srv.dir, { recursive: true, force: true });
   }
 });
 
@@ -227,7 +229,7 @@ test("probeSessiondCompatibility: only the allowlisted v1 is knownLegacy (LEGACY
     assert.deepEqual(compat, { state: "knownLegacy", version: 1 });
   } finally {
     srv.server.close();
-    rm(srv.socketPath, { force: true });
+    await rm(srv.dir, { recursive: true, force: true });
   }
 });
 

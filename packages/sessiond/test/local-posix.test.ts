@@ -53,6 +53,12 @@ function realFs(ownerCheck: (identity: PosixFileIdentity) => boolean = isOwnedBy
   return { lstat, mkdir, realpath, open, isOwnedByCurrentUser: ownerCheck };
 }
 
+/** NTFS has no POSIX mode bits (every file reads 0o666); mode assertions are POSIX-only. */
+function assertUnixMode(path: string, expected: number, note: string): void {
+  if (process.platform === "win32") return;
+  assert.equal(lstatSync(path).mode & 0o777, expected, note);
+}
+
 async function expectReject(fn: () => Promise<unknown>, code: string): Promise<void> {
   await assert.rejects(fn, (e: unknown) => e instanceof LocalAuthorityError && e.code === code, `expected reject with ${code}`);
 }
@@ -118,9 +124,17 @@ test("existing 0755 directory fails closed NOT_PRIVATE, mode untouched, no mutat
   const marker = join(leaf, "marker.txt");
   writeFileSync(marker, "payload", { mode: 0o600 });
 
+  if (process.platform === "win32") {
+    // NTFS: mode enforcement is POSIX-only by design — the same 0755-shaped
+    // directory is accepted validate-only and never mutated.
+    const result = await ensureSessiondPrivateDirectoryWithFs(leaf, realFs());
+    assert.equal(result.created, false);
+    assert.equal(readFileSync(marker, "utf8"), "payload", "content untouched");
+    return;
+  }
   await expectReject(() => ensureSessiondPrivateDirectoryWithFs(leaf, realFs()), "NOT_PRIVATE");
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o755, "existing leaf must never be chmod'd");
-  assert.equal(lstatSync(dir).mode & 0o777, 0o700, "parent unchanged");
+  assertUnixMode(leaf, 0o755, "existing leaf must never be chmod'd");
+  assertUnixMode(dir, 0o700, "parent unchanged");
   assert.equal(readFileSync(marker, "utf8"), "payload", "content untouched");
 });
 
@@ -128,8 +142,16 @@ test("production entry fails closed on an existing 0755 directory (no partial mu
   const dir = await mkdtemp(join(tmpdir(), "posix-prod-0755-"));
   temporary.push(dir);
   chmodSync(dir, 0o755);
+  if (process.platform === "win32") {
+    // NTFS: mode enforcement is POSIX-only; the production entry accepts the
+    // existing directory validate-only and creates nothing.
+    const ctx = await ensureSessiondPrivateDirectory(dir);
+    assert.equal(ctx.created, false);
+    assert.deepEqual(await import("node:fs/promises").then((m) => m.readdir(dir)), [], "no partial artifacts created");
+    return;
+  }
   await expectReject(() => ensureSessiondPrivateDirectory(dir), "NOT_PRIVATE");
-  assert.equal(lstatSync(dir).mode & 0o777, 0o755, "mode untouched (never silently chmod'd)");
+  assertUnixMode(dir, 0o755, "mode untouched (never silently chmod'd)");
   assert.deepEqual(await import("node:fs/promises").then((m) => m.readdir(dir)), [], "no partial artifacts created");
 });
 
@@ -137,8 +159,15 @@ test("existing 0700 wrong-owner (injected owner check) fails closed NOT_OWNED", 
   const dir = temp("posix-owner-");
   const leaf = join(dir, "leaf");
   mkdirSync(leaf, { mode: 0o700 });
+  if (process.platform === "win32") {
+    // Owner-identity enforcement is POSIX-only (NTFS reports no uid); the
+    // same directory validates without a mutation.
+    const result = await ensureSessiondPrivateDirectoryWithFs(leaf, realFs(() => false));
+    assert.equal(result.created, false);
+    return;
+  }
   await expectReject(() => ensureSessiondPrivateDirectoryWithFs(leaf, realFs(() => false)), "NOT_OWNED");
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o700, "never chmod'd");
+  assertUnixMode(leaf, 0o700, "never chmod'd");
 });
 
 test("existing 0700 current-user directory validates and is never chmod'd (created:false)", async () => {
@@ -147,7 +176,7 @@ test("existing 0700 current-user directory validates and is never chmod'd (creat
   mkdirSync(leaf, { mode: 0o700 });
   const result = await ensureSessiondPrivateDirectoryWithFs(leaf, realFs());
   assert.equal(result.created, false, "existing leaf is never reported created");
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o700);
+  assertUnixMode(leaf, 0o700, "never chmod'd");
 });
 
 // ---------------------------------------------------------------------------
@@ -164,7 +193,7 @@ test("symlink leaf fails closed SYMLINK, target untouched", async () => {
   symlinkSync(external, leaf);
 
   await expectReject(() => ensureSessiondPrivateDirectoryWithFs(leaf, realFs()), "SYMLINK");
-  assert.equal(lstatSync(external).mode & 0o777, 0o700, "external target untouched");
+  assertUnixMode(external, 0o700, "external target untouched");
   assert.equal(readFileSync(payload, "utf8"), "payload", "external content untouched");
 });
 
@@ -176,7 +205,7 @@ test("symlink intermediate fails closed SYMLINK, target untouched", async () => 
   symlinkSync(external, link);
 
   await expectReject(() => ensureSessiondPrivateDirectoryWithFs(join(link, "leaf"), realFs()), "SYMLINK");
-  assert.equal(lstatSync(external).mode & 0o777, 0o700, "external target untouched");
+  assertUnixMode(external, 0o700, "external target untouched");
 });
 
 test("production entry rejects a symlink LEAF (fixed SYMLINK, target untouched)", async () => {
@@ -190,7 +219,7 @@ test("production entry rejects a symlink LEAF (fixed SYMLINK, target untouched)"
   symlinkSync(real, link);
 
   await expectReject(() => ensureSessiondPrivateDirectory(link), "SYMLINK");
-  assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+  assertUnixMode(real, 0o700, "target untouched");
   assert.equal(readFileSync(payload, "utf8"), "payload", "target content untouched");
 });
 
@@ -205,10 +234,16 @@ test("raced EEXIST final leaf 0755: NOT_PRIVATE, never chmod, never created:true
   mkdirSync(leaf, { mode: 0o755 });
   chmodSync(leaf, 0o755);
   const fs = racedFs({ enoentPaths: [leaf], eexistPaths: [leaf] });
-
+  if (process.platform === "win32") {
+    // NTFS: the 0755 raced leaf is accepted (mode enforcement is POSIX-only)
+    // and never reported created.
+    const result = await ensureSessiondPrivateDirectoryWithFs(leaf, fs);
+    assert.equal(result.created, false);
+    return;
+  }
   await expectReject(() => ensureSessiondPrivateDirectoryWithFs(leaf, fs), "NOT_PRIVATE");
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o755, "raced existing leaf must never be chmod'd");
-  assert.equal(lstatSync(dir).mode & 0o777, 0o700, "parent unchanged");
+  assertUnixMode(leaf, 0o755, "raced existing leaf must never be chmod'd");
+  assertUnixMode(dir, 0o700, "parent unchanged");
 });
 
 test("raced EEXIST final leaf 0700: validate-only passes, created:false, never chmod'd", async () => {
@@ -221,7 +256,7 @@ test("raced EEXIST final leaf 0700: validate-only passes, created:false, never c
   const fs = racedFs({ enoentPaths: [leaf], eexistPaths: [leaf] });
   const result = await ensureSessiondPrivateDirectoryWithFs(leaf, fs);
   assert.equal(result.created, false, "raced EEXIST leaf is never reported created");
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o700, "raced leaf never chmod'd");
+  assertUnixMode(leaf, 0o700, "raced leaf never chmod'd");
   assert.equal(readFileSync(marker, "utf8"), "untouched", "marker unchanged");
 });
 
@@ -234,8 +269,8 @@ test("nested all-missing path created 0700, created:true, identity-pinned fchmod
   const leaf = join(dir, "a", "b", "leaf");
   const result = await ensureSessiondPrivateDirectoryWithFs(leaf, realFs());
   assert.equal(result.created, true);
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o700, "leaf 0700 via fd");
-  assert.equal(lstatSync(join(dir, "a", "b")).mode & 0o777, 0o700, "intermediate leaves 0700");
+  assertUnixMode(leaf, 0o700, "leaf 0700 via fd");
+  assertUnixMode(join(dir, "a", "b"), 0o700, "intermediate leaves 0700");
 });
 
 test("production entry creates a missing runtime directory 0700 (created:true, canonical/operational split)", async () => {
@@ -245,7 +280,7 @@ test("production entry creates a missing runtime directory 0700 (created:true, c
   const ctx = await ensureSessiondPrivateDirectory(leaf);
   assert.equal(ctx.created, true);
   assert.equal(ctx.operationalPath, leaf);
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o700);
+  assertUnixMode(leaf, 0o700, "created runtime directory 0700");
   // The canonical path resolves the macOS /var system alias (no symlink components).
   assert.equal(lstatSync(ctx.canonicalPath).dev, lstatSync(leaf).dev);
   assert.equal(lstatSync(ctx.canonicalPath).ino, lstatSync(leaf).ino);
@@ -256,7 +291,10 @@ test("production entry creates a missing runtime directory 0700 (created:true, c
 // zero chmod (O_NOFOLLOW alone cannot stop a real-directory swap)
 // ---------------------------------------------------------------------------
 
-test("created leaf swapped at open to a real 0755 replacement dir: UNSAFE_COMPONENT, zero chmod", async () => {
+test("created leaf swapped at open to a real 0755 replacement dir: UNSAFE_COMPONENT, zero chmod", { skip: process.platform === "win32" }, async () => {
+  // The fd-open seam exists only under POSIX mode enforcement (win32 cannot
+  // open a directory handle this way, and the swap mechanics below race the
+  // fd identity check); the lstat-seam swap below is the win32-equivalent.
   const dir = temp("posix-open-swap-");
   const leaf = join(dir, "leaf");
   const backup = join(dir, "leaf.original");
@@ -279,9 +317,45 @@ test("created leaf swapped at open to a real 0755 replacement dir: UNSAFE_COMPON
   };
 
   await expectReject(() => ensureSessiondPrivateDirectoryWithFs(leaf, fs), "UNSAFE_COMPONENT");
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o755, "replacement dir must never be chmod'd");
+  assertUnixMode(leaf, 0o755, "replacement dir must never be chmod'd");
   assert.equal(readFileSync(join(leaf, "marker.txt"), "utf8"), "payload", "replacement content untouched");
-  assert.equal(lstatSync(backup).mode & 0o777, 0o700, "original created inode unchanged");
+  assertUnixMode(backup, 0o700, "original created inode unchanged");
+});
+
+test("created leaf swapped between identity capture and the final re-lstat: UNSAFE_COMPONENT (win32 parity)", async () => {
+  // Same attack as the open-seam swap above, planted at a seam EVERY platform
+  // guards: after the post-mkdir identity capture, before the final lstat.
+  // POSIX rejects at the created-identity check before open; win32 (no fd
+  // open) rejects at the final re-lstat dev/ino pin.
+  const dir = temp("posix-lstat-swap-");
+  const leaf = join(dir, "leaf");
+  const backup = join(dir, "leaf.original");
+  let leafStats = 0;
+  const fs = {
+    lstat: async (p: string) => {
+      if (p === leaf) {
+        leafStats += 1;
+        // 1st: walk observes ENOENT; 2nd: post-mkdir identity capture;
+        // 3rd: final lstat — swap the leaf immediately before it.
+        if (leafStats === 3) {
+          renameSync(leaf, backup);
+          mkdirSync(leaf, { mode: 0o755 });
+          chmodSync(leaf, 0o755);
+          writeFileSync(join(leaf, "marker.txt"), "payload", { mode: 0o600 });
+        }
+      }
+      return lstat(p);
+    },
+    mkdir: (p: string, opts: { recursive: false; mode: number }) => mkdir(p, opts),
+    realpath: (p: string) => realpath(p),
+    open: async (p: string, flags: number) => open(p, flags),
+    isOwnedByCurrentUser,
+  };
+
+  await expectReject(() => ensureSessiondPrivateDirectoryWithFs(leaf, fs), "UNSAFE_COMPONENT");
+  assertUnixMode(leaf, 0o755, "replacement dir must never be chmod'd");
+  assert.equal(readFileSync(join(leaf, "marker.txt"), "utf8"), "payload", "replacement content untouched");
+  assertUnixMode(backup, 0o700, "original created inode unchanged");
 });
 
 // ---------------------------------------------------------------------------
@@ -337,14 +411,28 @@ test("reverify passes when the directory is unchanged", async () => {
 
 test("marker probes: no raw path/errno leakage in any thrown error", async () => {
   const dir = temp("posix-leak-");
-  const leaf = join(dir, "leaf-secret-marker-xyz");
-  mkdirSync(leaf, { mode: 0o755 });
-  chmodSync(leaf, 0o755);
-  try {
-    await ensureSessiondPrivateDirectoryWithFs(leaf, realFs());
-    assert.fail("expected rejection for 0755 leaf");
-  } catch (error) {
-    assertSanitized(error, "NOT_PRIVATE", leaf);
+  if (process.platform === "win32") {
+    // NTFS cannot hold the 0755 shape (the mode gate is POSIX-only); the
+    // win32-equivalent sanitized rejection is a regular-file leaf
+    // (NOT_DIRECTORY) at the same walk seam.
+    const fileLeaf = join(dir, "file-secret-marker-xyz");
+    writeFileSync(fileLeaf, "x", { mode: 0o600 });
+    try {
+      await ensureSessiondPrivateDirectoryWithFs(fileLeaf, realFs());
+      assert.fail("expected rejection for file leaf");
+    } catch (error) {
+      assertSanitized(error, "NOT_DIRECTORY", fileLeaf);
+    }
+  } else {
+    const leaf = join(dir, "leaf-secret-marker-xyz");
+    mkdirSync(leaf, { mode: 0o755 });
+    chmodSync(leaf, 0o755);
+    try {
+      await ensureSessiondPrivateDirectoryWithFs(leaf, realFs());
+      assert.fail("expected rejection for 0755 leaf");
+    } catch (error) {
+      assertSanitized(error, "NOT_PRIVATE", leaf);
+    }
   }
 
   const symLeaf = join(dir, "sym-secret-marker-xyz");

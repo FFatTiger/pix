@@ -196,12 +196,12 @@ test("docx-preview matches the extension case-insensitively (.DOCX)", async () =
 
 test("docx-preview escapes the file name in the title", async () => {
   const { root, app } = await fixture();
-  // `"` `:` and some of `<>` are illegal in a Windows file name. The name
-  // keeps the characters both platforms accept (`&` `<`) so the escape is
-  // still proven; the wrapper escapes every one of `& < > "`.
-  const name = process.platform === "win32" ? "a&b<c onerror=x.docx" : "a&b<c>\"onerror=x.docx";
+  // `"` `:` and all of `<>` are illegal in a Windows file name — only `&`
+  // survives on both platforms, so that is the escape win32 proves; the
+  // wrapper escapes every one of `& < > "`.
+  const name = process.platform === "win32" ? "a&b onerror=x.docx" : "a&b<c>\"onerror=x.docx";
   const escaped = process.platform === "win32"
-    ? "a&amp;b&lt;c onerror=x.docx"
+    ? "a&amp;b onerror=x.docx"
     : "a&amp;b&lt;c&gt;&quot;onerror=x.docx";
   writeFileSync(join(root, name), makeTextDocx(["payload"]));
   const res = await preview(app, join(root, name));

@@ -144,10 +144,19 @@ test("ensurePrivateDirectory: EACCES → fixed UNSAFE_COMPONENT (no raw leak)", 
   const child = join(dir, "leaf");
   chmodSync(dir, 0o000);
   try {
-    await assert.rejects(
-      () => ensurePrivateDirectory(child),
-      (e) => assertSanitized(e, "UNSAFE_COMPONENT", "Directory path is unsafe", dir),
-    );
+    if (process.platform === "win32") {
+      // NTFS does not honor chmod 000 against the owner, so the same walk
+      // must SUCCEED honestly on win32: leaf created, no error at all (the
+      // POSIX branch is the raw-leak rejection below).
+      const result = await ensurePrivateDirectory(child);
+      assert.equal(result.created, true);
+      assert.equal(lstatSync(child).isDirectory(), true);
+    } else {
+      await assert.rejects(
+        () => ensurePrivateDirectory(child),
+        (e) => assertSanitized(e, "UNSAFE_COMPONENT", "Directory path is unsafe", dir),
+      );
+    }
   } finally {
     chmodSync(dir, 0o700);
   }

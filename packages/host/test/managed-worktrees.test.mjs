@@ -453,7 +453,8 @@ test("registerManagedAuthorizedRoot: exact worktreeId+path unregister; mismatch 
   initRepo(root);
   const target = makeWorktree(root, "feature-seam");
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
-  const seamInfo = lstatSync(realpathSync(target));
+  // bigint identity: NTFS file indices exceed Number.MAX_SAFE_INTEGER.
+  const seamInfo = lstatSync(realpathSync(target), { bigint: true });
   await registerManagedAuthorizedRoot(allowedRoots, { worktreeId: "mwt-seam-0001", path: realpathSync(target), dev: seamInfo.dev, ino: seamInfo.ino });
   assert.equal(await allowedRoots.isAuthorized(target, "directory"), true);
   // Mismatched path → not removed.

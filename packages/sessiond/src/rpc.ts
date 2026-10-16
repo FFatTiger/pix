@@ -106,6 +106,12 @@ export class SessiondRpcServer {
 
   async listen(): Promise<void> {
     if (this.server) return;
+    // win32: the endpoint MUST be a `\\.\pipe\` name (sessiondPaths is the
+    // producer). A filesystem path silently becomes a bogus derived pipe
+    // name whose bind can hang or collide — fail closed instead.
+    if (process.platform === "win32" && !this.options.endpoint.startsWith("\\\\.\\pipe\\")) {
+      throw new SessiondError("invalid_input", "win32 RPC endpoint must be a named pipe");
+    }
     const server = createServer((socket) => this.accept(socket));
     this.server = server;
     await new Promise<void>((resolve, reject) => {

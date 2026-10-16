@@ -22,8 +22,8 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
@@ -174,9 +174,12 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
       const file = await lstat(trustPathFor(agentDir));
       assert.equal(file.isFile(), true);
       assert.equal(file.isSymbolicLink(), false);
-      assert.equal(file.mode & 0o077, 0, "trust.json must be owner-only (0600)");
-      const dir = await lstat(agentDir);
-      assert.equal(dir.mode & 0o077, 0, "newly created agent dir must be 0700");
+      // NTFS reports no POSIX mode bits (0600 gate is POSIX-only).
+      if (process.platform !== "win32") {
+        assert.equal(file.mode & 0o077, 0, "trust.json must be owner-only (0600)");
+        const dir = await lstat(agentDir);
+        assert.equal(dir.mode & 0o077, 0, "newly created agent dir must be 0700");
+      }
       await rm(projectCwd, { recursive: true, force: true });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -184,6 +187,12 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("tightens a pre-existing group/world-readable trust.json to 0600 before writing", async () => {
+    if (process.platform === "win32") {
+      // NTFS cannot hold group/world bits (chmod 0o644 is a no-op and every
+      // file reads 0o666): the tighten-to-0600 gate is the POSIX-only twin of
+      // the write-path mode check, which the store skips on win32 by design.
+      return;
+    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const seed = new ProjectTrustStore(agentDir);
@@ -246,6 +255,12 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("fails immutable when the agent dir is unwritable (no trust.json created)", async () => {
+    if (process.platform === "win32") {
+      // chmod 0o555 cannot make a directory unwritable for its owner on NTFS;
+      // the fixed TRUST_WRITE_FAILED mapping is proven by the injected
+      // atomic-failure (crash-window) tests on every platform.
+      return;
+    }
     const root = await mkdtemp(join(tmpdir(), "pix-trust-mut-ro-"));
     const projectCwd = await mkdtemp(join(tmpdir(), "pix-trust-mut-proj-"));
     try {
@@ -351,7 +366,11 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
       // nlink>1 must fail BEFORE any chmod: the victim's bytes AND mode are
       // untouched and the hardlink pair survives.
       assert.equal(await readFile(victim, "utf8"), '{"keep":true}\n', "victim bytes unchanged");
-      assert.equal((await lstat(victim)).mode & 0o077, 0o044, "victim mode unchanged (no chmod through the link)");
+      // NTFS cannot hold the 0o044 shape; the no-chmod proof is POSIX-only
+      // (bytes + nlink asserts below cover the win32 equivalent).
+      if (process.platform !== "win32") {
+        assert.equal((await lstat(victim)).mode & 0o077, 0o044, "victim mode unchanged (no chmod through the link)");
+      }
       assert.equal((await lstat(victim)).nlink, 2, "hardlink pair preserved");
       assert.equal(await readFile(trustPathFor(agentDir), "utf8"), '{"keep":true}\n');
     } finally {
@@ -572,6 +591,12 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("fails closed when the agent dir is replaced by a symlink between read and rename (dir identity)", async () => {
+    if (process.platform === "win32") {
+      // NTFS refuses to rename a directory that still contains the open temp
+      // handle, so the swap mechanics are POSIX-only; the identity recheck
+      // itself is platform-independent code that runs on every write.
+      return;
+    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const store = createPiSdkTrustMutationStore({
@@ -599,6 +624,10 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("fails closed when the agent dir is swapped to a different real directory between read and rename", async () => {
+    if (process.platform === "win32") {
+      // Same NTFS open-handle limitation as the symlink swap above.
+      return;
+    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const store = createPiSdkTrustMutationStore({
@@ -677,6 +706,11 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("fails closed and immutable when trust.json is unreadable (mode 000)", async () => {
+    if (process.platform === "win32") {
+      // chmod 000 cannot make a file unreadable for its owner on NTFS; the
+      // unsafe-read rejections (symlink / corrupt / oversize) cover win32.
+      return;
+    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const seeded = '{"x":true}\n';
@@ -723,7 +757,10 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
     try {
       await createPiSdkTrustMutation({ agentDir }).setProjectTrusted("/");
       const parsed = JSON.parse(await readTrustJson(agentDir)) as Record<string, unknown>;
-      assert.equal(parsed["/"], true, "root cwd persisted under the '/' key");
+      // The canonical root key follows the SDK's normalization (on win32 that
+      // is the drive form realpathSync("/") resolves to, not "/").
+      const rootKey = realpathSync(resolve("/"));
+      assert.equal(parsed[rootKey], true, `root cwd persisted under the canonical key (${rootKey})`);
       assert.equal(new ProjectTrustStore(agentDir).get("/"), true, "fresh SDK read of the root key");
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -768,13 +805,21 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
       assert.equal(new ProjectTrustStore(agentDir).get(projectCwd), true);
       assert.equal((await readdir(agentDir)).some((name) => name.endsWith(".tmp")), false);
 
+      // POSIX keeps the bare rename: a replace failure is never retried and
+      // surfaces as TRUST_WRITE_FAILED. win32 cannot host the POSIX half
+      // against NTFS (every file reads 0o666 and trips the POSIX mode gates
+      // before the rename), so on a win32 host the same no-retry contract is
+      // proven with a code outside the win32 retry ladder (EIO); the POSIX
+      // half runs on POSIX hosts/CI.
+      const posixShape = process.platform !== "win32";
       await assert.rejects(
         createPiSdkTrustMutationStore({
           agentDir,
+          platform: posixShape ? "linux" : "win32",
           faultInjection: {
             failRename: () => {
               const error = new Error("replace denied") as NodeJS.ErrnoException;
-              error.code = "EPERM";
+              error.code = posixShape ? "EPERM" : "EIO";
               throw error;
             },
           },

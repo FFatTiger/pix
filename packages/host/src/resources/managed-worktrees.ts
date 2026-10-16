@@ -33,7 +33,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { pathWithin, samePath } from "./path-canonical.js";
+import { canonicalizeRealpath, pathWithin, sameInteger, samePath, storeInteger, type StoredInteger } from "./path-canonical.js";
 import { HttpError } from "../errors.js";
 import {
   registerManagedAuthorizedRoot,
@@ -128,11 +128,18 @@ function runnerFor(deps: ManagedWorktreesDeps): ProcessRunner {
   return deps.runner ?? createProcessRunner();
 }
 
-async function isRealDirWithIdentity(path: string, dev: number, ino: number): Promise<boolean> {
+/** Canonicalize a native realpath result for storage: strip `\\?\\`, win32-resolve. */
+async function canonicalReal(path: string): Promise<string> {
+  return canonicalizeRealpath(await realpath(path));
+}
+
+async function isRealDirWithIdentity(path: string, dev: StoredInteger, ino: StoredInteger): Promise<boolean> {
   try {
-    if (await realpath(path) !== path) return false;
-    const info = await lstat(path);
-    return info.isDirectory() && !info.isSymbolicLink() && info.dev === dev && info.ino === ino;
+    // win32: the native realpath returns an extended prefix and/or the long
+    // spelling of an 8.3 name; fold before comparing (POSIX: exact).
+    if (!samePath(await canonicalReal(path), path)) return false;
+    const info = await lstat(path, { bigint: true });
+    return info.isDirectory() && !info.isSymbolicLink() && sameInteger(info.dev, dev) && sameInteger(info.ino, ino);
   } catch {
     return false;
   }
@@ -170,7 +177,9 @@ async function listNonMainWorktreePaths(
     try {
       const info = await lstat(path);
       if (info.isDirectory() && !info.isSymbolicLink()) {
-        existing.add(await realpath(path));
+        // git prints forward slashes on Windows and the native realpath may
+        // answer with an extended prefix — canonicalize to the stored form.
+        existing.add(await canonicalReal(path));
       }
     } catch {
       /* stale */
@@ -195,11 +204,11 @@ export async function captureManagedWorktreeEvidence(
 
   let canonical: string;
   try {
-    canonical = await realpath(capture.path);
+    canonical = await canonicalReal(capture.path);
   } catch {
     throw new HttpError(404, "WORKTREE_NOT_FOUND", "Worktree not found");
   }
-  const pathInfo = await lstat(canonical);
+  const pathInfo = await lstat(canonical, { bigint: true });
   if (pathInfo.isSymbolicLink() || !pathInfo.isDirectory()) {
     throw new HttpError(400, "UNSAFE_WORKTREE_TARGET", "Worktree target must be a real directory");
   }
@@ -225,12 +234,12 @@ export async function captureManagedWorktreeEvidence(
   let commonDir: string;
   let adminDir: string;
   try {
-    commonDir = await realpath(commonRaw);
-    adminDir = await realpath(adminRaw);
+    commonDir = await canonicalReal(commonRaw);
+    adminDir = await canonicalReal(adminRaw);
   } catch {
     throw new HttpError(400, "UNSAFE_WORKTREE_BASE", "Worktree git directories are not real");
   }
-  const repoRoot = await realpath(dirname(commonDir));
+  const repoRoot = await canonicalReal(dirname(commonDir));
   const base = `${resolve(repoRoot)}-worktrees`;
 
   // Containment invariants (same as the ledger schema).
@@ -253,12 +262,12 @@ export async function captureManagedWorktreeEvidence(
     throw new HttpError(400, "INVALID_WORKTREE_ID", "Invalid worktree id");
   }
 
-  const repoInfo = await lstat(repoRoot);
-  const commonInfo = await lstat(commonDir);
-  const adminInfo = await lstat(adminDir);
+  const repoInfo = await lstat(repoRoot, { bigint: true });
+  const commonInfo = await lstat(commonDir, { bigint: true });
+  const adminInfo = await lstat(adminDir, { bigint: true });
   let baseInfo;
   try {
-    baseInfo = await lstat(base);
+    baseInfo = await lstat(base, { bigint: true });
   } catch {
     throw new HttpError(404, "WORKTREE_BASE_NOT_FOUND", "Worktree base not found");
   }
@@ -269,20 +278,20 @@ export async function captureManagedWorktreeEvidence(
   return {
     worktreeId,
     path: canonical,
-    dev: pathInfo.dev,
-    ino: pathInfo.ino,
+    dev: storeInteger(pathInfo.dev),
+    ino: storeInteger(pathInfo.ino),
     repoRoot,
-    repoDev: repoInfo.dev,
-    repoIno: repoInfo.ino,
+    repoDev: storeInteger(repoInfo.dev),
+    repoIno: storeInteger(repoInfo.ino),
     commonDir,
-    commonDev: commonInfo.dev,
-    commonIno: commonInfo.ino,
+    commonDev: storeInteger(commonInfo.dev),
+    commonIno: storeInteger(commonInfo.ino),
     adminDir,
-    adminDev: adminInfo.dev,
-    adminIno: adminInfo.ino,
+    adminDev: storeInteger(adminInfo.dev),
+    adminIno: storeInteger(adminInfo.ino),
     base,
-    baseDev: baseInfo.dev,
-    baseIno: baseInfo.ino,
+    baseDev: storeInteger(baseInfo.dev),
+    baseIno: storeInteger(baseInfo.ino),
     createdAt: capture.createdAt ?? new Date().toISOString(),
     source: MANAGED_WORKTREES_SOURCE,
     branchAtCreate,
@@ -297,12 +306,12 @@ async function corroborateRecord(deps: ManagedWorktreesDeps, record: ManagedWork
   if (!(await isRealDirWithIdentity(record.commonDir, record.commonDev, record.commonIno))) return false;
   if (!(await isRealDirWithIdentity(record.adminDir, record.adminDev, record.adminIno))) return false;
   if (!(await isRealDirWithIdentity(record.base, record.baseDev, record.baseIno))) return false;
-  if (dirname(record.commonDir) !== record.repoRoot) return false;
-  if (record.base !== `${record.repoRoot}-worktrees`) return false;
+  if (!samePath(dirname(record.commonDir), record.repoRoot)) return false;
+  if (!samePath(record.base, `${record.repoRoot}-worktrees`)) return false;
   if (!isWithin(record.base, record.path) || record.path === record.base) return false;
   if (!isWithin(record.commonDir, record.adminDir)) return false;
   const listed = await listNonMainWorktreePaths(runnerFor(deps), record.repoRoot, maxOutput(deps));
-  if (!listed.has(record.path)) return false;
+  if (![...listed].some((listed0) => samePath(listed0, record.path))) return false;
   return true;
 }
 

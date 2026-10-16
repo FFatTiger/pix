@@ -34,6 +34,8 @@ interface Corpus {
   sessionDir: string;
   cwd: string;
   managers: Map<string, SessionManager>;
+  /** Projection-armed stores created for this corpus; closed by cleanup(). */
+  stores: PiSdkSessionStore[];
 }
 
 function usage() {
@@ -69,7 +71,7 @@ async function makeCorpus(sessionCount: number, options: { titles?: (string | un
   const cwd = join(root, "project");
   await mkdir(sessionDir, { recursive: true });
   await mkdir(cwd, { recursive: true });
-  const corpus: Corpus = { root, sessionDir, cwd, managers: new Map() };
+  const corpus: Corpus = { root, sessionDir, cwd, managers: new Map(), stores: [] };
   for (let i = 0; i < sessionCount; i += 1) {
     const ts = 1_700_000_000_000 + i * 1_000;
     const manager = SessionManager.create(cwd, sessionDir);
@@ -94,6 +96,9 @@ function projectedStore(corpus: Corpus, indexRoot?: string): { store: PiSdkSessi
     sessionDir: corpus.sessionDir,
     projection: { enabled: true, dir: indexDir },
   });
+  // Register so cleanup() can release the fs watcher — an armed watcher
+  // otherwise holds the test-file process open on Windows.
+  corpus.stores.push(store);
   return { store, indexDir };
 }
 
@@ -112,6 +117,7 @@ async function headerOf(store: PiSdkSessionStore, sessionId: string): Promise<Se
 }
 
 function cleanup(corpus: Corpus): Promise<void> {
+  for (const store of corpus.stores) store.close?.();
   return rm(corpus.root, { recursive: true, force: true });
 }
 
@@ -611,7 +617,8 @@ describe("SCALE1 session projection store integration", () => {
       db.prepare("UPDATE session_projection_meta SET value = ? WHERE key = 'schema_version'").run("4");
       db.close();
       const rebuilt = createPiSdkSessionStore({ sessionDir, projection: { enabled: true, dir: indexDir } });
-      await rebuilt.prepare?.();
+      try {
+        await rebuilt.prepare?.();
       const after = await rebuilt.listProjectPage?.({ page: 1, pageSize: 10 });
       assert.equal(after?.total, 2);
       assert.deepEqual(after?.projects.map((project) => project.projectRoot), [home, repo]);
@@ -619,6 +626,10 @@ describe("SCALE1 session projection store integration", () => {
       const version = versionDb.prepare("SELECT value FROM session_projection_meta WHERE key = ?").get("schema_version") as { value: string };
       versionDb.close();
       assert.equal(version.value, String(PROJECTION_SCHEMA_VERSION));
+      } finally {
+        store.close?.();
+        rebuilt.close?.();
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -883,7 +894,7 @@ describe("SCALE1 projection parity with the raw SDK on a mixed corpus", () => {
     await mkdir(sessionDir, { recursive: true });
     await mkdir(cwd, { recursive: true });
     const indexDir = join(root, ".pix");
-    const corpus: Corpus = { root, sessionDir, cwd, managers: new Map() };
+    const corpus: Corpus = { root, sessionDir, cwd, managers: new Map(), stores: [] };
     try {
       // Rich session: user/assistant/toolResult/custom + title.
       const rich = SessionManager.create(cwd, sessionDir);

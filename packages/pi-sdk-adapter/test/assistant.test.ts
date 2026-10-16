@@ -113,6 +113,7 @@ describe("assistant workspace catalog hiding", () => {
         const projects = await store.listProjectPage!({ page: 1, pageSize: 50 });
         assert.equal(projects.projects.length, 1, "the assistant directory never becomes a project");
         assert.equal(projects.projects[0]!.projectRoot, fixture.projectDir);
+        store.close?.();
       } finally {
         await dispose(fixture);
       }
@@ -135,6 +136,7 @@ describe("assistant workspace catalog hiding", () => {
       // The catalog port surface exposes the lookup too.
       const catalog = createPiSdkSessionCatalog(store);
       assert.equal((await catalog.findLatestSessionByCwd!(fixture.assistantDir))?.sessionId, newer);
+      store.close?.();
     } finally {
       await dispose(fixture);
     }

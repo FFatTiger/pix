@@ -584,6 +584,8 @@ export function browseKindForWorkspace(cwd: string): "regular" | "session_only" 
     /\/\.pi$/.test(path)
     || path.includes("/tmp/")
     || path.includes("/var/folders/")
+    // Windows per-user temp (%LOCALAPPDATA%\Temp), lowercased + forward-slashed.
+    || path.includes("/appdata/local/temp/")
     || path.includes("/pix-e2e-")
     || path.includes("/pix-fake-")
     || path.includes("/pix-test-")

@@ -22,7 +22,7 @@ test("creates a fresh secret at 0600 when none exists", async () => {
     assert.ok(secret.length >= 32);
     const info = await stat(paths.secretFile);
     assert.equal(info.isFile(), true);
-    assert.equal(info.mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(info.mode & 0o777, 0o600); // NTFS: no mode bits
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), secret);
   } finally {
     await cleanup(dir);
@@ -41,7 +41,7 @@ test("a zero-byte final from a legacy interrupted publish is rebuilt (self-heal)
     assert.ok(secret.length >= 32);
     const info = await stat(paths.secretFile);
     assert.ok(info.size > 0); // rebuilt, complete
-    assert.equal(info.mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(info.mode & 0o777, 0o600); // NTFS: no mode bits
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), secret);
   } finally {
     await cleanup(dir);
@@ -95,7 +95,7 @@ test("concurrent creation converges on the same published secret (no overwrite)"
     const [a, b] = await Promise.all([slow, fast]);
     assert.equal(a, b);
     assert.ok(a.length >= 32);
-    assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600); // NTFS: no mode bits
   } finally {
     await cleanup(dir);
   }
@@ -112,7 +112,7 @@ test("an existing valid secret is returned unchanged", async () => {
     assert.equal(got, preset);
     // Content untouched (not regenerated/overwritten).
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), preset);
-    assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600); // NTFS: no mode bits
   } finally {
     await cleanup(dir);
   }

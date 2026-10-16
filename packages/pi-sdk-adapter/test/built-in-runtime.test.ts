@@ -403,14 +403,20 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
     await pinLocalMemory(agentDir);
     await mkdir(bin, { recursive: true });
-    await writeFile(join(bin, "git"), [
-      "#!/bin/sh",
-      `printf reached > '${gateReached}'`,
-      `while [ ! -f '${releaseGate}' ]; do [ -d '${root}' ] || exit 1; sleep 0.01; done`,
-      "echo gated-startup-failure >&2",
-      "exit 1",
-      "",
-    ].join("\n"), { mode: 0o755 });
+    // The startup gate is a PATH-shimmed sh script that impersonates git:
+    // POSIX can execute it, win32 spawn cannot (no extension → the real git
+    // runs instead). On win32 the harness runs gate-free and the test asserts
+    // the platform-neutral subset (start/end ordering + failure cleanup).
+    if (process.platform !== "win32") {
+      await writeFile(join(bin, "git"), [
+        "#!/bin/sh",
+        `printf reached > '${gateReached}'`,
+        `while [ ! -f '${releaseGate}' ]; do [ -d '${root}' ] || exit 1; sleep 0.01; done`,
+        "echo gated-startup-failure >&2",
+        "exit 1",
+        "",
+      ].join("\n"), { mode: 0o755 });
+    }
     if (options.persistenceFailure) {
       await writeFile(join(agentDir, "pi-claude-subagents"), "not a directory");
     }
@@ -432,7 +438,7 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
     const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
     const oldPath = process.env.PATH;
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    process.env.PATH = `${bin}:${oldPath ?? ""}`;
+    if (process.platform !== "win32") process.env.PATH = `${bin}:${oldPath ?? ""}`;
     let session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
     try {
       const modelRuntime = await ModelRuntime.create({
@@ -510,9 +516,23 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
   }
 
   it("publishes a readable running row before foreground completion and before background return", async () => {
-    for (const background of [false, true]) {
+    for (const background of process.platform === "win32" ? [false] : [false, true]) {
       const test = await harness({ background });
       try {
+        if (process.platform === "win32") {
+          // Gate-free win32 subset: the Agent tool runs against the REAL git,
+          // fails startup in the non-repo temp cwd, and the failure cleans up
+          // with the exact start/end ordering (no racy timing assertions).
+          await test.session.prompt("launch", { expandPromptTemplates: false });
+          const agentEvents = test.events.filter((event) => event.toolName === "Agent");
+          assert.ok(agentEvents.some((event) => event.type === "tool_execution_start"), "start observed");
+          assert.ok(agentEvents.some((event) => event.type === "tool_execution_end"), "end observed");
+          assert.ok(agentEvents.findIndex((event) => event.type === "tool_execution_start")
+            < agentEvents.findIndex((event) => event.type === "tool_execution_end"), "start before end");
+          const taskRoot = join(test.agentDir, "pi-claude-subagents", test.session.sessionId);
+          await waitUntil(async () => (await readdir(taskRoot)).length === 0, "startup-failure cleanup");
+          continue;
+        }
         let settled = false;
         const prompt = test.session.prompt("launch", { expandPromptTemplates: false }).finally(() => { settled = true; });
         await waitUntil(() => test.projections.length === 1, "Agent running update");
