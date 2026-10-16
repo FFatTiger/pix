@@ -26,7 +26,7 @@ import {
   type SessionThinkingBlock,
   type SessionTree,
 } from "@fffattiger/pix-runtime-core";
-import { createPiSdkSessionStore } from "../internal/session-store.js";
+import { createPiSdkSessionStore as createSdkSessionStore } from "../internal/session-store.js";
 
 /**
  * Injectable session store contract. The default implementation (created by
@@ -182,7 +182,31 @@ class PiSdkSessionMutation implements SessionMutationPort {
   }
 }
 
-export { createPiSdkSessionStore } from "../internal/session-store.js";
+/**
+ * Production-safe options for the default SDK-backed session store factory.
+ * (The internal factory accepts additional test-only injection knobs; the
+ * public surface deliberately exposes only the production subset so its
+ * declaration never references the internal module.)
+ */
+export interface PiSdkSessionStoreFactoryOptions {
+  /** Restrict session listing to a single session directory. */
+  sessionDir?: string;
+  /** SCALE1 disposable SQLite projection index (defaults to disabled). */
+  projection?: {
+    enabled?: boolean;
+    dir?: string;
+  };
+}
+
+/**
+ * Create the default SDK-backed session store (read-only JSONL access plus
+ * deleteSession/renameSession mutations). A wrapper, not a re-export: the
+ * public declaration must stay free of internal module references
+ * (check-boundaries enforces this).
+ */
+export function createPiSdkSessionStore(options?: PiSdkSessionStoreFactoryOptions): PiSdkSessionStore {
+  return createSdkSessionStore(options);
+}
 
 /**
  * Create a SessionCatalogPort backed by read-only Pi SDK JSONL. An optional
