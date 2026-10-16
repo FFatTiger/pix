@@ -39,6 +39,8 @@ export interface AgentEndEvent extends RuntimeEventBase {
 
 export interface AgentSettledEvent extends RuntimeEventBase {
   type: "agent_settled";
+  /** True when the run ended because it was aborted (e.g. the user stopped it). */
+  aborted?: boolean;
 }
 
 export interface PromptDoneEvent extends RuntimeEventBase {
@@ -105,6 +107,8 @@ export interface ToolExecutionEndEvent extends RuntimeEventBase {
   parentToolCallId?: string;
   isError?: boolean;
   result?: unknown;
+  /** Recorded execution time of the final result in milliseconds (Pi 1.1+). */
+  durationMs?: number;
   /** Files this tool execution wrote or modified. */
   writtenFiles?: readonly string[];
 }

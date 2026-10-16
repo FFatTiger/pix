@@ -460,3 +460,37 @@ describe("chat-projection — row/branch order", () => {
     }
   });
 });
+
+describe("chat-projection — stopped-turn marker on the settled tail", () => {
+  const stoppedTurn = (): AgentMessage[] => [
+    user("hello"),
+    assistant([{ type: "toolCall", toolCallId: "tc1", toolName: "read", input: {} }]),
+    toolResult("tc1", "ok"),
+    assistant([{ type: "text", text: "partial words" }], { stopReason: "aborted" }),
+  ];
+
+  it("marks the final answer row when the runtime settle was aborted AND the message says so", () => {
+    const rows = build(stoppedTurn(), { lastTurnAborted: true });
+    const final = rows.at(-1)!;
+    expect(final.kind).toBe("message");
+    if (final.kind === "message") expect(final.turnStopped).toBe(true);
+  });
+
+  it("never marks old history turns or non-aborted settles", () => {
+    for (const input of [{}, { lastTurnAborted: false }]) {
+      const rows = build(stoppedTurn(), input);
+      const final = rows.at(-1)!;
+      if (final.kind === "message") expect(final.turnStopped).toBeUndefined();
+    }
+    // Aborted settle but the final message was NOT the aborted one (a stop
+    // that produced no entries) — the previous turn must not be mislabeled.
+    const rows = build([
+      ...stoppedTurn(),
+      user("again"),
+      assistant([{ type: "text", text: "fine" }], { stopReason: "stop" }),
+    ], { lastTurnAborted: true });
+    for (const row of rows) {
+      if (row.kind === "message") expect(row.turnStopped).toBeUndefined();
+    }
+  });
+});

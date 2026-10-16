@@ -44,24 +44,9 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
     return { root, manifest };
   });
   const bundledPluginNames = new Set(plugins.map(({ manifest }) => manifest.name));
-  // Pi 1.0.0 publishes a workspace shrinkwrap that makes clean global npm
-  // installs drop dependencies. Bundle its unchanged code without that file.
-  // Remove this bridge before upgrading away from SDK 1.0.0, once a clean
-  // registry install passes without it.
   const sdkRoot = join(standalone, "node_modules", "@earendil-works", "pi-coding-agent");
   const sdk = readJson(join(sdkRoot, "package.json"));
-  if (sdk.name !== "@earendil-works/pi-coding-agent" || sdk.version !== "1.0.0") throw new Error("remove the SDK 1.0.0 shrinkwrap bridge before upgrading");
-  // Dropping that shrinkwrap must not let the SDK's dependencies float to
-  // newer registry releases (pi-codemode 1.2.0 broke SDK 1.0.0's imports):
-  // pin each to the exact version the verified standalone tree resolves from
-  // the SDK, i.e. what its shrinkwrap installed.
-  function sdkPinned(name, version) {
-    for (const base of [join(sdkRoot, "node_modules"), join(standalone, "node_modules")]) {
-      const installed = join(base, name, "package.json");
-      if (existsSync(installed)) return readJson(installed).version;
-    }
-    return version;
-  }
+  if (sdk.name !== "@earendil-works/pi-coding-agent") throw new Error("SDK package identity mismatch");
   const require = createRequire(resolveNpmInvocation().args[0]);
   const { valid, satisfies } = require("semver");
   const runtime = readdirSync(scope).map((directory) => {
@@ -87,6 +72,16 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
     }
     dependencies[name] = version;
   }
+  /**
+   * The SDK pins its own dependencies to exact release versions (since 1.3.0,
+   * after ranges once let a clean install mix incompatible pi-* packages and
+   * pi-codemode 1.2.0 broke SDK 1.0.0's imports). A range here would let a
+   * clean registry install drift away from the verified tree, so fail closed
+   * instead of re-deriving pins from the local install (the old bridge).
+   */
+  function validateSdkDependency(name, version) {
+    if (!valid(version)) throw new Error(`SDK dependency is not an exact version: ${name}@${version}`);
+  }
   function normalize(manifest) {
     const copy = { ...manifest };
     delete copy.devDependencies;
@@ -99,7 +94,9 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
           if (typeof version !== "string" || (!version.startsWith("file:") && version !== pluginManifest.version)) throw new Error("bundled plugin does not match the runtime dependency");
           version = pluginManifest.version;
         }
-        if (manifest === sdk && section !== "peerDependencies" && !bundled.has(name)) version = sdkPinned(name, version);
+        if (manifest === sdk && section === "dependencies") {
+          validateSdkDependency(name, version);
+        }
         validate(name, version);
         if (bundled.has(name)) {
           internal[name] = version;
@@ -141,7 +138,6 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
   for (const { root, manifest } of copies) {
     const target = join(destination, "node_modules", manifest.name);
     cpSync(root, target, { recursive: true, verbatimSymlinks: true, filter: (path) => path !== join(root, "node_modules") });
-    if (manifest.name === sdk.name) rmSync(join(target, "npm-shrinkwrap.json"), { force: true });
     writeFileSync(join(target, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   }
   const manifest = { ...cli, dependencies, bundledDependencies, overrides };

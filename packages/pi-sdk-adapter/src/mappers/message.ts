@@ -199,6 +199,7 @@ export function mapMessage(value: unknown, partial = false): AgentMessage | Stre
         ...(message.nestedCalls === undefined ? {} : { nestedCalls: mapNestedCalls(message.nestedCalls)! }),
         ...(message.structuredContent === undefined ? {} : { structuredContent: sanitizeValue(message.structuredContent) }),
         ...(mapUsage(message.usage) === undefined ? {} : { usage: mapUsage(message.usage)! }),
+        ...(typeof message.durationMs === "number" && Number.isFinite(message.durationMs) && message.durationMs >= 0 ? { durationMs: message.durationMs } : {}),
         ...(typeof message.timestamp === "number" ? { timestamp: message.timestamp } : {}),
       };
     case "bashExecution":

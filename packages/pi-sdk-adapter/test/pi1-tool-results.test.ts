@@ -47,6 +47,23 @@ test("nested errors redact credentials consistently in full and partial messages
   }
 });
 
+test("Pi 1.1 recorded tool durationMs survives live and history mapping", () => {
+  const raw = {
+    role: "toolResult", toolCallId: "bash-1", toolName: "bash", content: [{ type: "text", text: "ok" }],
+    durationMs: 65000, isError: false,
+  };
+  const mapped = mapMessage(raw);
+  if (mapped.role !== "toolResult") throw new Error("wrong role");
+  assert.equal(mapped.durationMs, 65000);
+  assert.deepEqual(mapMessage(raw, true), mapped);
+  // Absent (pre-1.1 results) and invalid values never surface.
+  for (const durationMs of [undefined, -5, Number.POSITIVE_INFINITY]) {
+    const legacy = mapMessage({ role: "toolResult", toolCallId: "bash-1", content: [], durationMs });
+    if (legacy.role !== "toolResult") throw new Error("wrong role");
+    assert.equal("durationMs" in legacy, false, `durationMs ${String(durationMs)} must not surface`);
+  }
+});
+
 test("malformed nested summaries fail closed instead of creating plausible child entries", () => {
   for (const nestedCalls of [
     { calls: [call, call], complete: true },

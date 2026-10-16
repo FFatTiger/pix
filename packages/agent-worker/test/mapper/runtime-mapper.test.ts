@@ -160,6 +160,20 @@ describe("StatefulRuntimeMapper + sessiond projection oracle", () => {
     }
   });
 
+  it("forwards Pi 1.1 turn-abort and tool-duration fields onto the wire", () => {
+    const mapper = new StatefulRuntimeMapper();
+    const aborted = mapper.mapEvent({ type: "agent_settled", sessionId: SESSION, aborted: true });
+    assert.equal(aborted.length, 1);
+    assert.equal((aborted[0] as { aborted?: boolean }).aborted, true);
+    const finished = mapper.mapEvent({ type: "agent_settled", sessionId: SESSION });
+    assert.equal("aborted" in (finished[0] ?? {}), false);
+    const timed = mapper.mapEvent({ type: "tool_execution_end", sessionId: SESSION, toolCallId: "t1", durationMs: 12000 });
+    assert.equal((timed[0] as { durationMs?: number }).durationMs, 12000);
+    for (const mapped of [...aborted, ...finished, ...timed]) {
+      assert.equal(RuntimeEventDataSchema.safeParse(mapped).success, true);
+    }
+  });
+
   it("maps built-in authority projections as cloned full replacements", () => {
     const mapper = new StatefulRuntimeMapper();
     const builtIns = { configRevision: "a".repeat(64), loaded: ["subagents"] as const, failures: [] };

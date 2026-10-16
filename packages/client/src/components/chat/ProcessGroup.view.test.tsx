@@ -33,7 +33,7 @@ function namedTool(
   id: string,
   input: Record<string, unknown>,
   status: "running" | "success" | "error" = "success",
-  duration?: number,
+  durationMs?: number,
 ): ProcessContentBlock {
   return {
     id,
@@ -42,7 +42,7 @@ function namedTool(
     toolName,
     input,
     status,
-    ...(duration === undefined ? {} : { duration }),
+    ...(durationMs === undefined ? {} : { durationMs }),
     origin: { phase: "process", placement: "standalone", sourceMessageIndex: 1 },
   };
 }
@@ -510,12 +510,12 @@ describe("ProcessGroup — expanded lifecycle", () => {
     view.rerender(
       <I18nProvider>
         <div className="transcript-scroll">
-          <ProcessGroup blocks={[namedTool("bash", "command", { command }, "success", 11)]} isStreaming />
+          <ProcessGroup blocks={[namedTool("bash", "command", { command }, "success", 11_000)]} isStreaming />
         </div>
       </I18nProvider>,
     );
 
-    expect(row.querySelector(".codex-tool-row-label")?.textContent).toBe(`已在 11s 内运行 ${command}`);
+    expect(row.querySelector(".codex-tool-row-label")?.textContent).toBe(`已在 11 秒 内运行 ${command}`);
     expect(row.classList.contains("is-running")).toBe(false);
   });
 
@@ -576,9 +576,9 @@ describe("ProcessGroup — expanded lifecycle", () => {
         <div className="transcript-scroll">
           <ProcessGroup
             blocks={[
-              namedTool("bash", "test", { command: "npm test" }, "success", 57),
+              namedTool("bash", "test", { command: "npm test" }, "success", 57_000),
               namedTool("bash", "script", { command: "node --input-type=module -" }),
-              namedTool("bash", "checks", { command: "npm run check:architecture" }, "success", 1),
+              namedTool("bash", "checks", { command: "npm run check:architecture" }, "success", 1_000),
             ]}
             isStreaming={false}
           />
@@ -591,9 +591,9 @@ describe("ProcessGroup — expanded lifecycle", () => {
     expect(group.querySelector(".codex-tool-group-label")?.textContent).toBe("运行了命令");
     fireEvent.click(group.querySelector<HTMLButtonElement>(".codex-tool-group-trigger")!);
     expect(Array.from(group.querySelectorAll(".codex-tool-row-label"), (row) => row.textContent)).toEqual([
-      "已在 57s 内运行 npm test",
+      "已在 57 秒 内运行 npm test",
       "已运行 node --input-type=module -",
-      "已在 1s 内运行 npm run check:architecture",
+      "已在 1 秒 内运行 npm run check:architecture",
     ]);
   });
 

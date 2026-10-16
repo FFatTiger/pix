@@ -509,6 +509,7 @@ export function mapStreamingMessage(message: StreamingAgentMessage): ProtocolStr
         ...(message.usage === undefined ? {} : { usage: mapTokenUsage(message.usage) }),
         ...(message.isError === undefined ? {} : { isError: message.isError }),
         ...(message.details === undefined ? {} : { details: message.details }),
+        ...(message.durationMs === undefined ? {} : { durationMs: message.durationMs }),
         ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
       };
     case "custom":
@@ -572,6 +573,7 @@ export function mapAgentMessage(message: AgentMessage): ProtocolAgentMessage {
         ...(message.usage === undefined ? {} : { usage: mapTokenUsage(message.usage) }),
         ...(message.isError === undefined ? {} : { isError: message.isError }),
         ...(message.details === undefined ? {} : { details: message.details }),
+        ...(message.durationMs === undefined ? {} : { durationMs: message.durationMs }),
         ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
       };
     case "custom":

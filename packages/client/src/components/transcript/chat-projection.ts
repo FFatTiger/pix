@@ -33,6 +33,8 @@ export interface ChatTranscriptMessageRow {
   showTimestamp?: boolean | undefined;
   prevTimestamp?: number | undefined;
   isStreaming?: boolean | undefined;
+  /** The turn ended because the user stopped it (settled-tail answer rows only). */
+  turnStopped?: boolean | undefined;
   /** Index among user/assistant messages — drives the minimap ref array. */
   visibleIndex?: number | undefined;
 }
@@ -60,6 +62,8 @@ export interface BuildChatTranscriptRowsInput {
   streamingMessage: AgentMessage | null;
   /** True while the agent turn (prompt / tools / model) is running. */
   running: boolean;
+  /** True when the runtime's most recently settled turn ended aborted (user stop). */
+  lastTurnAborted?: boolean | undefined;
   /** Session cwd — resolves relative file paths in rows. */
   cwd?: string | undefined;
 }
@@ -170,6 +174,7 @@ export function estimateChatRowHeight(row: ChatTranscriptRow): number {
 
 export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): ChatTranscriptRow[] {
   const { messages, entryIds, streamingMessage, running, cwd } = input;
+  const lastTurnAborted = input.lastTurnAborted === true;
   const toolResults = new Map<string, ToolResultMessage>();
   for (const msg of messages) {
     if (msg.role === "toolResult") {
@@ -344,6 +349,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       messageOverride?: AgentMessage;
       writtenFiles?: WrittenFile[];
       isStreaming?: boolean;
+      turnStopped?: boolean;
     } = {},
   ): ChatTranscriptMessageRow => {
     const msg = options.messageOverride ?? messages[idx]!;
@@ -377,6 +383,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       showTimestamp,
       prevTimestamp: idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined,
       ...(options.isStreaming === undefined ? {} : { isStreaming: options.isStreaming }),
+      ...(options.turnStopped === true ? { turnStopped: true } : {}),
       ...(currentRefIdx === undefined ? {} : { visibleIndex: currentRefIdx }),
     };
   };
@@ -577,7 +584,15 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
         }
       }
       const writtenFiles = extractTurnWrittenFiles(turnContent, toolResults, cwd);
-      rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles }));
+      // The settled-tail "stopped" marker needs BOTH signals: the runtime's
+      // last settle was aborted AND this turn's final assistant message was
+      // the aborted one. The state flag alone could mislabel the previous
+      // turn after a stop that produced no entries; the stopReason alone
+      // would mark old history turns that were never the just-settled tail.
+      const turnStopped = lastTurnAborted
+        && endIdx === messages.length
+        && finalAssistant.stopReason === "aborted";
+      rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles, ...(turnStopped ? { turnStopped: true } : {}) }));
     }
     // Trailing entries after the final assistant (custom notifications,
     // further assistant segments, toolResults) are all collected into the

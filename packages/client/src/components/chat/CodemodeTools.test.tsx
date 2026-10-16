@@ -78,7 +78,7 @@ describe("canonical codemode display", () => {
     const items = expandNestedToolBlocks(root);
     expect(items.map(item => item.toolName)).toEqual(["read", "grep", "bash"]);
     expect(items.map(item => item.status)).toEqual(["success", "error", "unfinished"]);
-    expect(items[0]!.duration).toBe(0);
+    expect(items[0]!.durationMs).toBe(0);
     expect(items.every(item => item.result === undefined)).toBe(true);
     expect(items.slice(0, 2).every(item => item.sharedBatch === undefined)).toBe(true);
     expect(items[2]!.sharedBatch?.result).toBe(root.result);

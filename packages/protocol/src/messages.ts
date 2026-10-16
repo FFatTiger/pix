@@ -71,6 +71,8 @@ const toolResultMetadata = {
   nestedCalls: NestedToolCallsSchema.optional(),
   structuredContent: z.unknown().optional(),
   usage: TokenUsageSchema.optional(),
+  /** Recorded execution time in milliseconds; absent for legacy results (Pi 1.1+). */
+  durationMs: z.number().nonnegative().optional(),
 };
 
 export const UserMessageSchema = z.strictObject({ role: z.literal("user"), content: UserContentSchema, timestamp: z.number().optional() });

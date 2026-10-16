@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { formatToolDurationMs } from "@/lib/message-display";
 import { BookOpenIcon } from "@phosphor-icons/react/BookOpen";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CopySimpleIcon } from "@phosphor-icons/react/CopySimple";
@@ -392,8 +393,8 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
     const preview = concise(command ?? block.toolName);
     const detail = block.status === "running"
       ? t("desktop.codexProcessToolRunning", { command: preview })
-      : block.duration !== undefined
-        ? t("desktop.codexProcessToolRanIn", { command: preview, duration: block.duration })
+      : block.durationMs !== undefined
+        ? t("desktop.codexProcessToolRanIn", { command: preview, duration: formatToolDurationMs(t, block.durationMs) })
         : t("desktop.codexProcessToolRan", { command: preview });
     return {
       action: t("desktop.codexProcessGroupRanCommands"),
@@ -650,8 +651,8 @@ function CodexToolRow({ block }: { block: ToolBlock }) {
             <span className="is-removed">-{stats.deletions}</span>
           </span>
         )}
-        {block.duration !== undefined && presentation.tone !== "command_execution" && (
-          <span className="codex-tool-duration">{t("desktop.codexProcessToolDuration", { duration: block.duration })}</span>
+        {block.durationMs !== undefined && presentation.tone !== "command_execution" && (
+          <span className="codex-tool-duration">{formatToolDurationMs(t, block.durationMs)}</span>
         )}
         {block.sharedBatch?.result.isError && <span className="codex-tool-duration">{t("desktop.codemodeBatchFailed")}</span>}
         {block.nested && <span className="codemode-tool-badge">{t("desktop.codemodeLabel")}</span>}

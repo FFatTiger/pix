@@ -177,6 +177,29 @@ describe("built-in / subagent / todo snapshot schemas", () => {
   });
 });
 
+describe("reduceRuntimeEventData — last-turn abort outcome", () => {
+  it("records an aborted settle and clears it when the next run starts", () => {
+    let snapshot = reduceRuntimeEventData(baseSnapshot(), { type: "agent_start", sessionId: "s-1" });
+    assert.equal("lastTurnAborted" in snapshot.state, false);
+    snapshot = reduceRuntimeEventData(snapshot, { type: "agent_settled", sessionId: "s-1", aborted: true });
+    assert.equal(snapshot.state.lastTurnAborted, true);
+    assert.equal(snapshot.state.isPromptRunning, false);
+    // A later normal settle overwrites the aborted outcome, not stacks it.
+    snapshot = reduceRuntimeEventData(snapshot, { type: "agent_start", sessionId: "s-1" });
+    assert.equal("lastTurnAborted" in snapshot.state, false, "a new run clears the previous outcome");
+    snapshot = reduceRuntimeEventData(snapshot, { type: "agent_settled", sessionId: "s-1", aborted: false });
+    assert.equal(snapshot.state.lastTurnAborted, false);
+  });
+
+  it("treats legacy settles without aborted as not-aborted (old journals stay unknown-free)", () => {
+    let snapshot = reduceRuntimeEventData(baseSnapshot(), { type: "agent_settled", sessionId: "s-1" });
+    assert.equal(snapshot.state.lastTurnAborted, false);
+    // prompt terminals without agent_settled never fabricate an outcome.
+    snapshot = reduceRuntimeEventData(snapshot, { type: "prompt_error", sessionId: "s-1", errorMessage: "x" });
+    assert.equal(snapshot.state.lastTurnAborted, false);
+  });
+});
+
 describe("reduceRuntimeEventData — full replacement of builtIns/subagents/todo", () => {
   it("replaces each projection completely and leaves the input snapshot untouched", () => {
     const before = baseSnapshot({

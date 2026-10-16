@@ -41,7 +41,7 @@ const eventCursor = { eventId: EventIdSchema, epoch: EpochSchema };
 
 export const AgentStartEventDataSchema = z.strictObject({ ...eventDataBase, type: z.literal("agent_start") });
 export const AgentEndEventDataSchema = z.strictObject({ ...eventDataBase, type: z.literal("agent_end") });
-export const AgentSettledEventDataSchema = z.strictObject({ ...eventDataBase, type: z.literal("agent_settled") });
+export const AgentSettledEventDataSchema = z.strictObject({ ...eventDataBase, type: z.literal("agent_settled"), aborted: z.boolean().optional() });
 export const PromptDoneEventDataSchema = z.strictObject({ ...eventDataBase, type: z.literal("prompt_done") });
 export const PromptErrorEventDataSchema = z.strictObject({
   ...eventDataBase,
@@ -154,6 +154,8 @@ export const ToolExecutionEndEventDataSchema = z.strictObject({
   toolName: z.string().optional(),
   isError: z.boolean().optional(),
   result: z.unknown().optional(),
+  /** Recorded execution time of the final result in milliseconds (Pi 1.1+). */
+  durationMs: z.number().nonnegative().optional(),
   writtenFiles: z.array(z.string()).optional(),
 });
 export const QueueUpdateEventDataSchema = z.strictObject({

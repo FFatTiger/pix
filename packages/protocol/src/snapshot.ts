@@ -48,6 +48,8 @@ export const RuntimeStateSchema = z.strictObject({
   messageCount: z.number().int().nonnegative(),
   pendingMessageCount: z.number().int().nonnegative().optional(),
   queuedMessages: QueuedMessagesSchema.optional(),
+  /** True while the most recently settled turn ended aborted (user stop); cleared when a new run starts. */
+  lastTurnAborted: z.boolean().optional(),
   contextUsage: ContextUsageSchema.nullable().optional(),
   systemPrompt: z.string().optional(),
   thinkingLevel: ThinkingLevelSchema.optional(),

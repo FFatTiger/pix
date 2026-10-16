@@ -205,6 +205,8 @@ export interface ToolResultMessage {
   structuredContent?: unknown;
   /** Usage charged by this tool, including its nested calls exactly once. */
   usage?: TokenUsage;
+  /** Recorded execution time in milliseconds; absent for legacy results (Pi 1.1+). */
+  durationMs?: number;
   timestamp?: number;
 }
 
@@ -273,6 +275,8 @@ export interface StreamingToolResultMessage {
   nestedCalls?: NestedToolCalls;
   structuredContent?: unknown;
   usage?: TokenUsage;
+  /** Recorded execution time in milliseconds; absent for legacy results (Pi 1.1+). */
+  durationMs?: number;
   timestamp?: number;
 }
 

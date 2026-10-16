@@ -31,11 +31,11 @@ shasum pi-side-chat-0.4.0.tgz
 
 ## Downstream edits
 
-- Retargeted `@mariozechner/pi-*` imports to Pix's pinned `@earendil-works/pi-*` 0.87.1 APIs and the current camel-case `toolCall` message shape.
+- Retargeted `@mariozechner/pi-*` imports to Pix's pinned `@earendil-works/pi-*` APIs (originally 0.87.1; the public surface this port uses — `Agent`, the caller's `ModelRuntime`/`ModelRegistry` `streamSimple`, read-only session manager, registered extension tools, and the public extension-context factory — is re-verified unchanged through Pi SDK 1.3.0) and the current camel-case `toolCall` message shape.
 - Extracted the reusable `Agent` lifecycle from the private TUI overlay into a typed headless controller. Terminal rendering, editor, layout, focus, shortcuts, overlay persistence, and `ctx.ui.custom` are not copied.
 - Uses the caller's real `ModelRuntime` or `ModelRegistry` `streamSimple` method, read-only session manager, registered extension tools, and public extension-context factory. It does not patch `ExtensionRunner` or inspect private fields.
 - Added synchronous run admission, conversation/run IDs, monotonic revisions, generation fences, structured streaming thinking/text and tool status, independent abort, and bounded idempotent disposal.
-- Added `details: undefined` to short-circuit tool results required by the 0.87.1 `AgentToolResult` contract.
+- Added `details: undefined` to short-circuit tool results required by the 0.87.1-era `AgentToolResult` contract (kept: the current contract still accepts it and the adapter's nested-result mapping depends on the explicit absent-vs-empty distinction).
 - Side display state starts after the fork baseline and framing message, so copied parent messages are model context only.
 
 The side chat is permanently read-only: the built-in `bash`, `edit`, and `write` tools are never loaded (upstream `createReadOnlyTools`), registered extension tools keep their own permissions (this is not a complete mutation sandbox), and namespaced MCP tools additionally require the trusted `readOnlyHint` annotation. Upstream edit mode and its overlap confirmation flow (including `tool-wrapper.ts` and `file-activity-tracker.ts`) were removed downstream.
