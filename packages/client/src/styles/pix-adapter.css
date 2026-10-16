@@ -1945,8 +1945,8 @@ html.dark .catalog-meta-item--error {
 .about-header { display: flex; align-items: center; gap: 14px; padding: 6px 0 2px; color: var(--text); }
 .about-header-text { min-width: 0; }
 .about-icon { flex: none; width: 48px; height: 48px; border-radius: 12px; background-size: 28px; }
-.about-title { display: flex; align-items: baseline; gap: 8px; font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
-.about-name { font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
+.about-title { display: flex; align-items: baseline; gap: 8px; font-size: 17px; font-weight: 600; letter-spacing: 0.2px; }
+.about-name { font-size: 17px; font-weight: 600; letter-spacing: 0.2px; }
 .about-version { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 500; color: var(--text-muted); }
 .about-build { margin-top: 3px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--text-dim); }
 
