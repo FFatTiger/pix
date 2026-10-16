@@ -61,6 +61,7 @@ import {
   createAgentSessionFromServices,
   createAgentSessionServices,
   createCodemodeExtension,
+  createEventBus,
   createMcpExtension,
   createToolSearchExtension,
   getAgentDir,
@@ -71,7 +72,7 @@ import {
   resolveModelScopeWithDiagnostics,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentSession, AgentSessionEvent, ExtensionAPI, ExtensionUIContext, InlineExtension } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, EventBus, ExtensionAPI, ExtensionUIContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type {
   DriverContextState,
@@ -87,6 +88,38 @@ import type {
 } from "./types.js";
 
 const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"]);
+
+/**
+ * Event-bus channel published natively by the bundled pi-claude-subagents
+ * (>= 0.4.0, its exported SUBAGENT_CHILD_EVENT_CHANNEL). Kept as a literal
+ * string: the plugin is a pi package (`pi.extensions`) without a Node module
+ * entry, and the channel name is the stable wire contract.
+ */
+const SUBAGENT_CHILD_EVENT_CHANNEL = "pi-claude-subagents:child-event";
+
+/** Decoded payload the plugin emits for each forwarded child stream event. */
+export interface SubagentChildEventPayload {
+  childSessionId: string;
+  taskId: string;
+  event: unknown;
+}
+
+/**
+ * Subscribe to child stream events on a session's extension event bus (the
+ * same bus every extension loaded by that session's resource loader shares,
+ * including the bundled pi-claude-subagents). Malformed payloads are dropped
+ * fail-closed; the returned unsubscribe detaches the listener.
+ */
+export function subscribeSubagentChildEvents(options: {
+  events: EventBus;
+  onEvent: (payload: SubagentChildEventPayload) => void;
+}): () => void {
+  return options.events.on(SUBAGENT_CHILD_EVENT_CHANNEL, data => {
+    const payload = data as { childSessionId?: unknown; taskId?: unknown; event?: unknown };
+    if (typeof payload?.childSessionId !== "string" || typeof payload?.taskId !== "string") return;
+    options.onEvent({ childSessionId: payload.childSessionId, taskId: payload.taskId, event: payload.event });
+  });
+}
 
 /**
  * pi-smart-compact's own project-memory tools (pinned 10.3.0), from the
@@ -400,6 +433,8 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   private subagentChildSignatures: readonly string[] | undefined;
   private subagentObserver: SubagentArtifactObserver | undefined;
   private subagentStreamGeneration = 0;
+  private subagentStreamUnsubscribe: (() => void) | undefined;
+  private readonly subagentEvents: EventBus | undefined;
   private todo: TodoProjection | undefined;
 
   constructor(
@@ -410,12 +445,14 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     private readonly agentDir: string,
     private configuredTools?: { toolNames: readonly string[]; includeExtensionTools: boolean },
     private readonly trace?: InitializationTraceSink,
+    subagentEvents?: EventBus,
   ) {
     this.identity = {
       sessionId: session.sessionId,
       sessionFile: session.sessionFile ?? "",
       cwd: session.sessionManager.getCwd(),
     };
+    this.subagentEvents = subagentEvents;
     this.currentCapabilities = this.recomputeProjections(this.baseCapabilities);
     this.unsubscribeSession = this.session.subscribe((event) => this.handleSessionEvent(event));
     this.installSubagentStreamBridge();
@@ -601,16 +638,20 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
 
   private installSubagentStreamBridge(): void {
     if (this.closed || !this.builtIns?.loaded.includes("subagents")) return;
-    const holder = globalThis as { __pixSubagentStream?: (childSessionId: string, event: unknown) => void };
-    if (holder.__pixSubagentStream !== undefined) return;
+    if (this.subagentStreamUnsubscribe !== undefined) return;
+    const events = this.subagentEvents;
+    if (!events) return;
     const generation = this.subagentStreamGeneration;
-    holder.__pixSubagentStream = (childSessionId, event) => this.handleSubagentStreamEvent(generation, childSessionId, event);
+    this.subagentStreamUnsubscribe = subscribeSubagentChildEvents({
+      events,
+      onEvent: payload => this.handleSubagentStreamEvent(generation, payload.childSessionId, payload.event),
+    });
   }
 
   private uninstallSubagentStreamBridge(): void {
     this.subagentStreamGeneration += 1;
-    const holder = globalThis as { __pixSubagentStream?: (childSessionId: string, event: unknown) => void };
-    delete holder.__pixSubagentStream;
+    this.subagentStreamUnsubscribe?.();
+    this.subagentStreamUnsubscribe = undefined;
   }
 
   private handleSubagentStreamEvent(generation: number, childSessionId: string, event: unknown): void {
@@ -1147,6 +1188,8 @@ export interface SdkRuntimeComposition {
     channels?: {
       sessionStatus?: DriverFactoryOptions["sessionStatus"];
       assistantOps?: DriverFactoryOptions["assistantOps"];
+      /** Session-wide extension event bus injected into the resource loader; all extensions (bundled plugins included) share it. */
+      extensionEventBus?: EventBus;
     },
   ): Promise<Awaited<ReturnType<typeof createAgentSessionServices>>>;
   resolveProjectTrust(cwd: string): Promise<boolean>;
@@ -1268,6 +1311,7 @@ function defaultComposition(
         agentDir,
         resourceLoaderOptions: {
           ...resourceLoaderOptionsForBuiltIns(agentDir),
+          ...(channels?.extensionEventBus === undefined ? {} : { eventBus: channels.extensionEventBus }),
           // The memory guard is LAST so its session_start handler runs after
           // pi-smart-compact's own exposure apply (inline factories load
           // after package extensions; the event fires in that order).
@@ -1340,9 +1384,15 @@ export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
     await this.composition.prepareExtensionMode(cwd, trusted);
     this.trace?.record("extension_mode");
     const toolPolicy: ToolPolicyState = { forcedEmpty: input.toolNames?.length === 0 };
+    // One event bus per session: injected into the resource loader so every
+    // extension (including the bundled pi-claude-subagents) shares it, and
+    // handed to the driver so it can subscribe to the plugin's child-event
+    // channel and detach on capability loss / close.
+    const extensionEventBus = createEventBus();
     const services = await this.composition.createServices(cwd, trusted, toolPolicy, {
       ...(options.sessionStatus === undefined ? {} : { sessionStatus: options.sessionStatus }),
       ...(options.assistantOps === undefined ? {} : { assistantOps: options.assistantOps }),
+      extensionEventBus,
     });
     this.trace?.record("services");
     const models = await this.composition.listVisibleModels(services);
@@ -1416,6 +1466,7 @@ export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
         ? undefined
         : { toolNames: [...input.toolNames], includeExtensionTools: true },
       this.trace,
+      extensionEventBus,
     );
     return driver;
   }

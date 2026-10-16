@@ -4325,3 +4325,11 @@ Running-session projections include current-epoch pending or accepted turns unti
 Typed native `method: "questionnaire"` request/response. Protocol major stays v2; build fence is sessiond **10** / Worker **9** / Adapter **8**. Feature token `runtime.questionnaire.v1` is optional and only accepted on a compatible backend. Host fences known questionnaire-bearing events/snapshots/state/read/authority envelopes for old strict clients and rejects unnegotiated native questionnaire responses before RPC; it does not hide or cancel the pending request.
 
 **待移除桥接：Adapter `ask-questionnaire-bridge.ts`**。公开 `extensionsOverride` 只包装 exact bundled `ask_user_question` 注册，覆盖 `mode='tui'` + `ui.custom`，用 Adapter-private symbol 把问卷参数交给 `createUiContext`。原始 execute 仍负责校验、TUI import 失败信封和结果构造。字段投影仅匹配 2.11.0 的 CRLF→LF / 删除 lone CR。有限移除条件：升级到提供 structured questionnaire responder API 的上游依赖；该升级必须重新 characterize 或删除本桥，不得静默扩大支持范围。
+
+## 117. pi-claude-subagents 补丁移除（0.4.0 原生接口取代 postinstall patch）
+
+第 110 条记录的有限移除条件已满足：上游 `pi-claude-subagents` 0.4.0 原生提供"先持久化 running record 再返回"（`createTaskRecord` + 创建后立即 `onUpdate`，启动失败仍删任务目录、恢复逻辑只认 stopped/parent_shutdown）与子会话事件流接口（导出常量 `SUBAGENT_CHILD_EVENT_CHANNEL = "pi-claude-subagents:child-event"`，payload `{ childSessionId, taskId, event }`，只转发 `message_update` 与 assistant `message_end`，无监听者零行为、监听者抛错被吞）。插件另把 `before_agent_start` 的 hidden agent-listing 改为每会话首回合注入、压缩后补注、内容变化补注（Pi 1.3 triggerTurn 回合不再重复灌清单）；systemPrompt 追加的 parent policy 维持每回合。
+
+Pix 侧同步：`vendor/pi-claude-subagents-0.4.0.tgz` 取代 `0.3.9-pi1-eccf9bc.tgz`（file: 依赖与 lockfile 同步）；删除 `scripts/patch-pi-claude-subagents.mjs` 及其测试、根 package.json 的 postinstall/prebuild 钩子、`release-verify.mjs` 的 pristine/patched 双 SHA 门控（包身份校验仍由 `release-package.mjs` manifest 检查承担，channel 漂移由 adapter 合同测试兜底）。
+
+**Adapter 桥接重写**：`sdk-runtime.ts` 的 `installSubagentStreamBridge/uninstallSubagentStreamBridge` 不再写 `globalThis.__pixSubagentStream`。factory `construct()` 为每个会话 `createEventBus()` 并经 composition channels 注入 `DefaultResourceLoaderOptions.eventBus`（同一 resource loader 的全部扩展——含捆绑插件——共享该 bus；`session.reload()` 复用同一 loader，bus 跨 reload 稳定），driver 持同一 bus 引用按能力开关订阅/退订 `pi-claude-subagents:child-event`，generation 防陈旧与 capability loss/close 退订语义保持。payload 解码 fail-closed（非 string childSessionId/taskId 丢弃）。合同测试读取捆绑插件 `src/runtime.ts` 固定 channel 字面量与 0.x 版本线，升级漂移即失败。
