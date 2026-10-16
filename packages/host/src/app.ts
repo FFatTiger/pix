@@ -30,6 +30,7 @@ import { registerSessionSettingsRoutes } from "./routes/settings.js";
 import { registerCatalogRoutes } from "./routes/catalogs.js";
 import { registerPreferencesRoutes } from "./routes/preferences.js";
 import { registerDiagnosticsRoutes } from "./routes/diagnostics.js";
+import { registerAboutRoutes } from "./routes/about.js";
 import { registerThemeRoutes } from "./routes/themes.js";
 import { createFileWatchManager } from "./resources/file-watch.js";
 
@@ -119,6 +120,9 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
     logger,
   });
   registerDiagnosticsRoutes(app, logger);
+  if (deps.about) {
+    registerAboutRoutes(app, { ...deps.about, logger });
+  }
   registerHealthRoutes(app, deps);
   registerBootstrapRoutes(app, deps, gateDeps);
   if (deps.sessions) {

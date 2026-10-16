@@ -38,6 +38,10 @@ export const urls = {
     get: () => resource("preferences"),
     update: () => resource("preferences"),
   },
+  about: {
+    get: () => resource("about"),
+    checkUpdate: () => resource("about/check-update"),
+  },
   gate: {
     status: () => resource("gate/status"),
     login: () => resource("gate/login"),

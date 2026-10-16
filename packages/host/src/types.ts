@@ -608,6 +608,12 @@ export interface HostDeps {
    */
   catalogs?: CatalogDeps;
   /**
+   * About facts + update-check seam (GET /v1/about, POST /v1/about/check-update).
+   * Omitted ⇒ the routes are not mounted; versions are resolved at
+   * composition time from the actually installed package manifests.
+   */
+  about?: import("./routes/about.js").AboutDeps;
+  /**
    * Assistant workspace seam (GET /v1/assistant + the `assistant` capability
    * token). Mounted ONLY when composition resolved and authorized the fixed
    * assistant directory within AllowedRoots (`createAssistantWorkspaceResource`);

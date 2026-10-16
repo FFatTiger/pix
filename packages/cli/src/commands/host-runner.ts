@@ -8,6 +8,7 @@ import {
   createRuntimeWorkspaceAuthorizer,
   createProductionResources,
   createProductionCatalogs,
+  createProductionAboutFacts,
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
   createSessiondSessionRenameClient,
@@ -217,6 +218,17 @@ export async function runHost(
     return 1;
   }
 
+  // About facts (GET /v1/about + POST /v1/about/check-update): resolved
+  // from the actually installed package manifests; independent of sessiond.
+  let aboutFacts;
+  try {
+    aboutFacts = createProductionAboutFacts();
+  } catch (error) {
+    await production.trustedRootsLedger.close().catch(() => {});
+    pixErr(`about configuration failed: ${(error as Error).message}`);
+    return 1;
+  }
+
   // Assistant workspace: materialize the fixed <home>/.pi/pix/assistant
   // directory (0700, AllowedRoots-authorized, one-time project-trusted via the
   // same seam POST /v1/trust uses — never a user prompt). Null (assistant
@@ -260,6 +272,8 @@ export async function runHost(
     // D3B-R1B: read-only catalogs (models/auth/skills/plugins/commands/trust).
     // Catalog capability tokens stay advertised even when sessiond is down.
     catalogs,
+    // About version facts: host package.json + adapter SDK/plugin manifests.
+    about: { facts: aboutFacts },
     // D1A-2 phase 2: read-only session history (/v1/sessions*) backed by the
     // fixed sessiond catalog. The capability token is driven by the resolver
     // above (sessions only while up); while down these routes answer 503.

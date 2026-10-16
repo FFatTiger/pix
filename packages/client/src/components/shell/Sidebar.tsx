@@ -343,6 +343,9 @@ export function Sidebar({
   const queryClient = useQueryClient();
   const options = createQueryOptions(http);
   const { can, canBrowseSessions, canDeleteSessions, canWriteSessions } = useCapabilities();
+  // Sidebar version chip: the same immutable /v1/about facts as the About
+  // page (no separate version source); absent while the seam is unwired.
+  const aboutQuery = useQuery({ ...options.about.info(), enabled: can("settings.configure") });
   const canWorktree = can("worktree");
   const runtimeConnection = useRuntimeConnection();
   const generateSessionTitle = useCallback(async (sessionId: string): Promise<void> => {
@@ -964,18 +967,51 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-footer">
+        <SidebarFooter version={aboutQuery.data?.pix.version} {...(onOpenSettings === undefined ? {} : { onOpenSettings })} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sidebar footer row: the settings entry plus the faint Pix version chip on
+ * its right. The version renders only while the about seam is wired (the
+ * chip is absent, never a guessed placeholder); clicking it opens Settings
+ * directly on the About page. Same row on desktop and the mobile drawer.
+ */
+export function SidebarFooter({
+  version,
+  onOpenSettings,
+}: {
+  version: string | undefined;
+  onOpenSettings?: (tab: SettingsTab) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="sidebar-footer-row">
+      <button
+        type="button"
+        className="sidebar-nav-item"
+        data-testid="sidebar-nav-settings"
+        title={t("desktop.settings")}
+        aria-label={t("desktop.settings")}
+        onClick={() => onOpenSettings?.("appearance")}
+      >
+        <GearSix size={16} weight="regular" aria-hidden="true" />
+        <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.settings")}</span>
+      </button>
+      {version ? (
         <button
           type="button"
-          className="sidebar-nav-item"
-          data-testid="sidebar-nav-settings"
-          title={t("desktop.settings")}
-          aria-label={t("desktop.settings")}
-          onClick={() => onOpenSettings?.("appearance")}
+          className="sidebar-version-chip"
+          data-testid="sidebar-version"
+          title={t("desktop.settingsPage.about")}
+          aria-label={t("desktop.about.sidebarVersion", { version: `v${version}` })}
+          onClick={() => onOpenSettings?.("about")}
         >
-          <GearSix size={16} weight="regular" aria-hidden="true" />
-          <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.settings")}</span>
+          {`v${version}`}
         </button>
-      </div>
+      ) : null}
     </div>
   );
 }

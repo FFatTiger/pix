@@ -2,6 +2,7 @@ import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { HttpClient } from "./http-client";
 import { createGateApi } from "./gate";
 import { createPreferencesApi } from "./preferences";
+import { createAboutApi } from "./about";
 import { createModelsApi } from "./models";
 import { createResourcesApi } from "./resources";
 import { createSessionsApi } from "./sessions";
@@ -18,6 +19,11 @@ export const queryKeys = {
   assistant: { all: ["pix", "assistant"] as const, info: () => ["pix", "assistant", "info"] as const },
   gate: { all: ["pix", "gate"] as const, status: () => ["pix", "gate", "status"] as const },
   preferences: { all: ["pix", "preferences"] as const, map: () => ["pix", "preferences", "map"] as const },
+  about: {
+    all: ["pix", "about"] as const,
+    info: () => ["pix", "about", "info"] as const,
+    checkUpdate: () => ["pix", "about", "check-update"] as const,
+  },
   capabilities: { all: ["pix", "capabilities"] as const, host: () => ["pix", "capabilities", "host"] as const, health: () => ["pix", "capabilities", "health"] as const, bootstrap: () => ["pix", "bootstrap"] as const },
   projects: {
     all: ["pix", "projects"] as const,
@@ -102,6 +108,7 @@ export const queryKeys = {
 export function createQueryOptions(http: HttpClient) {
   const gate = createGateApi(http);
   const preferences = createPreferencesApi(http);
+  const about = createAboutApi(http);
   const sessions = createSessionsApi(http);
   const assistant = createAssistantApi(http);
   const models = createModelsApi(http);
@@ -110,6 +117,14 @@ export function createQueryOptions(http: HttpClient) {
   return {
     gate: { status: () => queryOptions({ queryKey: queryKeys.gate.status(), queryFn: ({ signal }) => gate.status(signal), staleTime: 30_000, retry: false }) },
     preferences: { map: () => queryOptions({ queryKey: queryKeys.preferences.map(), queryFn: ({ signal }) => preferences.get(signal), staleTime: Infinity, retry: 1 }) },
+    about: {
+      // Version facts are immutable for the host process lifetime.
+      info: () => queryOptions({ queryKey: queryKeys.about.info(), queryFn: ({ signal }) => about.get(signal), staleTime: Infinity, retry: false }),
+      // On-demand ONLY (never enabled by default): the update probe fires on
+      // the explicit user action, and its result is cached for the session
+      // (staleTime/gcTime Infinity) so reopening the page never re-requests.
+      checkUpdate: () => queryOptions({ queryKey: queryKeys.about.checkUpdate(), queryFn: ({ signal }) => about.checkUpdate(signal), enabled: false, staleTime: Infinity, gcTime: Infinity, retry: false }),
+    },
     capabilities: {
       host: () => queryOptions({ queryKey: queryKeys.capabilities.host(), queryFn: ({ signal }) => http.get(urls.capabilities(), { schema: CapabilitiesResponseSchema, signal }), staleTime: 15_000, retry: false }),
       health: () => queryOptions({ queryKey: queryKeys.capabilities.health(), queryFn: ({ signal }) => http.get(urls.health(), { schema: HealthResponseSchema, signal }), staleTime: 15_000, retry: false }),

@@ -1699,6 +1699,35 @@ html.dark .catalog-meta-item--error {
   border-top: 1px solid var(--surface-hairline);
 }
 
+.sidebar-footer-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-footer-row .sidebar-nav-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-version-chip {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px 4px 4px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-dim);
+}
+
+.sidebar-version-chip:hover {
+  color: var(--text-muted);
+}
+
 .sidebar-search-field {
   display: flex;
   align-items: center;
@@ -1909,6 +1938,29 @@ html.dark .catalog-meta-item--error {
 .settings-row-title { font-size: 13px; font-weight: 550; color: var(--text); line-height: 1.4; }
 .settings-row-desc { font-size: 11px; line-height: 1.5; color: var(--text-muted); }
 .settings-row-control { flex-shrink: 0; max-width: 60%; display: flex; align-items: center; justify-content: flex-end; }
+
+/* ── About page ─────────────────────────────────────────────────────── */
+
+/* Header: Pix mark + name + version (monospaced, tabular digits). */
+.about-header { display: flex; align-items: center; gap: 14px; padding: 6px 0 2px; color: var(--text); }
+.about-header-text { min-width: 0; }
+.about-title { display: flex; align-items: baseline; gap: 8px; font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
+.about-name { font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
+.about-version { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 500; color: var(--text-muted); }
+.about-build { margin-top: 3px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--text-dim); }
+
+/* Update check: button + one-line result beneath the header. */
+.about-update { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.about-update-result { font-size: 12.5px; color: var(--text-muted); }
+.about-update-result--error { color: var(--status-danger); }
+.about-update-detail { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.about-update-command { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.about-update-command code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-panel); color: var(--text); font: 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+.about-release-link { font-size: 12px; color: var(--accent-blue); text-decoration: none; }
+.about-release-link:hover { text-decoration: underline; }
+
+/* Runtime/plugin fact values: monospaced, tabular digits, muted. */
+.about-fact { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-muted); }
 
 /* Segmented control (2–4 exclusive short options). */
 .segmented { display: inline-flex; align-items: stretch; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-panel); }

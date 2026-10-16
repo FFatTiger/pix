@@ -182,6 +182,9 @@ export {
   CATALOG_CAPABILITY_TOKENS,
 } from "./composition/production-catalogs.js";
 export type { ProductionCatalogsOptions } from "./composition/production-catalogs.js";
+export { createProductionAboutFacts } from "./composition/production-about.js";
+export type { AboutDeps, AboutFacts, AboutPluginFact } from "./routes/about.js";
+export { compareSemver } from "./routes/about.js";
 export {
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,

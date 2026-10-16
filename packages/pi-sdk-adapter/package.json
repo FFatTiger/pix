@@ -12,6 +12,7 @@
     "./settings": { "types": "./dist/settings/index.d.ts", "import": "./dist/settings/index.js" },
     "./memory": { "types": "./dist/memory/index.d.ts", "import": "./dist/memory/index.js" },
     "./builtins": { "types": "./dist/builtins/index.d.ts", "import": "./dist/builtins/index.js" },
+    "./about": { "types": "./dist/about/index.d.ts", "import": "./dist/about/index.js" },
     "./credentials": { "types": "./dist/credentials/index.d.ts", "import": "./dist/credentials/index.js" },
     "./trust": { "types": "./dist/trust/index.d.ts", "import": "./dist/trust/index.js" },
     "./resources": { "types": "./dist/resources/index.d.ts", "import": "./dist/resources/index.js" },

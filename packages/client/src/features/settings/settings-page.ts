@@ -18,4 +18,5 @@ export type SettingsPageId =
   | "skills"
   | "plugins"
   | "access"
-  | "advanced";
+  | "advanced"
+  | "about";

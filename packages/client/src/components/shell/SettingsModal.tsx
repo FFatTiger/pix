@@ -6,6 +6,7 @@ import {
   ChatCircleText,
   Cpu,
   FileJs,
+  Info,
   Keyboard,
   Monitor,
   Plug,
@@ -19,6 +20,7 @@ import {
 
 } from "@phosphor-icons/react";
 import { ArchiveConfig } from "@/features/settings/ArchiveConfig";
+import { AboutConfig } from "@/features/settings/AboutConfig";
 import { CompactionConfig } from "@/features/settings/CompactionConfig";
 import { AppearanceConfig } from "@/features/settings/AppearanceConfig";
 import { CapabilitiesConfig } from "@/features/settings/CapabilitiesConfig";
@@ -161,6 +163,7 @@ export function SettingsModal({
       pages: [
         { id: "access", labelKey: "desktop.settingsPage.access", descKey: "desktop.settingsPage.accessDesc", Icon: ShieldCheck, render: () => <SecurityConfig /> },
         { id: "advanced", labelKey: "desktop.settingsPage.advanced", descKey: "desktop.settingsPage.advancedDesc", Icon: FileJs, render: () => <SettingsFileConfig /> },
+        { id: "about", labelKey: "desktop.settingsPage.about", descKey: "desktop.settingsPage.aboutDesc", Icon: Info, render: () => <AboutConfig /> },
       ],
     },
   ], [requestClose, selectPage]);
