@@ -46,7 +46,8 @@
 // the existing AllowedRoot path); the agent dir is captured once for the trust
 // store. No network, no Worker/Agent. No SDK internal module is ever imported.
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -257,7 +258,11 @@ function assertTrustMutationCwd(cwd: string): void {
 async function canonicalizeCwd(cwd: string): Promise<string> {
   const resolved = resolve(cwd);
   try {
-    return await realpath(resolved);
+    // realpathSync — the JS implementation — to stay key-compatible with the
+    // SDK's canonicalizePath (realpathSync). node:fs/promises realpath is the
+    // native call, which on win32 rewrites 8.3 names and adds a \\\\?\\ prefix:
+    // the stored key would no longer match what ProjectTrustStore.get reads.
+    return realpathSync(resolved);
   } catch {
     return resolved;
   }

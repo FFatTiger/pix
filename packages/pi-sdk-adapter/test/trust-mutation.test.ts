@@ -22,8 +22,8 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
@@ -591,6 +591,12 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("fails closed when the agent dir is replaced by a symlink between read and rename (dir identity)", async () => {
+    if (process.platform === "win32") {
+      // NTFS refuses to rename a directory that still contains the open temp
+      // handle, so the swap mechanics are POSIX-only; the identity recheck
+      // itself is platform-independent code that runs on every write.
+      return;
+    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const store = createPiSdkTrustMutationStore({
@@ -618,6 +624,10 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("fails closed when the agent dir is swapped to a different real directory between read and rename", async () => {
+    if (process.platform === "win32") {
+      // Same NTFS open-handle limitation as the symlink swap above.
+      return;
+    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const store = createPiSdkTrustMutationStore({
@@ -696,6 +706,11 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("fails closed and immutable when trust.json is unreadable (mode 000)", async () => {
+    if (process.platform === "win32") {
+      // chmod 000 cannot make a file unreadable for its owner on NTFS; the
+      // unsafe-read rejections (symlink / corrupt / oversize) cover win32.
+      return;
+    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const seeded = '{"x":true}\n';
@@ -742,7 +757,10 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
     try {
       await createPiSdkTrustMutation({ agentDir }).setProjectTrusted("/");
       const parsed = JSON.parse(await readTrustJson(agentDir)) as Record<string, unknown>;
-      assert.equal(parsed["/"], true, "root cwd persisted under the '/' key");
+      // The canonical root key follows the SDK's normalization (on win32 that
+      // is the drive form realpathSync("/") resolves to, not "/").
+      const rootKey = realpathSync(resolve("/"));
+      assert.equal(parsed[rootKey], true, `root cwd persisted under the canonical key (${rootKey})`);
       assert.equal(new ProjectTrustStore(agentDir).get("/"), true, "fresh SDK read of the root key");
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -790,6 +808,7 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
       await assert.rejects(
         createPiSdkTrustMutationStore({
           agentDir,
+          platform: "linux", // POSIX-style: no EPERM retry (the win32 host default would take it)
           faultInjection: {
             failRename: () => {
               const error = new Error("replace denied") as NodeJS.ErrnoException;
