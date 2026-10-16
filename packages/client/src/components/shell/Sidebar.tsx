@@ -83,7 +83,7 @@ export interface SidebarProps {
   /** Honest Host agent-capability gate for navigating to a blank new-session draft. */
   canNewSession: boolean;
   /** Open the existing SettingsModal on a specific tab (plugins / skills / settings). */
-  onOpenSettings?: (tab: SettingsTab) => void;
+  onOpenSettings?: (tab: SettingsTab, onPage?: boolean) => void;
   /** Collapse the sidebar from inside the rail (the toggle lives here, not in the title bar). */
   onCollapseSidebar?: () => void;
   /** Open the new-session page scoped to a project root (no immediate create). */
@@ -984,7 +984,7 @@ export function SidebarFooter({
   onOpenSettings,
 }: {
   version: string | undefined;
-  onOpenSettings?: (tab: SettingsTab) => void;
+  onOpenSettings?: (tab: SettingsTab, onPage?: boolean) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -1007,7 +1007,7 @@ export function SidebarFooter({
           data-testid="sidebar-version"
           title={t("desktop.settingsPage.about")}
           aria-label={t("desktop.about.sidebarVersion", { version: `v${version}` })}
-          onClick={() => onOpenSettings?.("about")}
+          onClick={() => onOpenSettings?.("about", true)}
         >
           {`v${version}`}
         </button>

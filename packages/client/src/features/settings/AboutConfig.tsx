@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { PixieIcon } from "@/components/icons/PixieIcon";
 import { HttpError } from "@/api/http-client";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
@@ -84,7 +83,7 @@ export function AboutConfig() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
+    <div className="about-page" style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
       <SettingsSection>
         {aboutQuery.isPending ? (
           <p className="workspace-hint">{t("desktop.loading")}</p>
@@ -93,7 +92,7 @@ export function AboutConfig() {
         ) : about ? (
           <>
             <div className="about-header" data-testid="about-header">
-              <PixieIcon size={44} />
+              <div className="transcript-home-logo about-icon" aria-hidden="true" />
               <div className="about-header-text">
                 <div className="about-title">
                   <span className="about-name">Pix</span>

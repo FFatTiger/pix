@@ -71,15 +71,18 @@ interface NavGroup {
  */
 export function SettingsModal({
   initialTab = "providers",
+  openOnPage = false,
   onCloseAction,
 }: {
   initialTab?: SettingsPageId;
+  /** Mobile: land on the page itself (a deep link) instead of the nav list. */
+  openOnPage?: boolean;
   onCloseAction: () => void;
 }) {
   const isMobile = useIsMobile();
   const { t } = useI18n();
   const [activePage, setActivePage] = useState<SettingsPageId>(initialTab);
-  const [mobileNavOpen, setMobileNavOpen] = useState(true);
+  const [mobileNavOpen, setMobileNavOpen] = useState(!openOnPage);
   const dialogRef = useRef<HTMLElement>(null);
 
   useEffect(() => {

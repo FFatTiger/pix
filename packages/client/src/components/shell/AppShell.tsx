@@ -394,8 +394,10 @@ export function AppShell({ search }: AppShellProps) {
   }, [isMobile, mobileSidebarMounted, sidebarOpen]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
-  const openSettings = useCallback((tab: SettingsTab) => {
+  const [settingsOnPage, setSettingsOnPage] = useState(false);
+  const openSettings = useCallback((tab: SettingsTab, onPage = false) => {
     setSettingsTab(tab);
+    setSettingsOnPage(onPage);
     setSettingsOpen(true);
   }, []);
 
@@ -1637,6 +1639,7 @@ export function AppShell({ search }: AppShellProps) {
     {settingsOpen ? (
       <SettingsModal
         initialTab={settingsTab}
+        openOnPage={settingsOnPage}
         onCloseAction={() => setSettingsOpen(false)}
       />
     ) : null}

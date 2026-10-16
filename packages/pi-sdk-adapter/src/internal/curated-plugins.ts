@@ -48,7 +48,7 @@ export interface BundledPluginRoot {
   packageName: string;
   root: string;
   entry: string;
-  /** Version read from the installed manifest (vendored tgz always carry one). */
+  /** Version read from the installed manifest, "unknown" when absent. */
   version: string;
 }
 
@@ -92,10 +92,8 @@ function resolveBundledRoot(id: CuratedPluginId): BundledPluginRoot {
   const root = dirname(manifestPath);
   const pkg = readJson(manifestPath) ?? {};
   const declared = firstManifestEntry(pkg) ?? "./index.ts";
-  const version = pkg.version;
-  if (typeof version !== "string" || version.length === 0) {
-    throw new Error(`bundled plugin manifest has no version: ${packageName}`);
-  }
+  // Display-only (About page); never block plugin loading on it.
+  const version = typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "unknown";
   return { id, packageName, root, entry: resolve(root, declared), version };
 }
 

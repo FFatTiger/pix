@@ -1944,6 +1944,7 @@ html.dark .catalog-meta-item--error {
 /* Header: Pix mark + name + version (monospaced, tabular digits). */
 .about-header { display: flex; align-items: center; gap: 14px; padding: 6px 0 2px; color: var(--text); }
 .about-header-text { min-width: 0; }
+.about-icon { flex: none; width: 48px; height: 48px; border-radius: 12px; background-size: 28px; }
 .about-title { display: flex; align-items: baseline; gap: 8px; font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
 .about-name { font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
 .about-version { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 500; color: var(--text-muted); }
@@ -2093,6 +2094,8 @@ html.dark .catalog-meta-item--error {
   .settings-page-back { display: inline-flex; }
   .settings-row { flex-direction: column; align-items: stretch; gap: 8px; }
   .settings-row-control { max-width: none; justify-content: flex-start; }
+  /* About facts stay one line: short name left, version right. */
+  .about-page .settings-row { flex-direction: row; align-items: center; }
   .settings-savebar { flex-wrap: wrap; }
   .settings-savebar-actions { width: 100%; justify-content: flex-end; }
 }

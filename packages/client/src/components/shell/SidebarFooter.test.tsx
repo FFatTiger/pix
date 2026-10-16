@@ -10,7 +10,7 @@ describe("SidebarFooter", () => {
     const chip = screen.getByTestId("sidebar-version");
     expect(chip.textContent).toBe("v0.3.1");
     fireEvent.click(chip);
-    expect(onOpenSettings).toHaveBeenCalledWith("about");
+    expect(onOpenSettings).toHaveBeenCalledWith("about", true);
     // The settings row itself keeps opening the default settings page.
     fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
     expect(onOpenSettings).toHaveBeenCalledWith("appearance");

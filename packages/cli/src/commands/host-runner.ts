@@ -220,13 +220,12 @@ export async function runHost(
 
   // About facts (GET /v1/about + POST /v1/about/check-update): resolved
   // from the actually installed package manifests; independent of sessiond.
+  // Best effort: an unreadable manifest only drops the About routes.
   let aboutFacts;
   try {
     aboutFacts = createProductionAboutFacts();
   } catch (error) {
-    await production.trustedRootsLedger.close().catch(() => {});
-    pixErr(`about configuration failed: ${(error as Error).message}`);
-    return 1;
+    pixErr(`about facts unavailable: ${(error as Error).message}`);
   }
 
   // Assistant workspace: materialize the fixed <home>/.pi/pix/assistant
@@ -273,7 +272,7 @@ export async function runHost(
     // Catalog capability tokens stay advertised even when sessiond is down.
     catalogs,
     // About version facts: host package.json + adapter SDK/plugin manifests.
-    about: { facts: aboutFacts },
+    ...(aboutFacts ? { about: { facts: aboutFacts } } : {}),
     // D1A-2 phase 2: read-only session history (/v1/sessions*) backed by the
     // fixed sessiond catalog. The capability token is driven by the resolver
     // above (sessions only while up); while down these routes answer 503.
