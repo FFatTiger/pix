@@ -75,9 +75,10 @@ describe("ExtensionNotices", () => {
     expect(toast.getAttribute("aria-label")).toBe(message);
     expect(text?.textContent).toBe(message);
     expect(text?.getAttribute("title")).toBe(message);
-    // Collapsed = clamped to two lines (visual only; the full text stays in the DOM).
+    // Collapsed stays one line; the full text stays in the DOM for the card.
     expect(toast.getAttribute("data-expanded")).toBeNull();
     expect(text?.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("extension-notice-detail")).toBeNull();
   });
 
   it("expands the full message on tap and pauses auto-hide until collapsed", () => {
@@ -90,6 +91,8 @@ describe("ExtensionNotices", () => {
     fireEvent.click(text!);
     expect(toast.getAttribute("data-expanded")).toBe("true");
     expect(text?.getAttribute("aria-expanded")).toBe("true");
+    const detail = screen.getByTestId("extension-notice-detail");
+    expect(detail.textContent).toBe(message);
     expect(text?.textContent).toBe(message);
 
     // Expanded pauses the fade: the full auto-hide window passes, still visible.
@@ -114,16 +117,17 @@ describe("ExtensionNotices", () => {
     expect(screen.getByTestId("extension-notices").getAttribute("data-expanded")).toBeNull();
   });
 
-  it("copies a notice url and dismisses immediately", async () => {
+  it("turns urls into links in the expanded card and dismisses immediately", () => {
     vi.useFakeTimers();
-    const writeText = vi.fn(() => Promise.resolve());
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    mount([notice("authorize https://example.test/oauth", 1)]);
+    mount([notice("authorize https://example.test/oauth now", 1)]);
+    expect(screen.queryByRole("button", { name: "Copy link" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
-    await act(async () => { await Promise.resolve(); });
-    expect(writeText).toHaveBeenCalledWith("https://example.test/oauth");
-    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+    fireEvent.click(screen.getByTestId("extension-notices").querySelector(".extension-notice-message")!);
+    const link = screen.getByRole("link", { name: "https://example.test/oauth" });
+    expect(link.getAttribute("href")).toBe("https://example.test/oauth");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+    expect(screen.getByTestId("extension-notice-detail").textContent).toBe("authorize https://example.test/oauth now");
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     act(() => { vi.advanceTimersByTime(TOAST_FADE_MS); });

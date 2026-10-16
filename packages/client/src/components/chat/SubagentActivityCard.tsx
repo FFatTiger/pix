@@ -2,13 +2,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
 import { ArrowBendUpLeftIcon } from "@phosphor-icons/react/ArrowBendUpLeft";
 import { ArrowRightIcon } from "@phosphor-icons/react/ArrowRight";
-import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckCircleIcon } from "@phosphor-icons/react/CheckCircle";
 import { CircleIcon } from "@phosphor-icons/react/Circle";
 import { CircleNotchIcon } from "@phosphor-icons/react/CircleNotch";
 import { RobotIcon } from "@phosphor-icons/react/Robot";
+import { XCircleIcon } from "@phosphor-icons/react/XCircle";
 import { useI18n } from "@/hooks/useI18n";
-import { shortModelName } from "@/lib/model-display";
 import type { QueuedMessages } from "@/lib/chat-view-model";
 import type { StatusTodoItem, SubagentActivity } from "@/lib/subagent-activity";
 
@@ -26,8 +25,8 @@ export interface SubagentActivityCardProps {
 }
 
 const EMPTY_TODOS: readonly StatusTodoItem[] = [];
-const COMPACT_TODO_THRESHOLD = 6;
-const TODO_FOCUS_WINDOW_SIZE = 3;
+/** Ended agents stay on the card, faded, but only the most recent few. */
+const ENDED_PREVIEW_LIMIT = 3;
 
 function elapsedLabel(startedAt: number | undefined, now: number, t: ReturnType<typeof useI18n>["t"]): string {
   if (startedAt === undefined) return "";
@@ -40,35 +39,6 @@ function elapsedLabel(startedAt: number | undefined, now: number, t: ReturnType<
   if (hours > 0 || minutes > 0) parts.push(t("desktop.processDurationMinutes", { minutes }));
   parts.push(t("desktop.processDurationSeconds", { seconds }));
   return parts.join(" ");
-}
-
-function todoFocusWindow(items: readonly StatusTodoItem[]): {
-  compact: boolean;
-  preceding: number;
-  focus: readonly StatusTodoItem[];
-  following: number;
-} {
-  if (items.length <= COMPACT_TODO_THRESHOLD) {
-    return { compact: false, preceding: 0, focus: items, following: 0 };
-  }
-  const runningIndex = items.findIndex((item) => item.status === "in_progress");
-  const pendingIndex = items.findIndex((item) => item.status === "pending");
-  const focusIndex = runningIndex >= 0
-    ? runningIndex
-    : pendingIndex >= 0
-      ? pendingIndex
-      : Math.max(0, items.length - TODO_FOCUS_WINDOW_SIZE);
-  const start = Math.max(
-    0,
-    Math.min(focusIndex - Math.floor(TODO_FOCUS_WINDOW_SIZE / 2), items.length - TODO_FOCUS_WINDOW_SIZE),
-  );
-  const end = Math.min(items.length, start + TODO_FOCUS_WINDOW_SIZE);
-  return {
-    compact: true,
-    preceding: start,
-    focus: items.slice(start, end),
-    following: items.length - end,
-  };
 }
 
 function capsuleSummary(
@@ -122,18 +92,28 @@ function capsuleSummary(
 
 function TodoStatusIcon({ status }: { status: StatusTodoItem["status"] }) {
   if (status === "completed") {
-    return <CheckCircleIcon className="status-todo-icon is-completed" size={14} aria-hidden="true" />;
+    return <CheckCircleIcon className="status-todo-icon is-completed" size={16} aria-hidden="true" />;
   }
   if (status === "in_progress") {
-    return <ArrowRightIcon className="status-todo-icon" size={14} aria-hidden="true" />;
+    return <ArrowRightIcon className="status-todo-icon" size={16} aria-hidden="true" />;
   }
-  return <CircleIcon className="status-todo-icon is-pending" size={14} aria-hidden="true" />;
+  return <CircleIcon className="status-todo-icon is-pending" size={16} aria-hidden="true" />;
+}
+
+function AgentStatusIcon({ status }: { status: SubagentActivity["status"] }) {
+  if (status === "running") {
+    return <CircleNotchIcon className="subagent-running-icon" size={16} aria-hidden="true" />;
+  }
+  if (status === "completed") {
+    return <CheckCircleIcon className="status-todo-icon is-completed" size={16} aria-hidden="true" />;
+  }
+  return <XCircleIcon className="subagent-status-icon is-failed" size={16} aria-hidden="true" />;
 }
 
 /**
  * Status strip above the composer. The capsule carries the current step, the
  * todo completion count, and the running-agent count; clicking it expands a
- * flat card upward (todos, then running agents, then the ended-agents entry).
+ * flat card upward (todos, then agents, then queued messages).
  * Expansion is component-local transient state — never persisted.
  */
 export function SubagentActivityCard({
@@ -153,21 +133,23 @@ export function SubagentActivityCard({
   // The card morphs out of the tab, so it needs the tab's resting width.
   const [tabWidth, setTabWidth] = useState(0);
   const [now, setNow] = useState(() => Date.now());
-  const [allTodosOpen, setAllTodosOpen] = useState(false);
   const [expandedQueuedIndex, setExpandedQueuedIndex] = useState<number | null>(null);
   const queued = useMemo(
     () => [...(queuedMessages?.steering ?? []), ...(queuedMessages?.followUp ?? [])],
     [queuedMessages],
   );
   const running = useMemo(() => activities.filter((activity) => activity.status === "running"), [activities]);
+  const ended = useMemo(
+    () => activities.filter((activity) => activity.status !== "running").slice(-ENDED_PREVIEW_LIMIT).reverse(),
+    [activities],
+  );
   const endedCount = activities.length - running.length;
   const completedTodoCount = useMemo(
     () => todos.filter((item) => item.status === "completed").length,
     [todos],
   );
   const summary = capsuleSummary(todos, running, endedCount, queued.length, t);
-  const todoWindow = todoFocusWindow(todos);
-  const hasRunning = running.length > 0;
+  const hasAgents = activities.length > 0;
 
   useEffect(() => {
     if (running.length === 0) return;
@@ -216,7 +198,7 @@ export function SubagentActivityCard({
       {todos.length > 0 ? (
         <span className="status-capsule-count">{completedTodoCount}/{todos.length}</span>
       ) : null}
-      {hasRunning ? (
+      {running.length > 0 ? (
         <span
           className="status-capsule-agents"
           title={t("desktop.runningAgentsCount", { count: running.length })}
@@ -236,13 +218,39 @@ export function SubagentActivityCard({
     </>
   ) : null;
 
-  const endedRow = endedCount > 0 ? (
-    <button type="button" className="subagent-ended-row" onClick={onOpenDirectory}>
-      <span>{t("desktop.endedAgents")}</span>
-      <span className="subagent-ended-count">{endedCount}</span>
-      <CaretRightIcon size={14} aria-hidden="true" />
-    </button>
-  ) : null;
+  const agentRow = (activity: SubagentActivity, faded: boolean) => {
+    const content = (
+      <>
+        <AgentStatusIcon status={activity.status} />
+        <span className="subagent-activity-name" title={activity.title}>{activity.title}</span>
+        {activity.agentType ? (
+          <span className="subagent-activity-note" title={activity.agentType}>{activity.agentType}</span>
+        ) : null}
+        {activity.startedAt === undefined ? null : (
+          <span className="subagent-activity-elapsed">{elapsedLabel(activity.startedAt, now, t)}</span>
+        )}
+      </>
+    );
+    return activity.childSessionId === undefined ? (
+      <div
+        className={`subagent-activity-row is-pending${faded ? " is-ended" : ""}`}
+        key={activity.key}
+        aria-disabled="true"
+      >
+        {content}
+      </div>
+    ) : (
+      <button
+        type="button"
+        className={`subagent-activity-row${faded ? " is-ended" : ""}`}
+        key={activity.key}
+        onClick={() => onOpenActivity(activity)}
+        aria-label={t("desktop.openSubagent", { title: activity.title })}
+      >
+        {content}
+      </button>
+    );
+  };
 
   return (
     <div
@@ -275,15 +283,9 @@ export function SubagentActivityCard({
           <div className="status-card-body">
             {todos.length > 0 ? (
               <section className="status-card-section" data-testid="status-progress-section">
+                <div className="status-section-title">{t("desktop.statusTodos")}</div>
                 <ul className="status-todo-list">
-                  {!allTodosOpen && todoWindow.preceding > 0 ? (
-                    <li>
-                      <button type="button" className="status-todo-fold" aria-expanded={false} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(true)}>
-                        {t("desktop.statusTodosEarlier", { count: todoWindow.preceding })}
-                      </button>
-                    </li>
-                  ) : null}
-                  {(allTodosOpen ? todos : todoWindow.focus).map((item) => (
+                  {todos.map((item) => (
                     <li
                       key={item.id}
                       className={`status-todo-row is-${item.status}`}
@@ -293,26 +295,29 @@ export function SubagentActivityCard({
                       <span className="status-todo-subject" title={item.subject}>{item.subject}</span>
                     </li>
                   ))}
-                  {!allTodosOpen && todoWindow.following > 0 ? (
-                    <li>
-                      <button type="button" className="status-todo-fold" aria-expanded={false} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(true)}>
-                        {t("desktop.statusTodosLater", { count: todoWindow.following })}
-                      </button>
-                    </li>
-                  ) : null}
-                  {allTodosOpen && todoWindow.compact ? (
-                    <li>
-                      <button type="button" className="status-todo-fold" aria-expanded={true} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(false)}>
-                        {t("desktop.showLess")}
-                      </button>
-                    </li>
-                  ) : null}
                 </ul>
+              </section>
+            ) : null}
+            {hasAgents ? (
+              <section
+                className={`status-card-section${todos.length > 0 ? " is-separated" : ""}`}
+                data-testid="status-agents-section"
+              >
+                <div className="status-section-title">{t("desktop.subagents")}</div>
+                <div className="subagent-activity-body">
+                  {running.map((activity) => agentRow(activity, false))}
+                  {ended.map((activity) => agentRow(activity, true))}
+                </div>
+                {endedCount > ENDED_PREVIEW_LIMIT ? (
+                  <button type="button" className="status-agents-all" onClick={onOpenDirectory}>
+                    {t("desktop.statusAgentsAll")}
+                  </button>
+                ) : null}
               </section>
             ) : null}
             {queued.length > 0 ? (
               <section
-                className={`status-card-section${todos.length > 0 ? " is-separated" : ""}`}
+                className={`status-card-section${todos.length > 0 || hasAgents ? " is-separated" : ""}`}
                 data-testid="status-queue-section"
               >
                 <div className="status-queue-head">
@@ -360,56 +365,6 @@ export function SubagentActivityCard({
                 </ul>
               </section>
             ) : null}
-            {hasRunning ? (
-              <section
-                className={`status-card-section${todos.length > 0 || queued.length > 0 ? " is-separated" : ""}`}
-                data-testid="status-agents-section"
-              >
-                <div className="subagent-activity-body">
-                  {running.map((activity) => {
-                    const content = (
-                      <>
-                        <CircleNotchIcon className="subagent-running-icon" size={15} aria-hidden="true" />
-                        <span className="subagent-activity-copy">
-                          <span className="subagent-activity-row-title">{activity.title}</span>
-                          <span
-                            className="subagent-activity-meta"
-                            title={[activity.model, activity.agentType].filter(Boolean).join(" · ")}
-                          >
-                            {activity.model === undefined ? null : (
-                              <span className="subagent-activity-model">{shortModelName(activity.model)}</span>
-                            )}
-                            {activity.agentType ? <span>{activity.agentType}</span> : null}
-                            {activity.startedAt === undefined ? null : <span>{elapsedLabel(activity.startedAt, now, t)}</span>}
-                          </span>
-                        </span>
-                        {activity.childSessionId === undefined ? null : <CaretRightIcon size={14} aria-hidden="true" />}
-                      </>
-                    );
-                    return activity.childSessionId === undefined ? (
-                      <div
-                        className="subagent-activity-row is-pending"
-                        key={activity.key}
-                        aria-disabled="true"
-                      >
-                        {content}
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        className="subagent-activity-row"
-                        key={activity.key}
-                        onClick={() => onOpenActivity(activity)}
-                        aria-label={t("desktop.openSubagent", { title: activity.title })}
-                      >
-                        {content}
-                      </button>
-                    );
-                  })}
-                  {endedRow}
-                </div>
-              </section>
-            ) : endedRow}
           </div>
           {summary ? (
             <button

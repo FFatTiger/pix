@@ -2590,14 +2590,15 @@ span.linenumber {
 
 .status-capsule-agents { color: var(--accent); }
 
+.status-section-title,
 .status-queue-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 14px 2px;
+  padding: 2px 12px;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .status-queue-recall {
@@ -2620,28 +2621,29 @@ span.linenumber {
 
 .status-queue-list {
   margin: 0;
-  padding: 0 0 4px;
+  padding: 0;
   list-style: none;
 }
 
 .status-queue-row {
   display: flex;
   min-width: 0;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 2px 8px 2px 8px;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
 }
 
 .status-queue-text {
   flex: 1;
   min-width: 0;
-  padding: 4px 6px;
+  padding: 0;
   border: 0;
   border-radius: 6px;
   color: var(--text);
   background: transparent;
   font-size: 13px;
-  line-height: 17px;
+  line-height: 36px;
   text-align: left;
   cursor: pointer;
 }
@@ -2668,8 +2670,7 @@ span.linenumber {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  height: 24px;
-  margin-top: 1px;
+  height: 22px;
   padding: 0 10px;
   border: 0;
   border-radius: 999px;
@@ -2694,9 +2695,8 @@ span.linenumber {
 .subagent-activity-capsule:focus-visible,
 .subagent-icon-button:focus-visible,
 .subagent-activity-row:focus-visible,
-.subagent-ended-row:focus-visible,
 .subagent-directory-row:focus-visible,
-.status-todo-fold:focus-visible,
+.status-agents-all:focus-visible,
 .status-queue-recall:focus-visible,
 .status-queue-text:focus-visible,
 .status-queue-steer:focus-visible {
@@ -2721,10 +2721,10 @@ span.linenumber {
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 6px 0;
+  padding: 8px 0 4px;
   scrollbar-color: var(--border) transparent;
   scrollbar-width: thin;
 }
@@ -2735,52 +2735,29 @@ span.linenumber {
 }
 
 .status-card-section.is-separated {
-  margin-top: 2px;
-  padding-top: 4px;
+  padding-top: 6px;
   border-top: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
 }
 
 .status-todo-list {
-  max-height: 20rem;
   margin: 0;
-  padding: 0 0 4px;
-  overflow-x: hidden;
-  overflow-y: auto;
+  padding: 0;
   list-style: none;
-  scrollbar-color: var(--border) transparent;
-  scrollbar-width: thin;
 }
 
-.status-todo-row,
-.status-todo-fold {
+.status-todo-row {
   display: flex;
   min-width: 0;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  padding: 6px 14px;
+  height: 36px;
+  padding: 0 12px;
   color: var(--text);
   font-size: 13px;
-  line-height: 17px;
-}
-
-.status-todo-fold {
-  width: 100%;
-  border: 0;
-  border-radius: 6px;
-  color: var(--text-muted);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.status-todo-fold:hover {
-  color: var(--text);
-  background: var(--bg-hover);
 }
 
 .status-todo-icon {
-  flex: 0 0 14px;
-  margin-top: 1px;
+  flex: 0 0 16px;
 }
 
 .status-todo-icon.is-completed {
@@ -2795,10 +2772,8 @@ span.linenumber {
   min-width: 0;
   flex: 1;
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  word-break: break-word;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .status-todo-row.is-completed .status-todo-subject {
@@ -2827,15 +2802,10 @@ span.linenumber {
 }
 
 .subagent-activity-body {
-  max-height: 12rem;
-  overflow-y: auto;
   padding: 0;
-  scrollbar-color: var(--border) transparent;
-  scrollbar-width: thin;
 }
 
 .subagent-activity-row,
-.subagent-ended-row,
 .subagent-directory-row {
   display: flex;
   width: 100%;
@@ -2849,14 +2819,14 @@ span.linenumber {
   text-align: left;
 }
 
-.subagent-activity-row,
-.subagent-ended-row {
-  padding: 7px 14px;
+.subagent-activity-row {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
 .subagent-activity-row:hover:not(.is-pending),
-.subagent-ended-row:hover,
 .subagent-directory-row:hover:not(.is-pending) {
   background: var(--bg-hover);
 }
@@ -2866,7 +2836,10 @@ span.linenumber {
   color: var(--text-muted);
 }
 
-.subagent-activity-copy,
+.subagent-activity-row.is-ended {
+  color: var(--text-dim);
+}
+
 .subagent-directory-copy {
   display: flex;
   min-width: 0;
@@ -2875,7 +2848,7 @@ span.linenumber {
   gap: 3px;
 }
 
-.subagent-activity-row-title,
+.subagent-activity-name,
 .subagent-directory-title,
 .subagent-panel-child-title {
   overflow: hidden;
@@ -2883,13 +2856,32 @@ span.linenumber {
   text-overflow: ellipsis;
 }
 
-.subagent-activity-row-title,
+.subagent-activity-name {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
 .subagent-directory-title {
   font-size: 13px;
   line-height: 17px;
 }
 
-.subagent-activity-meta,
+.subagent-activity-note {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-dim);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent-activity-elapsed {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 .subagent-directory-meta {
   display: flex;
   min-width: 0;
@@ -2899,7 +2891,6 @@ span.linenumber {
   font-variant-numeric: tabular-nums;
 }
 
-.subagent-activity-model,
 .subagent-directory-model {
   min-width: 0;
   overflow: hidden;
@@ -2909,17 +2900,26 @@ span.linenumber {
   text-overflow: ellipsis;
 }
 
-.subagent-ended-row {
-  margin-top: 2px;
-  border-top: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
-  border-radius: 0 0 6px 6px;
-  color: var(--text-dim);
-  font-size: 12px;
+.subagent-status-icon.is-failed {
+  flex: 0 0 16px;
+  color: var(--accent-red);
 }
 
-.subagent-ended-count {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
+.status-agents-all {
+  display: block;
+  width: 100%;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-agents-all:hover {
+  color: var(--text);
 }
 
 .subagent-running-icon,
@@ -3556,35 +3556,41 @@ html.pi-booted body::before {
  * history (the runtime projection ring stays the single data source). */
 .extension-notice-toast {
   position: absolute;
-  top: 10px;
+  /* Stay left of the tab-strip close buttons. */
+  top: 8px;
   left: 50%;
   z-index: 24;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  max-width: min(560px, calc(100% - 48px));
-  padding: 5px 6px 5px 12px;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 32px;
+  max-width: min(420px, calc(100% - 96px));
+  padding: 0 4px 0 10px;
   border: 1px solid var(--surface-hairline);
   border-radius: 999px;
   background: var(--surface-content);
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 12px;
-  line-height: 1.4;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  line-height: 32px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
   transform: translateX(-50%);
   animation: extension-notice-in 0.18s ease;
   transition: opacity 0.2s ease;
 }
+.extension-notice-toast .extension-notice-level-dot {
+  width: 6px;
+  height: 6px;
+  margin: 0;
+  background: var(--text-dim);
+}
 .extension-notice-message {
   flex: 1 1 auto;
   min-width: 0;
-  /* Up to two lines; tapping the text expands the full message (there is no
-   * hover on touch, so the title attribute must not be the only way through). */
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
   overflow: hidden;
-  word-break: break-word;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 .extension-notice-message:focus-visible {
@@ -3592,50 +3598,75 @@ html.pi-booted body::before {
   outline-offset: 2px;
   border-radius: 4px;
 }
-.extension-notice-toast[data-expanded="true"] {
-  align-items: flex-start;
-}
-.extension-notice-toast[data-expanded="true"] .extension-notice-message {
-  display: block;
-  -webkit-line-clamp: unset;
+.extension-notice-detail {
+  flex: 1 0 100%;
+  box-sizing: border-box;
   max-height: 40vh;
+  margin: 0 -4px 6px -10px;
+  padding: 8px 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  cursor: auto;
+  border: 1px solid var(--surface-hairline);
+  border-radius: 12px;
+  background: var(--surface-content);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  cursor: default;
+}
+.extension-notice-detail a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.extension-notice-detail a:hover {
+  text-decoration: underline;
+}
+.extension-notice-toast[data-expanded="true"] {
+  height: auto;
+  padding-top: 0;
+  border-radius: 16px;
+  line-height: 1.4;
+}
+.extension-notice-toast[data-expanded="true"] .extension-notice-level-dot,
+.extension-notice-toast[data-expanded="true"] .extension-notice-message,
+.extension-notice-toast[data-expanded="true"] .extension-notice-dismiss {
+  margin-top: 8px;
+}
+.extension-notice-toast[data-expanded="true"] .extension-notice-message {
+  line-height: 16px;
 }
 .extension-notice-toast[data-phase="fading"] {
   opacity: 0;
 }
-.extension-notice-toast[data-level="warning"] {
-  color: var(--accent-orange);
-  border-color: color-mix(in srgb, var(--accent-orange) 38%, var(--surface-hairline));
+.extension-notice-toast[data-level="info"] .extension-notice-level-dot {
+  background: var(--text-dim);
 }
-.extension-notice-toast .extension-notice-copy,
-.extension-notice-toast .extension-notice-dismiss {
+.extension-notice-toast[data-level="warning"] .extension-notice-level-dot {
+  background: var(--accent-orange);
+}
+.extension-notice-toast[data-level="error"] .extension-notice-level-dot {
+  background: var(--accent-red);
+}
+.extension-notice-dismiss {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
+  border-radius: 999px;
   background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
+  color: var(--text-dim);
   cursor: pointer;
-  border-radius: 6px;
 }
-.extension-notice-copy {
-  height: 22px;
-  padding: 0 8px;
-}
-.extension-notice-copy:hover,
 .extension-notice-dismiss:hover {
   background: var(--bg-hover);
   color: var(--text);
-}
-.extension-notice-dismiss {
-  width: 22px;
-  height: 22px;
 }
 @keyframes extension-notice-in {
   from { opacity: 0; transform: translateX(-50%) translateY(-4px); }
@@ -3735,6 +3766,19 @@ html.pi-booted body::before {
 .extension-notice-row + .extension-notice-row {
   border-top: 1px solid var(--surface-hairline);
 }
+.extension-notice-row-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.extension-notice-row-text a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.extension-notice-row-text a:hover {
+  text-decoration: underline;
+}
 .extension-notice-level-dot {
   flex-shrink: 0;
   width: 6px;
@@ -3743,12 +3787,14 @@ html.pi-booted body::before {
   border-radius: 50%;
   background: var(--text-dim);
 }
+.extension-notice-row[data-level="info"] .extension-notice-level-dot {
+  background: var(--text-dim);
+}
 .extension-notice-row[data-level="warning"] .extension-notice-level-dot {
   background: var(--accent-orange);
 }
-.extension-notice-row .extension-notice-copy {
-  height: 20px;
-  align-self: center;
+.extension-notice-row[data-level="error"] .extension-notice-level-dot {
+  background: var(--accent-red);
 }
 
 /* ───────── UI kit (components/ui) ─────────
