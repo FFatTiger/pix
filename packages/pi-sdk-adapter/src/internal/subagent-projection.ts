@@ -1,5 +1,5 @@
 import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import {
   MAX_SUBAGENT_AGENT_TYPE_LENGTH,
   MAX_SUBAGENT_DESCRIPTION_LENGTH,
@@ -143,7 +143,9 @@ export function containedPathOn(
   candidate: string,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  const api = platform === "win32" ? win32 : { resolve, relative, sep, isAbsolute };
+  // The ARGUMENT platform fully decides semantics — never the host's default
+  // path module (a darwin check must stay POSIX-pure even on a win32 host).
+  const api = platform === "win32" ? win32 : posix;
   const resolvedRoot = api.resolve(root);
   const resolved = api.resolve(candidate);
   const rel = api.relative(resolvedRoot, resolved);
