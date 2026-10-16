@@ -174,9 +174,12 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
       const file = await lstat(trustPathFor(agentDir));
       assert.equal(file.isFile(), true);
       assert.equal(file.isSymbolicLink(), false);
-      assert.equal(file.mode & 0o077, 0, "trust.json must be owner-only (0600)");
-      const dir = await lstat(agentDir);
-      assert.equal(dir.mode & 0o077, 0, "newly created agent dir must be 0700");
+      // NTFS reports no POSIX mode bits (0600 gate is POSIX-only).
+      if (process.platform !== "win32") {
+        assert.equal(file.mode & 0o077, 0, "trust.json must be owner-only (0600)");
+        const dir = await lstat(agentDir);
+        assert.equal(dir.mode & 0o077, 0, "newly created agent dir must be 0700");
+      }
       await rm(projectCwd, { recursive: true, force: true });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -184,6 +187,12 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("tightens a pre-existing group/world-readable trust.json to 0600 before writing", async () => {
+    if (process.platform === "win32") {
+      // NTFS cannot hold group/world bits (chmod 0o644 is a no-op and every
+      // file reads 0o666): the tighten-to-0600 gate is the POSIX-only twin of
+      // the write-path mode check, which the store skips on win32 by design.
+      return;
+    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const seed = new ProjectTrustStore(agentDir);
@@ -246,6 +255,12 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
   });
 
   it("fails immutable when the agent dir is unwritable (no trust.json created)", async () => {
+    if (process.platform === "win32") {
+      // chmod 0o555 cannot make a directory unwritable for its owner on NTFS;
+      // the fixed TRUST_WRITE_FAILED mapping is proven by the injected
+      // atomic-failure (crash-window) tests on every platform.
+      return;
+    }
     const root = await mkdtemp(join(tmpdir(), "pix-trust-mut-ro-"));
     const projectCwd = await mkdtemp(join(tmpdir(), "pix-trust-mut-proj-"));
     try {
@@ -351,7 +366,11 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
       // nlink>1 must fail BEFORE any chmod: the victim's bytes AND mode are
       // untouched and the hardlink pair survives.
       assert.equal(await readFile(victim, "utf8"), '{"keep":true}\n', "victim bytes unchanged");
-      assert.equal((await lstat(victim)).mode & 0o077, 0o044, "victim mode unchanged (no chmod through the link)");
+      // NTFS cannot hold the 0o044 shape; the no-chmod proof is POSIX-only
+      // (bytes + nlink asserts below cover the win32 equivalent).
+      if (process.platform !== "win32") {
+        assert.equal((await lstat(victim)).mode & 0o077, 0o044, "victim mode unchanged (no chmod through the link)");
+      }
       assert.equal((await lstat(victim)).nlink, 2, "hardlink pair preserved");
       assert.equal(await readFile(trustPathFor(agentDir), "utf8"), '{"keep":true}\n');
     } finally {

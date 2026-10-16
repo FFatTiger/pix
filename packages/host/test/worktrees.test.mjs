@@ -413,7 +413,9 @@ test("DELETE denies after admin-dir identity replacement (git repair/re-add)", a
   // Replace the actual worktree ADMIN dir identity (the git per-worktree admin
   // metadata, not the checkout pointer) — simulates git repair / admin change.
   const adminDir = git(path, ["rev-parse", "--path-format=absolute", "--absolute-git-dir"]);
-  assert.ok(adminDir && adminDir.startsWith("/"), `admin dir resolved: ${adminDir}`);
+  // Git prints forward slashes on Windows (C:/...) and POSIX absolute paths.
+  const adminOk = process.platform === "win32" ? /^[A-Za-z]:[\\/]/.test(adminDir) : adminDir.startsWith("/");
+  assert.ok(adminDir && adminOk, `admin dir resolved: ${adminDir}`);
   rmSync(adminDir, { recursive: true, force: true });
   mkdirSync(adminDir, { recursive: true });
   const removed = await deleteWorktree(app, root, path);

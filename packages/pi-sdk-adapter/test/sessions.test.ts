@@ -1168,9 +1168,14 @@ describe("pi-sdk sessions cache hardening (injected SDK)", () => {
 
   it("deleteSession maps non-ENOENT filesystem failures to a sanitized error without leaking the path", async () => {
     const root = await mkdtemp(join(tmpdir(), "pix-sessions-adapter-"));
+    // A non-ENOENT rm failure, portably: POSIX routes through a regular file
+    // as a parent (ENOTDIR); win32 normalizes that to ENOENT, so use a file
+    // name Windows itself rejects (EINVAL) instead.
     const blocker = join(root, "blocker");
     await writeFile(blocker, "x"); // a regular file where a directory is needed
-    const sessionFile = join(blocker, "sub", "s1.jsonl"); // rm → ENOTDIR (not ENOENT)
+    const sessionFile = process.platform === "win32"
+      ? join(root, "s1<invalid>.jsonl")
+      : join(blocker, "sub", "s1.jsonl"); // rm → ENOTDIR (not ENOENT)
     const sdk: PiSdkSessionsSurface = {
       async listAll() {
         return [mkInfo({ path: sessionFile, id: "s1" })];

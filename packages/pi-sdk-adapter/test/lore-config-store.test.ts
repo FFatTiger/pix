@@ -70,8 +70,11 @@ describe("saveLoreConnection", () => {
     assert.equal(raw.api_token, "lm_new");
     assert.equal(raw.installed_version, "v1.3.21");
     assert.equal(raw.docker_managed, false);
-    const info = await stat(join(loreHome, "config.json"));
-    assert.equal(info.mode & 0o077, 0, "config.json must be owner-only");
+    // NTFS reports no POSIX mode bits; the 0600 proof is POSIX-only.
+    if (process.platform !== "win32") {
+      const info = await stat(join(loreHome, "config.json"));
+      assert.equal(info.mode & 0o077, 0, "config.json must be owner-only");
+    }
   });
 
   it("omitting the token keeps it when the base URL is unchanged", async () => {
@@ -114,10 +117,12 @@ describe("saveLoreConnection", () => {
       { env: baseEnv },
     );
     assert.equal(detected.configured, true);
-    const dirInfo = await stat(loreHome);
-    assert.equal(dirInfo.mode & 0o777, 0o755, "an existing Lore directory is never chmodded by Pix");
-    const fileInfo = await stat(join(loreHome, "config.json"));
-    assert.equal(fileInfo.mode & 0o077, 0, "config.json stays owner-only");
+    if (process.platform !== "win32") {
+      const dirInfo = await stat(loreHome);
+      assert.equal(dirInfo.mode & 0o777, 0o755, "an existing Lore directory is never chmodded by Pix");
+      const fileInfo = await stat(join(loreHome, "config.json"));
+      assert.equal(fileInfo.mode & 0o077, 0, "config.json stays owner-only");
+    }
     // A follow-up save on the same 0755 directory still works.
     const again = await saveLoreConnection({ baseUrl: "https://other.example", apiToken: "lm_t2" }, { env: baseEnv });
     assert.equal(again.baseUrl, "https://other.example");
@@ -130,8 +135,10 @@ describe("saveLoreConnection", () => {
       { env: { ...baseEnv, LORE_HOME: freshHome } },
     );
     assert.equal(detected.configured, true);
-    const dirInfo = await stat(freshHome);
-    assert.equal(dirInfo.mode & 0o777, 0o700);
+    if (process.platform !== "win32") {
+      const dirInfo = await stat(freshHome);
+      assert.equal(dirInfo.mode & 0o777, 0o700);
+    }
   });
 
   it("rejects non-http(s) schemes and empty input", async () => {

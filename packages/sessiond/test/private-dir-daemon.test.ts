@@ -95,7 +95,9 @@ test("startDaemon fails closed on a symlink runtime-dir leaf (fixed SYMLINK→fo
         return true;
       },
     );
-    assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+    if (process.platform !== "win32") {
+      assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+    }
     assert.equal(await readFile(marker, "utf8"), "payload", "target content untouched");
   } finally {
     await rmSync(base, { recursive: true, force: true });
@@ -108,6 +110,13 @@ test("secret marker probe: no raw path/errno leakage in any daemon-level thrown 
   // 0755 existing dir → NOT_PRIVATE mapped to a fixed message; must not echo path.
   chmodSync(dir, 0o755);
   try {
+    if (process.platform === "win32") {
+      // NTFS cannot hold the 0755 shape (mode gate is POSIX-only): the same
+      // directory boots cleanly and shuts down — no leak.
+      const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+      await handle.shutdown();
+      return;
+    }
     await assert.rejects(
       startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
       (error: unknown) => {

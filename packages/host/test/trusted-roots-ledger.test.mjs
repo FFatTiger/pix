@@ -35,6 +35,7 @@ import {
   LEDGER_LOCK_NAME,
   TrustedRootsLedgerError,
 } from "../dist/resources/trusted-roots-ledger.js";
+import { storeInteger } from "../dist/resources/path-canonical.js";
 import {
   createAllowedRootService,
   attachTrustedRootsLedger,
@@ -106,16 +107,18 @@ async function liveClaimForWorktree(root, worktreePath, branch) {
   const repoRoot = await realpath(root);
   const path = await realpath(worktreePath);
   const base = await realpath(`${resolve(repoRoot)}-worktrees`);
-  const pathInfo = lstatSync(path);
-  const repoInfo = lstatSync(repoRoot);
+  // bigint + storeInteger: NTFS 64-bit file indices must round-trip the ledger
+  // exactly (an unsafe Number would parse back as sparse).
+  const pathInfo = lstatSync(path, { bigint: true });
+  const repoInfo = lstatSync(repoRoot, { bigint: true });
   return {
     claimId: `claim-${branch}-${pathInfo.ino}`,
     path,
-    dev: pathInfo.dev,
-    ino: pathInfo.ino,
+    dev: storeInteger(pathInfo.dev),
+    ino: storeInteger(pathInfo.ino),
     repoRoot,
-    repoDev: repoInfo.dev,
-    repoIno: repoInfo.ino,
+    repoDev: storeInteger(repoInfo.dev),
+    repoIno: storeInteger(repoInfo.ino),
     base,
     createdAt: new Date().toISOString(),
     source: TRUSTED_ROOTS_SOURCE,
