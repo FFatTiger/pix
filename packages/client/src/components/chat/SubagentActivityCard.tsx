@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
 import { ArrowBendUpLeftIcon } from "@phosphor-icons/react/ArrowBendUpLeft";
 import { ArrowRightIcon } from "@phosphor-icons/react/ArrowRight";
 import { CheckCircleIcon } from "@phosphor-icons/react/CheckCircle";
@@ -422,7 +421,6 @@ export function SubagentActivityCard({
               aria-expanded={open}
             >
               {capsuleContent}
-              <CaretDownIcon className="status-card-header-caret" size={12} aria-hidden="true" />
             </button>
           ) : null}
         </div>

@@ -2488,12 +2488,6 @@ span.linenumber {
   cursor: pointer;
 }
 
-.status-card-header-caret {
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: var(--text-dim);
-}
-
 .status-card-header:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
