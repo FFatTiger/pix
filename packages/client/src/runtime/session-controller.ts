@@ -147,6 +147,12 @@ export interface OptimisticSessionEntry {
   readonly baseEntryId?: string | null | undefined;
   /** Phase 5A authority identity (negotiated submit-turn path only). */
   readonly identity?: OptimisticTurnIdentity | undefined;
+  /**
+   * A steer / follow-up still waiting in the runtime queue. The status capsule
+   * lists it; the transcript shows it only once the agent takes it (its user
+   * message_end), so it never appears ahead of the reply it follows.
+   */
+  readonly queued?: true | undefined;
 }
 
 /**
@@ -1322,7 +1328,7 @@ export class SessionController implements RuntimeControllerPort {
     // optimistically setting isPromptRunning here would flip stop's honest
     // abort-first ordering. Pushed only after the definite-failure checks so
     // an early reject never leaks an optimistic bubble.
-    const optimisticId = this.appendOptimisticUserEntry(this.sessionId, trimmed);
+    const optimisticId = this.appendOptimisticUserEntry(this.sessionId, trimmed, true);
     const commandId = this.id();
     const imagePayload = images === undefined || images.length === 0 ? {} : { images: [...images] as ImageAttachment[] };
     const command: RuntimeCommand = type === "steer"
@@ -1357,7 +1363,7 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /** Append the optimistic user bubble (bounded) and return its local id. */
-  private appendOptimisticUserEntry(sessionId: string, message: string): string {
+  private appendOptimisticUserEntry(sessionId: string, message: string, queued = false): string {
     const optimisticId = `optimistic:${(this.optimisticSeq += 1)}`;
     this.optimisticUserEntries = [
       ...this.optimisticUserEntries.slice(-4),
@@ -1367,6 +1373,7 @@ export class SessionController implements RuntimeControllerPort {
         ...(sessionId === this.sessionId
           ? { baseEntryId: this.liveEntries.at(-1)?.entryId ?? this.historyAnchorLeafId ?? this.snapshot?.state.leafId ?? null }
           : {}),
+        ...(queued ? { queued: true as const } : {}),
       },
     ];
     return optimisticId;
@@ -4861,6 +4868,7 @@ export class SessionController implements RuntimeControllerPort {
         entry: candidate.entry,
         ...(candidate.baseEntryId === undefined ? {} : { baseEntryId: candidate.baseEntryId }),
         ...(candidate.identity === undefined ? {} : { identity: candidate.identity }),
+        ...(candidate.queued === undefined ? {} : { queued: candidate.queued }),
       })),
       error: this.error,
       fatal: transport.fatal || this.fatal,

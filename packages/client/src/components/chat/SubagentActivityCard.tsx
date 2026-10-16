@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
 import { ArrowBendUpLeftIcon } from "@phosphor-icons/react/ArrowBendUpLeft";
-import { ArrowElbowUpLeftIcon } from "@phosphor-icons/react/ArrowElbowUpLeft";
 import { ArrowRightIcon } from "@phosphor-icons/react/ArrowRight";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckCircleIcon } from "@phosphor-icons/react/CheckCircle";
@@ -352,7 +351,7 @@ export function SubagentActivityCard({
                             title={t("desktop.steerQueuedMessage")}
                             onClick={() => onSteerQueued(index)}
                           >
-                            <ArrowElbowUpLeftIcon size={14} aria-hidden="true" />
+                            {t("desktop.steer")}
                           </button>
                         ) : null}
                       </li>

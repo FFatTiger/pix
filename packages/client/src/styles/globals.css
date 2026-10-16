@@ -2662,24 +2662,27 @@ span.linenumber {
   overflow-wrap: anywhere;
 }
 
+/* A small filled pill: the one action on a queued message, readable at a glance. */
 .status-queue-steer {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  height: 24px;
   margin-top: 1px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 6px;
-  color: var(--text-muted);
-  background: transparent;
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .status-queue-steer:hover {
-  color: var(--accent);
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .subagent-activity-capsule:hover,
