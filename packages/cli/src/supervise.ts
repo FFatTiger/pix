@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import {
   instanceAlive,
   listPrivateSocketAliases,
@@ -112,6 +113,18 @@ export async function endpointCleared(
  * lock, an unsafe secret file, or a live-but-unreachable pid marks the
  * directory as obstructed so callers never spawn a second daemon over it.
  */
+/** Why the runtime directory cannot host sessiond, or undefined when it is a directory or absent. */
+async function runtimeDirectoryProblem(dir: string): Promise<string | undefined> {
+  try {
+    const info = await lstat(dir);
+    return info.isDirectory() ? undefined : "sessiond runtime path is not a directory";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    return code === "ENOTDIR" ? "sessiond runtime path is not a directory" : "sessiond runtime path is not readable";
+  }
+}
+
 export async function inspectSessiond(directory?: string): Promise<SessiondStatus> {
   const { directory: dir, endpoint, paths } = locateSessiond(directory);
   const lock: InstanceLockRead = await readInstanceLockStrict(paths);
@@ -129,6 +142,23 @@ export async function inspectSessiond(directory?: string): Promise<SessiondStatu
     };
   }
   if (lock.kind === "missing") {
+    // A file (or anything but a real directory) where the private runtime dir
+    // must be makes the bootstrap impossible: refuse here instead of spawning a
+    // daemon that can only exit early. Checked directly because platforms
+    // disagree on how a lock lookup under a file fails (ENOTDIR vs ENOENT).
+    const runtimeDirProblem = await runtimeDirectoryProblem(dir);
+    if (runtimeDirProblem !== undefined) {
+      return {
+        alive: false,
+        pingable: false,
+        obstructed: true,
+        obstruction: runtimeDirProblem,
+        pid: undefined,
+        instanceId: undefined,
+        directory: dir,
+        endpoint,
+      };
+    }
     // No lock: a live public/private listener is an orphan that lost its lock;
     // spawning another daemon would create a second authority over it.
     if (await anyLiveSocket(paths)) {

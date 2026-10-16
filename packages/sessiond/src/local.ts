@@ -435,7 +435,10 @@ export async function listPrivateSocketAliases(directory: string): Promise<strin
   try {
     entries = await readdir(directory);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    // ENOTDIR: the runtime dir path is a file. Nothing can be listening
+    // there; the private-directory walk rejects it as NOT_DIRECTORY.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
     throw error;
   }
   const aliases: string[] = [];
