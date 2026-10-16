@@ -180,9 +180,9 @@ semantic-search model (the `memory_search` tool is filtered out).
 
 The bundled Lore Pi extension `node_modules/@local/lore-pi-extension` is the
 official GitHub Release artifact `lore-pi.zip` from
-[FFatTiger/lore](https://github.com/FFatTiger/lore) at `v1.5.1` (the same
+[FFatTiger/lore](https://github.com/FFatTiger/lore) at `v1.7.0` (the same
 artifact the official `@loremem/cli` installer's `pi` channel distributes),
-repacked verbatim as `vendor/lore-pi-extension-1.5.1.tgz` for npm file:
+repacked verbatim as `vendor/lore-pi-extension-1.7.0.tgz` for npm file:
 installation and distributed inside the pix CLI bundle. The upstream package
 declares no license field; it is the user's own product (Lore) and is vendored
 with the release artifact's contents unchanged (including its README).
