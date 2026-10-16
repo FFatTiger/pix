@@ -182,6 +182,8 @@ class PiSdkSessionMutation implements SessionMutationPort {
   }
 }
 
+export { createPiSdkSessionStore } from "../internal/session-store.js";
+
 /**
  * Create a SessionCatalogPort backed by read-only Pi SDK JSONL. An optional
  * store may be injected for tests/composition; the default store reads from the

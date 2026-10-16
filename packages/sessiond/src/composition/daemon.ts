@@ -40,6 +40,7 @@ import {
 import { resolveRuntimeDir } from "./locator.js";
 import {
   createPiSdkSessionPorts,
+  createPiSdkSessionStore,
 } from "@fffattiger/pix-pi-sdk-adapter/sessions";
 import { createAssistantCreateAuthorizer } from "@fffattiger/pix-pi-sdk-adapter/trust";
 
@@ -215,7 +216,7 @@ function createCatalogActivationContext(catalog: SessionCatalogPort | null | und
  * priority so unit tests stay deterministic; an explicit `activationContext`
  * override keeps priority and decouples activation resolution from the catalog.
  */
-function buildDependencies(directory: string, options: DaemonOptions): SessiondDependencies {
+function buildDependencies(directory: string, options: DaemonOptions): { deps: SessiondDependencies; disposeDefaultStore: (() => void) | undefined } {
   const workerFactory: WorkerProcessFactory =
     options.workerFactory ?? createProductionWorkerProcessFactory(options.workerOptions ?? {});
   // One shared default triple: catalog + locator + mutation over a single
@@ -224,7 +225,11 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
   // The production daemon's catalog, locator AND mutation MUST come from the
   // same createPiSdkSessionPorts() result so an offline rename invalidates the
   // same shared store the catalog reads from (immediate title convergence).
-  const defaultPorts = createPiSdkSessionPorts();
+  // The store is owned HERE (createPiSdkSessionPorts hides it behind the ports)
+  // so daemon shutdown can close it — its projection watcher otherwise holds
+  // the host process open on win32 (ReadDirectoryChangesW ignores unref).
+  const defaultStore = createPiSdkSessionStore({ projection: { enabled: true } });
+  const defaultPorts = createPiSdkSessionPorts(defaultStore);
   const catalog = options.sessionCatalog === undefined ? defaultPorts.catalog : options.sessionCatalog;
   const authorizeAssistantCreate = createAssistantCreateAuthorizer({ env: process.env });
   const deps: SessiondDependencies = {
@@ -261,7 +266,7 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
   if (mutation) deps.sessionMutation = mutation;
   // `undefined` → env-rooted production store; `null` → inert (tests).
   deps.attachments = options.attachments === undefined ? createSessiondAttachmentStore() : options.attachments;
-  return deps;
+  return { deps, disposeDefaultStore: () => defaultStore.close?.() };
 }
 
 /**
@@ -365,7 +370,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       assertSocketPathLength(privatePath);
     }
     const secret = await loadOrCreateLocalSecret(paths, {}, privateDir);
-    const dependencies = buildDependencies(directory, options);
+    const { deps: dependencies, disposeDefaultStore } = buildDependencies(directory, options);
     const attachments = dependencies.attachments ?? null;
     if (attachments) {
       const UNFILED_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -393,6 +398,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       snapshot: () => service.diagnostics(),
     };
     teardown.push(() => service.shutdown());
+    if (disposeDefaultStore) teardown.push(() => Promise.resolve(disposeDefaultStore()));
     const application = new SessiondApplication(service);
     // Unix: libuv binds the private per-instance path (never the stable public
     // one), so a close can never unlink another daemon's public endpoint.

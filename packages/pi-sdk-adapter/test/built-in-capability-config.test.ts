@@ -56,7 +56,9 @@ describe("writable pix-builtins.json store", () => {
     try {
       await chmod(join(agentDir, "pix-builtins.json"), 0o666);
       assert.throws(
-        () => readBuiltInCapabilityConfigSync(agentDir),
+        // Explicit POSIX platform: on a win32 HOST the default platform would
+        // accept the 0o666 mode (NTFS always reports 0o666) and never throw.
+        () => readBuiltInCapabilityConfigSync(agentDir, "linux"),
         (error: unknown) => {
           assertSanitized(error, "unavailable");
           return true;
@@ -152,7 +154,11 @@ describe("writable pix-builtins.json store", () => {
         smart_compact: true,
       });
       assert.equal(saved.revision, revision(persisted));
-      assert.equal((await lstat(join(agentDir, "pix-builtins.json"))).mode & 0o077, 0);
+      // POSIX-only mode proof (NTFS has no mode bits; content + CAS fences
+      // above already cover the win32 behavior).
+      if (process.platform !== "win32") {
+        assert.equal((await lstat(join(agentDir, "pix-builtins.json"))).mode & 0o077, 0);
+      }
 
       await assert.rejects(
         store.writeConfig({ expectedRevision: before.revision, capabilities: ALL_ON }),
@@ -288,6 +294,13 @@ describe("writable pix-builtins.json store", () => {
   });
 
   it("fails closed on a group-readable document without rewriting it", async () => {
+    if (process.platform === "win32") {
+      // NTFS cannot hold group/other mode bits (everything reads 0o666 and
+      // chmod 0o644 is a no-op), so the group-readable rejection is a
+      // POSIX-only gate by design; the simulated-win32 acceptance of a 0o666
+      // document is the win32 equivalent, covered above.
+      return;
+    }
     const source = `${JSON.stringify({
       version: 1,
       subagents: true,

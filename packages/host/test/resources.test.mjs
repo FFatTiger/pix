@@ -11,6 +11,7 @@ import { openHostStateDirectoryLease } from "../dist/resources/host-state-direct
 import { createTrustedRootsLedgerFromLease } from "../dist/resources/trusted-roots-ledger.js";
 import { createManagedWorktreesLedgerFromLease } from "../dist/resources/managed-worktrees-ledger.js";
 import { createManagedWorktreesService } from "../dist/resources/managed-worktrees.js";
+import { samePath } from "../dist/resources/path-canonical.js";
 import {
   createAllowedRootService,
   createFileWatchManager,
@@ -127,9 +128,9 @@ test("AllowedRoot child-first and parent-first promotion produce identical minim
 
 test("AllowedRoot promotion migrates deterministic durable/trusted ownership", async () => {
   const configured = temp("pi-owner-configured-"); const parent = temp("pi-owner-parent-"); const childA = join(parent, "a"); const childB = join(parent, "b"); mkdirSync(childA); mkdirSync(childB); const parentCanonical = await import("node:fs/promises").then(({ realpath }) => realpath(parent));
-  const trustedChildren = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); const receipts = await Promise.all([registerTrustedCreatedRoot(trustedChildren, childA), registerTrustedCreatedRoot(trustedChildren, childB)]); await trustedChildren.expandRoots([parent], "local"); await Promise.all(receipts.map((receipt) => receipt.rollback())); assert.equal(await trustedChildren.isAuthorized(parent, "directory"), true); assert.equal(trustedChildren.roots().includes(parentCanonical), true); assert.equal(trustedChildren.roots().length, 2);
+  const trustedChildren = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); const receipts = await Promise.all([registerTrustedCreatedRoot(trustedChildren, childA), registerTrustedCreatedRoot(trustedChildren, childB)]); await trustedChildren.expandRoots([parent], "local"); await Promise.all(receipts.map((receipt) => receipt.rollback())); assert.equal(await trustedChildren.isAuthorized(parent, "directory"), true); assert.equal(trustedChildren.roots().some((root) => samePath(root, parentCanonical)), true); assert.equal(trustedChildren.roots().length, 2);
 
-  const durableChild = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); await durableChild.expandRoots([childA], "local"); const parentReceipt = await registerTrustedCreatedRoot(durableChild, parent); assert.equal(durableChild.roots().includes(parentCanonical), true, "trusted parent may temporarily cover durable child"); await parentReceipt.rollback(); assert.equal(await durableChild.isAuthorized(childA, "directory"), true); assert.equal(await durableChild.isAuthorized(parent, "directory"), false); assert.equal(durableChild.roots().some((root) => root.endsWith("/a")), true);
+  const durableChild = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); await durableChild.expandRoots([childA], "local"); const parentReceipt = await registerTrustedCreatedRoot(durableChild, parent); assert.equal(durableChild.roots().some((root) => samePath(root, parentCanonical)), true, "trusted parent may temporarily cover durable child"); await parentReceipt.rollback(); assert.equal(await durableChild.isAuthorized(childA, "directory"), true); assert.equal(await durableChild.isAuthorized(parent, "directory"), false); assert.equal(durableChild.roots().some((root) => root.split(/[\\/]/).pop() === "a"), true);
 });
 
 test("AllowedRoot promotion uses replacement capacity and passes last-slot child-first probe", async () => {
@@ -139,7 +140,7 @@ test("AllowedRoot promotion uses replacement capacity and passes last-slot child
 test("AllowedRoot randomized promotion stress converges to minimal coverage", async () => {
   const configured = temp("pi-random-configured-"); const parent = temp("pi-random-parent-"); const children = Array.from({ length: 5 }, (_, index) => { const path = join(parent, `c${index}`); mkdirSync(path); return path; }); const parentCanonical = await import("node:fs/promises").then(({ realpath }) => realpath(parent));
   for (let round = 0; round < 100; round += 1) {
-    const service = await createAllowedRootService({ roots: [configured], maxRoots: 6, allowLocalExpansion: true }); const ordered = round % 2 === 0 ? [...children, parent] : [parent, ...children]; const tasks = ordered.map((path, index) => index % 3 === 0 ? service.expandRoots([path], "local") : service.prepareExpansion([path], "local").then((plan) => plan.commit())); await Promise.allSettled(tasks); assert.ok(service.roots().length <= 2); assert.equal(service.roots().includes(parentCanonical), true); for (const child of children) assert.equal(await service.isAuthorized(child, "directory"), true);
+    const service = await createAllowedRootService({ roots: [configured], maxRoots: 6, allowLocalExpansion: true }); const ordered = round % 2 === 0 ? [...children, parent] : [parent, ...children]; const tasks = ordered.map((path, index) => index % 3 === 0 ? service.expandRoots([path], "local") : service.prepareExpansion([path], "local").then((plan) => plan.commit())); await Promise.allSettled(tasks); assert.ok(service.roots().length <= 2); assert.equal(service.roots().some((root) => samePath(root, parentCanonical)), true); for (const child of children) assert.equal(await service.isAuthorized(child, "directory"), true);
   }
 });
 
@@ -236,7 +237,8 @@ test("cwd expansion is local-policy only and LAN cannot self-authorize", async (
   const localRoots = await createAllowedRootService({ roots: [root], allowLocalExpansion: true });
   const local = createHostApp({ logger: {}, gate, resources: { allowedRoots: localRoots } }).app;
   let res = await local.request("http://localhost/v1/cwd/validate", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: extra }) });
-  assert.equal(res.status, 200); assert.ok(localRoots.roots().includes(await import("node:fs/promises").then(({ realpath }) => realpath(extra))));
+  assert.equal(res.status, 200); const extraCanonical = await import("node:fs/promises").then(({ realpath }) => realpath(extra));
+  assert.ok(localRoots.roots().some((root) => samePath(root, extraCanonical)));
   const lanRoots = await createAllowedRootService({ roots: [root], allowLocalExpansion: true });
   const lan = createHostApp({ logger: {}, gate, exposureMode: "lan", resources: { allowedRoots: lanRoots } }).app;
   res = await lan.request("http://127.0.0.1/v1/cwd/validate", { method: "POST", headers: { host: "127.0.0.1", "content-type": "application/json" }, body: JSON.stringify({ cwd: extra }) });

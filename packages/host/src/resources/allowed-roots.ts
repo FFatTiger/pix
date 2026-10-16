@@ -445,9 +445,10 @@ export async function registerTrustedCreatedRoot(
   if (durableMeta) {
     const repo = await canonicalDirectoryWithIdentity(input.repoRoot);
     repoCanonical = repo.canonical;
-    // Cross-check repo identity via stat of repo root (dev/ino).
-    const repoStat = await stat(repoCanonical);
-    repoIdentity = { dev: repoStat.dev, ino: repoStat.ino };
+    // Cross-check repo identity via stat of repo root (dev/ino; bigint so
+    // NTFS 64-bit file indices round-trip the ledger exactly).
+    const repoStat = await stat(repoCanonical, { bigint: true });
+    repoIdentity = { dev: storeInteger(repoStat.dev), ino: storeInteger(repoStat.ino) };
     const base = await canonicalDirectoryWithIdentity(input.base);
     baseCanonical = base.canonical;
     const expectedBase = resolve(`${repoCanonical}-worktrees`);

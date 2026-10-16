@@ -186,8 +186,10 @@ test("canonicalize win32: an existing symlinked intermediate component fails clo
 test("canonicalize posix behavior is unchanged by the new parameters", async () => {
   const dir = temp("canon-posix-");
   assert.equal(await canonicalizeAbsolutePath(dir), realpathSync(dir));
-  await expectReject(() => canonicalizeAbsolutePath("C:\\foo"), "WINDOWS_PATH");
-  await expectReject(() => canonicalizeAbsolutePath("//s/s"), "NETWORK_PATH");
+  // Explicit "posix": the default platform is the host's, and on a Windows
+  // host `C:\\foo` is a valid win32 path instead of a WINDOWS_PATH rejection.
+  await expectReject(() => canonicalizeAbsolutePath("C:\\foo", "posix"), "WINDOWS_PATH");
+  await expectReject(() => canonicalizeAbsolutePath("//s/s", "posix"), "NETWORK_PATH");
 });
 
 // ---------------------------------------------------------------------------
