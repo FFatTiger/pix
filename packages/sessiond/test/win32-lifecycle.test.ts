@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { LocalAuthorityError } from "@fffattiger/pix-local-authority/state";
+import { join } from "node:path";
 import { ensureSessiondPrivateDirectoryWithFs } from "../src/local-posix.js";
 import { shutdownSignalsFor } from "../src/composition/daemon.js";
 import { sessiondPaths } from "../src/local.js";
@@ -108,10 +109,13 @@ test("sessiond private-dir walk win32: UNC roots walk; drive root and device pat
 });
 
 test("sessiond private-dir walk posix: mode enforcement still applies (parity)", async () => {
-  const fs = fakeWin32Fs([
+  const fake = fakeWin32Fs([
     ["/lax", { type: "directory", mode: 0o755, ino: 40 }],
   ]);
-  // uid is -1 in the fake identity → ownership check fails first on posix.
+  // Injected owner check (the REAL isOwnedByCurrentUser is host-shaped:
+  // always-true on win32, uid-compare on POSIX) so the parity expectation is
+  // host-independent: uid semantics fail first on posix, then the mode gate.
+  const fs = { ...fake, isOwnedByCurrentUser: () => false };
   await expectCode(() => ensureSessiondPrivateDirectoryWithFs("/lax", fs as never, "posix"), "NOT_OWNED");
 });
 
@@ -122,10 +126,16 @@ test("shutdown signal set: win32 adds SIGBREAK + SIGHUP, POSIX stays frozen", ()
 });
 
 test("sessiondPaths endpoint shape is derived from process.platform only (documented)", () => {
-  // On POSIX hosts this asserts the Unix shape; the win32 named-pipe branch is
-  // exercised by the same function on Windows (docs/windows.md Wine smoke).
+  // On POSIX hosts this asserts the Unix socket shape; on win32 hosts the
+  // endpoint is the deterministic named pipe (no filesystem socket file).
   const paths = sessiondPaths("/tmp/pix-test-dir");
-  assert.equal(paths.endpoint, "/tmp/pix-test-dir/sessiond.sock");
-  assert.equal(paths.lockFile, "/tmp/pix-test-dir/sessiond.lock");
-  assert.equal(paths.secretFile, "/tmp/pix-test-dir/sessiond.secret");
+  if (process.platform === "win32") {
+    assert.match(paths.endpoint, /^\\\\\.\\pipe\\pix-sessiond-[0-9a-f]{32}$/);
+    assert.equal(paths.endpoint, sessiondPaths("/tmp/pix-test-dir").endpoint, "pipe name is deterministic");
+    assert.notEqual(paths.endpoint, sessiondPaths("/tmp/pix-test-dir-2").endpoint, "pipe name is per-directory");
+  } else {
+    assert.equal(paths.endpoint, "/tmp/pix-test-dir/sessiond.sock");
+  }
+  assert.equal(paths.lockFile, join("/tmp/pix-test-dir", "sessiond.lock"));
+  assert.equal(paths.secretFile, join("/tmp/pix-test-dir", "sessiond.secret"));
 });

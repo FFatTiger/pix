@@ -39,7 +39,6 @@ import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import {
   canonicalCompareKey,
   canonicalizeAbsolutePath,
-  currentPrincipal,
   decomposeAbsolutePath,
   hasControlChar,
   isOwnedByCurrentUser,
@@ -190,13 +189,17 @@ export async function ensureSessiondPrivateDirectoryWithFs(
   fs: EnsurePrivateDirectoryFs,
   platform: NodeJS.Platform | string = process.platform,
 ): Promise<{ path: string; created: boolean; identity: PosixFileIdentity }> {
-  const requireOwnedByCurrentUser = currentPrincipal().uid !== undefined;
   const plat = securePathPlatform(platform);
   const papi = securePathApi(plat);
   // NTFS carries no POSIX mode bits and no uid; on win32 the frozen 0700/owner
   // enforcement is skipped (symlink/junction rejection and dev/ino identity
   // pinning stay), matching the local-authority walk semantics.
   const enforceUnixPermissions = plat === "posix";
+  // Owner enforcement follows the walk PLATFORM, not the host's uid
+  // capability: a posix-platform walk always consults the (injectable)
+  // fs.isOwnedByCurrentUser; a win32 walk has no uid semantics. On POSIX hosts
+  // this is identical to the previous host-uid condition (getuid always exists).
+  const requireOwnedByCurrentUser = plat === "posix";
   const normalized = papi.resolve(plat === "win32" ? stripWindowsExtendedPrefix(path) : path);
   if (
     typeof path !== "string"
