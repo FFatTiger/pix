@@ -28,7 +28,6 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readF
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { patchPiClaudeSubagents } from "./patch-pi-claude-subagents.mjs";
 import { createRegistryPackage } from "./release-package.mjs";
 import { resolveNpmInvocation } from "./run-workspaces.mjs";
 
@@ -146,16 +145,11 @@ function assembleBundle(stage, bundleVersion, { publishable = false } = {}) {
     cpSync(join(src, "dist"), join(dest, "dist"), { recursive: true });
   }
 
-  // Pin the vendored patched plugin: the bundled copy must ALREADY be the
-  // patched build (prebuild ran). A pristine copy here means the assembly
-  // captured an unpatched tree — fail closed instead of shipping drift.
-  try {
-    if (patchPiClaudeSubagents(join(nm, "pi-claude-subagents"))) {
-      fail("bundled pi-claude-subagents was pristine (prebuild patch had not run)");
-    }
-  } catch (error) {
-    fail(`bundled pi-claude-subagents pin failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  // The bundled pi-claude-subagents ships its embedder interfaces natively
+  // (>= 0.4.0): no postinstall patch step exists anymore. The plugin identity
+  // itself is checked by createRegistryPackage (manifest name/version), and
+  // the adapter contract test pins the child-event channel to the vendored
+  // copy, so a drifted tarball fails closed in tests rather than here.
 
   normalizeAndAuditArchive(pkg);
   return pkg;

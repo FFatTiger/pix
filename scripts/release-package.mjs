@@ -5,7 +5,7 @@ import { resolveNpmInvocation } from "./tool-invocation.mjs";
 
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 
-/** Bundle Pix and its patched plugin; let npm install third-party packages.
+/** Bundle Pix and its vendored plugins; let npm install third-party packages.
  * External requirements live only at the CLI root. Leaving them on bundled
  * packages makes npm treat their missing files as already bundled. */
 export function createRegistryPackage(standalone, destination, overrides = {}) {

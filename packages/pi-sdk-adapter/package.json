@@ -44,7 +44,7 @@
     "@juicesharp/rpiv-todo": "file:../../vendor/rpiv-todo-2.11.0.tgz",
     "@local/lore-pi-extension": "file:../../vendor/lore-pi-extension-1.7.0.tgz",
     "ignore": "7.0.8",
-    "pi-claude-subagents": "file:../../vendor/pi-claude-subagents-0.3.9-pi1-eccf9bc.tgz",
+    "pi-claude-subagents": "file:../../vendor/pi-claude-subagents-0.4.0.tgz",
     "pi-memory": "file:../../vendor/pi-memory-0.4.2.tgz",
 
     "pi-smart-compact": "file:../../vendor/pi-smart-compact-10.3.0.tgz",
