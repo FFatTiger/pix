@@ -233,11 +233,14 @@ export async function canonicalizeAbsolutePath(
 
   let canonicalPrefix: string;
   try {
-    // realpath keeps an 8.3 short name (`RUNNER~1`); the long name is the
-    // canonical form every later compare and ledger stores. longPathName is a
-    // no-op when the native lookup fails, so an injected realpath result that
-    // does not exist on disk still flows through.
-    canonicalPrefix = stripWindowsExtendedPrefix(await longPathName(await fs.realpath(existing)));
+    // The realpath result IS the canonical form, verbatim. On win32 Node's
+    // realpath may keep an 8.3 short name (`RUNNER~1`); that is the spelling
+    // callers compare against and ledgers store — the contract is "nearest
+    // existing ancestor realpath + validated missing tail", nothing more.
+    // ensurePrivateDirectory's final equality is the one place a short/long
+    // pair could split identities, and it expands BOTH sides via longPathName
+    // before comparing (see its walk below).
+    canonicalPrefix = stripWindowsExtendedPrefix(await fs.realpath(existing));
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Existing ancestor cannot be canonicalized");
   }
