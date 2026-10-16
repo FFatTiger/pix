@@ -2798,6 +2798,32 @@ span.linenumber {
   height: 32px;
 }
 
+/* Card agent rows read in two lines: type + title, then model · time. */
+.status-card-panel .subagent-activity-row {
+  height: 44px;
+}
+.status-card-panel .subagent-activity-lines {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+}
+.status-card-panel .subagent-activity-line {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+}
+.status-card-panel .subagent-activity-meta {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 14px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* Card agent rows: the agent type leads, the task title fills the rest. */
 .status-card-panel .subagent-activity-row .subagent-activity-note {
   flex: 0 0 auto;

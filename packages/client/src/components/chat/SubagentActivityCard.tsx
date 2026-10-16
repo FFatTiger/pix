@@ -82,6 +82,11 @@ function capsuleSummary(
   return null;
 }
 
+/** "anthropic/claude-sonnet-4" → "claude-sonnet-4": the provider is noise in a one-line row. */
+function shortModel(model: string): string {
+  return model.slice(model.lastIndexOf("/") + 1);
+}
+
 /** Ended agents read by recency: "just now", "3 minutes ago"... */
 function endedAgo(completedAt: number | undefined, now: number, t: ReturnType<typeof useI18n>["t"]): string {
   if (completedAt === undefined) return "";
@@ -251,11 +256,19 @@ export function SubagentActivityCard({
     const content = (
       <>
         <AgentStatusIcon status={activity.status} />
-        {activity.agentType ? (
-          <span className="subagent-activity-note" title={activity.agentType}>{activity.agentType}</span>
-        ) : null}
-        <span className="subagent-activity-name" title={activity.title}>{activity.title}</span>
-        <span className="subagent-activity-elapsed">{isEnded ? endedAgo(activity.completedAt, now, t) : elapsedLabel(activity, now, t)}</span>
+        <span className="subagent-activity-lines">
+          <span className="subagent-activity-line">
+            {activity.agentType ? (
+              <span className="subagent-activity-note" title={activity.agentType}>{activity.agentType}</span>
+            ) : null}
+            <span className="subagent-activity-name" title={activity.title}>{activity.title}</span>
+          </span>
+          <span className="subagent-activity-meta">
+            {[activity.model ? shortModel(activity.model) : null, isEnded ? endedAgo(activity.completedAt, now, t) : elapsedLabel(activity, now, t)]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+        </span>
       </>
     );
     return activity.childSessionId === undefined ? (
