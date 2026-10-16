@@ -42,6 +42,8 @@ interface Harness {
   driver: Awaited<ReturnType<SdkRuntimeDriverFactory["create"]>>;
   emitted: RuntimeEvent[];
   root: string;
+  factory: SdkRuntimeDriverFactory;
+  manager: import("@earendil-works/pi-coding-agent").SessionManager;
   close(): Promise<void>;
 }
 
@@ -128,6 +130,8 @@ async function buildHarness(options: {
     driver,
     emitted,
     root,
+    factory,
+    manager,
     close: async () => {
       await driver.close("user");
       await rm(root, { recursive: true, force: true });
@@ -396,6 +400,36 @@ describe("Pi 1.0 global tool selection (pixDefaultTools)", () => {
       await h.driver.reload();
       assert.equal(toolState(h, "read").active, true, "explicit override reapplied after reload");
       assert.equal(toolState(h, "bash").active, false, "override still excludes bash");
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("a resumed session's restored loadout never overrides the Pix global selection (Pi 1.3)", async () => {
+    // Pi 1.3 restores the transcript's last active tool loadout when a session
+    // resumes. Pix re-applies its own global preference right after creation,
+    // so the restored set must never win for prefs-following runtimes.
+    const h = await buildHarness({ agentDirFiles: { "settings.json": JSON.stringify({ pixDefaultTools: ["read", "bash"] }) } });
+    try {
+      // Record a past run's system entry with a WIDER loadout than the
+      // preference (edit/write active beyond read/bash).
+      const tool = (name: string) => ({ name, description: name, parameters: { type: "object", properties: {} } });
+      h.manager.appendMessage({
+        role: "system",
+        content: "",
+        toolsAdded: [tool("read"), tool("bash"), tool("edit"), tool("write")],
+        timestamp: Date.now(),
+      } as never);
+
+      // Re-open the SAME manager: the SDK sees a continuation and restores the
+      // transcript loadout — then Pix's global selection replaces it.
+      const resumed = await h.factory.create({ cwd: h.driver.identity.cwd, thinkingLevel: "off", thinkingLevelPinned: true }, {});
+      try {
+        const state = () => resumed.getState().tools.filter((item) => item.active).map((item) => item.name);
+        assert.deepEqual(state().sort(), ["bash", "read"], "Pix preference wins over the restored transcript loadout");
+      } finally {
+        await resumed.close("user");
+      }
     } finally {
       await h.close();
     }

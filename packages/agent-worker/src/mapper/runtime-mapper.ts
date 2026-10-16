@@ -176,7 +176,7 @@ export class StatefulRuntimeMapper {
       case "agent_end":
         return [{ type: "agent_end", sessionId, ...ts(event) }];
       case "agent_settled":
-        return [{ type: "agent_settled", sessionId, ...ts(event) }];
+        return [{ type: "agent_settled", sessionId, ...(event.aborted === undefined ? {} : { aborted: event.aborted }), ...ts(event) }];
       case "prompt_done":
         return [{ type: "prompt_done", sessionId, ...ts(event) }];
       case "prompt_error": {
@@ -229,6 +229,7 @@ export class StatefulRuntimeMapper {
             ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
             ...(event.isError === undefined ? {} : { isError: event.isError }),
             ...(event.result === undefined ? {} : { result: event.result }),
+            ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
             ...(event.writtenFiles === undefined ? {} : { writtenFiles: [...event.writtenFiles] }),
             ...ts(event),
           },

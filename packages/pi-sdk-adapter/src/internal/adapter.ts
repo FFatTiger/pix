@@ -1237,7 +1237,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           this.pendingBashTerminals = [];
           this.publishCommittedBashTerminals(pending);
         }
-        this.emit({ type, sessionId });
+        this.emit({ type, sessionId, ...(raw.aborted === true ? { aborted: true } : {}) });
         return;
       }
       case "prompt_done": return;
@@ -1368,7 +1368,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         const target = correlation && endToolName === correlation.toolName ? correlation.path : undefined;
         const writtenFiles = raw.isError === false && target ? [target] : [];
         for (const path of writtenFiles) this.writtenFiles.add(path);
-        this.emit({ type, sessionId, toolCallId, ...(typeof raw.parentToolCallId === "string" ? { parentToolCallId: raw.parentToolCallId } : {}), ...(typeof raw.toolName === "string" ? { toolName: raw.toolName } : {}), ...(typeof raw.isError === "boolean" ? { isError: raw.isError } : {}), ...(raw.result === undefined ? {} : { result: sanitizeValue(raw.result) }), ...(writtenFiles.length ? { writtenFiles } : {}) });
+        this.emit({ type, sessionId, toolCallId, ...(typeof raw.parentToolCallId === "string" ? { parentToolCallId: raw.parentToolCallId } : {}), ...(typeof raw.toolName === "string" ? { toolName: raw.toolName } : {}), ...(typeof raw.isError === "boolean" ? { isError: raw.isError } : {}), ...(raw.result === undefined ? {} : { result: sanitizeValue(raw.result) }), ...(typeof raw.durationMs === "number" && Number.isFinite(raw.durationMs) && raw.durationMs >= 0 ? { durationMs: raw.durationMs } : {}), ...(writtenFiles.length ? { writtenFiles } : {}) });
         return;
       }
       case "queue_update": {

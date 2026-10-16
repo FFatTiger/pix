@@ -273,7 +273,11 @@ function applyEventToSnapshot(snapshot: RuntimeSnapshot, event: RuntimeEventData
       if (event.sessionFile !== undefined) state.sessionFile = event.sessionFile;
       if (event.leafId !== undefined) state.leafId = event.leafId;
       break;
-    case "agent_start": state.isPromptRunning = true; break;
+    case "agent_start":
+      state.isPromptRunning = true;
+      // A new run supersedes the previous turn's settle outcome.
+      delete state.lastTurnAborted;
+      break;
     // `agent_end` is NOT a turn terminal: the Pi SDK emits it for each model
     // attempt, including attempts followed by an automatic retry. Clearing here
     // makes global busy state and the Composer flicker idle between retries.
@@ -285,6 +289,9 @@ function applyEventToSnapshot(snapshot: RuntimeSnapshot, event: RuntimeEventData
       state.isPromptRunning = false;
       state.isStreaming = false;
       snapshot.streaming = { active: false, phase: "idle" };
+      // Only agent_settled knows whether the run ended aborted (Pi 1.1+);
+      // absent on older journals, where the outcome stays unknown (omitted).
+      if (event.type === "agent_settled") state.lastTurnAborted = event.aborted === true;
       break;
     default:
       break;
