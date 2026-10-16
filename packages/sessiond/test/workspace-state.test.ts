@@ -5,9 +5,9 @@
  * quarantine), merge semantics, and the in-memory test double's contract
  * parity. NOT run in this commit (user-deferred validation).
  */
-import { mkdtemp, readFile, readdir, rm, stat, writeFile, chmod } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -15,9 +15,12 @@ import {
   InMemoryWorkspaceStateStore,
   WORKSPACE_STATE_FILE_NAME,
   WORKSPACE_STATE_SCHEMA_VERSION,
-  normalizeProjectKey,
   type WorkspaceStateStore,
 } from "../src/workspace-state.js";
+
+// Portable absolute project root: win32 rejects drive-less absolutes (`/repos`)
+// in normalizeProjectKey, so the fixture derives a host-true root from tmpdir.
+const PROJECT_ROOT = resolve(tmpdir(), "pix-ws-state-fixture", "repos", "pix");
 
 function behaveLikeStore(make: () => WorkspaceStateStore | Promise<WorkspaceStateStore>, label: string) {
   describe(label, () => {
@@ -32,9 +35,9 @@ function behaveLikeStore(make: () => WorkspaceStateStore | Promise<WorkspaceStat
       const third = store.setSessionFlags("s1", { pinned: false });
       assert.deepEqual(third, { pinned: false, archived: true });
       // Project namespace is independent; keys normalize to absolute paths.
-      const project = store.setProjectFlags("/repos/pix/", { pinned: true });
+      const project = store.setProjectFlags(`${PROJECT_ROOT}/`, { pinned: true });
       assert.equal(project.pinned, true);
-      assert.deepEqual(Object.keys(store.snapshot().projects), [normalizeProjectKey("/repos/pix/")]);
+      assert.deepEqual(Object.keys(store.snapshot().projects), [PROJECT_ROOT]);
       assert.equal(store.snapshot().revision, 4);
     });
 
@@ -78,10 +81,13 @@ describe("FileWorkspaceStateStore durability", () => {
     try {
       const store = new FileWorkspaceStateStore(dir);
       store.setSessionFlags("s1", { pinned: true, archived: true });
-      store.setProjectFlags("/repos/pix", { pinned: true });
+      store.setProjectFlags(PROJECT_ROOT, { pinned: true });
       const file = join(dir, WORKSPACE_STATE_FILE_NAME);
       const info = await stat(file);
-      assert.equal(info.mode & 0o777, 0o600);
+      // NTFS reports no POSIX mode bits; the 0600 gate is POSIX-only.
+      if (process.platform !== "win32") {
+        assert.equal(info.mode & 0o777, 0o600);
+      }
       const raw = await readFile(file, "utf8");
       const parsed = JSON.parse(raw) as { kind: string; schemaVersion: number; revision: number };
       assert.equal(parsed.kind, "pix.sessiond.workspace-state");
@@ -92,7 +98,7 @@ describe("FileWorkspaceStateStore durability", () => {
       const snapshot = reloaded.snapshot();
       assert.equal(snapshot.revision, 2);
       assert.deepEqual(snapshot.sessions, { s1: { pinned: true, archived: true } });
-      assert.deepEqual(snapshot.projects, { "/repos/pix": { pinned: true } });
+      assert.deepEqual(snapshot.projects, { [PROJECT_ROOT]: { pinned: true } });
       // No leftover temp file after the atomic rename.
       await assert.rejects(stat(join(dir, `${WORKSPACE_STATE_FILE_NAME}.tmp`)));
     } finally {
@@ -167,10 +173,10 @@ describe("FileWorkspaceStateStore durability", () => {
       const store = new FileWorkspaceStateStore(dir);
       const ledger = { version: 1, delegations: [{ id: "d1", state: "notify" }], chains: { a: { lastUserTurnAt: 5, targets: {} } }, queue: [{ delegationId: "d1" }] };
       store.writeAssistantDelegations(ledger);
-      store.setProjectFlags("/repos/pix", { archived: true });
+      store.setProjectFlags(PROJECT_ROOT, { archived: true });
       const reloaded = new FileWorkspaceStateStore(dir);
       assert.deepEqual(reloaded.readAssistantDelegations(), ledger);
-      assert.deepEqual(reloaded.snapshot().projects, { "/repos/pix": { archived: true } });
+      assert.deepEqual(reloaded.snapshot().projects, { [PROJECT_ROOT]: { archived: true } });
       const raw = JSON.parse(await readFile(join(dir, WORKSPACE_STATE_FILE_NAME), "utf8")) as { assistantDelegations?: unknown };
       assert.ok(raw.assistantDelegations, "the namespace is on disk in the same document");
     } finally {
@@ -184,7 +190,17 @@ describe("FileWorkspaceStateStore durability", () => {
       const store = new FileWorkspaceStateStore(dir);
       store.setSessionFlags("s1", { pinned: true });
       const file = join(dir, WORKSPACE_STATE_FILE_NAME);
-      await chmod(file, 0o000);
+      // Make the published file unreadable for its owner: POSIX chmod 000;
+      // win32 cannot do that (NTFS ignores the owner mode), so the same
+      // honest-failure seam is forced with a directory in the file's place
+      // (read fails non-ENOENT → unavailable, never empty, never overwritten).
+      const blockedContent = await readFile(file, "utf8");
+      if (process.platform === "win32") {
+        await rm(file, { force: true });
+        await mkdir(file);
+      } else {
+        await chmod(file, 0o000);
+      }
       const blocked = new FileWorkspaceStateStore(dir);
       let error: unknown;
       try {
@@ -208,7 +224,12 @@ describe("FileWorkspaceStateStore durability", () => {
       }
       assert.ok(writeError instanceof Error, "a write must not proceed over an unreadable file");
       // Recovery: once the transient failure clears, the original content loads.
-      await chmod(file, 0o600);
+      if (process.platform === "win32") {
+        await rm(file, { recursive: true, force: true });
+        await writeFile(file, blockedContent, "utf8");
+      } else {
+        await chmod(file, 0o600);
+      }
       const recovered = new FileWorkspaceStateStore(dir);
       assert.deepEqual(recovered.snapshot().sessions, { s1: { pinned: true } });
     } finally {

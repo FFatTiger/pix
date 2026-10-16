@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test, { afterEach } from "node:test";
 import { LocalAuthorityError } from "@fffattiger/pix-local-authority/state";
 import { SessiondError } from "../src/errors.js";
@@ -140,7 +140,7 @@ test("acquireInstanceLock with a swapped directory ctx fails closed (bounded re-
     const ctx = await ensureSessiondPrivateDirectory(dir);
     // Swap the directory after preflight; the lock acquire must re-verify and
     // fail closed (UNSAFE_COMPONENT) instead of mutating the replacement.
-    const moved = join(dirname(dir), `.${dir.split("/").pop()}.moved`);
+    const moved = join(dirname(dir), `.${basename(dir)}.moved`);
     renameSync(dir, moved);
     temporary.push(moved);
     mkdirSync(dir, { mode: 0o700 });
@@ -160,7 +160,7 @@ test("loadOrCreateLocalSecret with a swapped directory ctx fails closed", async 
   const paths = sessiondPaths(dir);
   try {
     const ctx = await ensureSessiondPrivateDirectory(dir);
-    const moved = join(dirname(dir), `.${dir.split("/").pop()}.moved`);
+    const moved = join(dirname(dir), `.${basename(dir)}.moved`);
     renameSync(dir, moved);
     temporary.push(moved);
     mkdirSync(dir, { mode: 0o700 });

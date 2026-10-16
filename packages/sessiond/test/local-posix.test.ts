@@ -291,7 +291,10 @@ test("production entry creates a missing runtime directory 0700 (created:true, c
 // zero chmod (O_NOFOLLOW alone cannot stop a real-directory swap)
 // ---------------------------------------------------------------------------
 
-test("created leaf swapped at open to a real 0755 replacement dir: UNSAFE_COMPONENT, zero chmod", async () => {
+test("created leaf swapped at open to a real 0755 replacement dir: UNSAFE_COMPONENT, zero chmod", { skip: process.platform === "win32" }, async () => {
+  // The fd-open seam exists only under POSIX mode enforcement (win32 cannot
+  // open a directory handle this way, and the swap mechanics below race the
+  // fd identity check); the lstat-seam swap below is the win32-equivalent.
   const dir = temp("posix-open-swap-");
   const leaf = join(dir, "leaf");
   const backup = join(dir, "leaf.original");
@@ -310,6 +313,42 @@ test("created leaf swapped at open to a real 0755 replacement dir: UNSAFE_COMPON
       }
       return open(p, flags);
     },
+    isOwnedByCurrentUser,
+  };
+
+  await expectReject(() => ensureSessiondPrivateDirectoryWithFs(leaf, fs), "UNSAFE_COMPONENT");
+  assertUnixMode(leaf, 0o755, "replacement dir must never be chmod'd");
+  assert.equal(readFileSync(join(leaf, "marker.txt"), "utf8"), "payload", "replacement content untouched");
+  assertUnixMode(backup, 0o700, "original created inode unchanged");
+});
+
+test("created leaf swapped between identity capture and the final re-lstat: UNSAFE_COMPONENT (win32 parity)", async () => {
+  // Same attack as the open-seam swap above, planted at a seam EVERY platform
+  // guards: after the post-mkdir identity capture, before the final lstat.
+  // POSIX rejects at the created-identity check before open; win32 (no fd
+  // open) rejects at the final re-lstat dev/ino pin.
+  const dir = temp("posix-lstat-swap-");
+  const leaf = join(dir, "leaf");
+  const backup = join(dir, "leaf.original");
+  let leafStats = 0;
+  const fs = {
+    lstat: async (p: string) => {
+      if (p === leaf) {
+        leafStats += 1;
+        // 1st: walk observes ENOENT; 2nd: post-mkdir identity capture;
+        // 3rd: final lstat — swap the leaf immediately before it.
+        if (leafStats === 3) {
+          renameSync(leaf, backup);
+          mkdirSync(leaf, { mode: 0o755 });
+          chmodSync(leaf, 0o755);
+          writeFileSync(join(leaf, "marker.txt"), "payload", { mode: 0o600 });
+        }
+      }
+      return lstat(p);
+    },
+    mkdir: (p: string, opts: { recursive: false; mode: number }) => mkdir(p, opts),
+    realpath: (p: string) => realpath(p),
+    open: async (p: string, flags: number) => open(p, flags),
     isOwnedByCurrentUser,
   };
 
@@ -372,14 +411,28 @@ test("reverify passes when the directory is unchanged", async () => {
 
 test("marker probes: no raw path/errno leakage in any thrown error", async () => {
   const dir = temp("posix-leak-");
-  const leaf = join(dir, "leaf-secret-marker-xyz");
-  mkdirSync(leaf, { mode: 0o755 });
-  chmodSync(leaf, 0o755);
-  try {
-    await ensureSessiondPrivateDirectoryWithFs(leaf, realFs());
-    assert.fail("expected rejection for 0755 leaf");
-  } catch (error) {
-    assertSanitized(error, "NOT_PRIVATE", leaf);
+  if (process.platform === "win32") {
+    // NTFS cannot hold the 0755 shape (the mode gate is POSIX-only); the
+    // win32-equivalent sanitized rejection is a regular-file leaf
+    // (NOT_DIRECTORY) at the same walk seam.
+    const fileLeaf = join(dir, "file-secret-marker-xyz");
+    writeFileSync(fileLeaf, "x", { mode: 0o600 });
+    try {
+      await ensureSessiondPrivateDirectoryWithFs(fileLeaf, realFs());
+      assert.fail("expected rejection for file leaf");
+    } catch (error) {
+      assertSanitized(error, "NOT_DIRECTORY", fileLeaf);
+    }
+  } else {
+    const leaf = join(dir, "leaf-secret-marker-xyz");
+    mkdirSync(leaf, { mode: 0o755 });
+    chmodSync(leaf, 0o755);
+    try {
+      await ensureSessiondPrivateDirectoryWithFs(leaf, realFs());
+      assert.fail("expected rejection for 0755 leaf");
+    } catch (error) {
+      assertSanitized(error, "NOT_PRIVATE", leaf);
+    }
   }
 
   const symLeaf = join(dir, "sym-secret-marker-xyz");
