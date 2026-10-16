@@ -135,6 +135,10 @@ function parseDocument(raw: string): WorkspaceStateSnapshot | null {
 /** Normalize a project key: absolute, resolved, no trailing separator. */
 export function normalizeProjectKey(projectRoot: string): string | null {
   if (typeof projectRoot !== "string" || projectRoot.length === 0 || projectRoot.includes("\u0000")) return null;
+  // win32: a drive-less absolute (`/repos`, `\repos`) is not a usable project
+  // root on that platform (node:path isAbsolute still accepts it and resolve
+  // would mint a drive-less key no real path can match) — reject it here.
+  if (process.platform === "win32" && !/^([A-Za-z]:[\\/]|\\\\)/.test(projectRoot)) return null;
   if (!isAbsolute(projectRoot)) return null;
   try {
     return resolve(projectRoot);

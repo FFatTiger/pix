@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:net";
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { SessiondError } from "../src/errors.js";
+import { sessiondPaths } from "../src/local.js";
 import { SessiondRpcClient } from "../src/rpc.js";
 
 /**
@@ -14,13 +15,13 @@ import { SessiondRpcClient } from "../src/rpc.js";
  * long-running prompt / bash commands do not hit the short control-plane RPC
  * timeout and produce a spurious "sessiond RPC timed out".
  */
-function startFakeRpc(secret: string, respondDelayMs: number): Promise<{
+async function startFakeRpc(secret: string, respondDelayMs: number): Promise<{
   endpoint: string;
   close(): Promise<void>;
 }> {
-  return new Promise((resolve, reject) => {
-    const endpoint = join(tmpdir(), `pix-rpc-client-timeout-${process.pid}-${Date.now()}.sock`);
-    const server: Server = createServer((socket) => {
+  const directory = await mkdtemp(join(tmpdir(), "pix-rpc-client-timeout-"));
+  const endpoint = sessiondPaths(directory).endpoint;
+  const server: Server = createServer((socket) => {
       let buffer = "";
       let authed = false;
       socket.on("data", (chunk: Buffer) => {
@@ -53,15 +54,23 @@ function startFakeRpc(secret: string, respondDelayMs: number): Promise<{
         }
       });
     });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
     server.listen(endpoint, () => {
       server.off("error", reject);
-      resolve({
-        endpoint,
-        close: () => new Promise<void>((resolveClose) => server.close(() => { rm(endpoint, { force: true }).finally(() => resolveClose()); })),
-      });
+      resolve();
     });
-    server.on("error", reject);
   });
+  return {
+    endpoint,
+    close: () => new Promise<void>((resolveClose) => {
+      server.close(() => {
+        // rm covers the unix socket file; on win32 the endpoint is a pipe
+        // name and only the directory remains to clean.
+        rm(directory, { recursive: true, force: true }).finally(() => resolveClose());
+      });
+    }),
+  };
 }
 
 test("RPC client per-call timeout override", async () => {

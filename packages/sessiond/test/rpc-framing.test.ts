@@ -16,8 +16,14 @@ import { EventEmitter } from "node:events";
 import type { Socket } from "node:net";
 import { enqueueRpcOutboundFrame, rpcOutboundBodyBytes } from "../src/internal/rpc-outbound-frame.js";
 import { SerialSocketWriter } from "../src/internal/serial-writer.js";
+import { sessiondPaths } from "../src/local.js";
 import { SessiondError } from "../src/errors.js";
 import { SessiondRpcClient, SessiondRpcServer, type SessiondRpcHandler } from "../src/rpc.js";
+
+/** Platform endpoint for a test directory: unix socket file, win32 named pipe. */
+function endpointOf(directory: string): string {
+  return sessiondPaths(directory).endpoint;
+}
 
 const secret = "a".repeat(40);
 const pingHandler: SessiondRpcHandler = {
@@ -29,7 +35,7 @@ const pingHandler: SessiondRpcHandler = {
 
 async function listen(handler: SessiondRpcHandler = pingHandler, options: { maxFrameBytes?: number; maxOutboundBodyBytes?: number } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-frame-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = endpointOf(directory);
   const server = new SessiondRpcServer({ endpoint, secret, handler, ...options });
   await server.listen();
   return {
@@ -132,7 +138,7 @@ test("split UTF-8 inbound bytes across chunks still decode one legal frame", asy
 
 test("client readers honor the response frame budget", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-oversize-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = endpointOf(directory);
   const { createServer } = await import("node:net");
   const server = createServer((socket) => {
     socket.on("error", () => {});
@@ -277,7 +283,7 @@ test("small maxFrameBytes override still rejects image-bearing requests", async 
 
 test("client refuses to write an image-bearing envelope one UTF-8 byte over the runtime bound", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-client-oversize-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = endpointOf(directory);
   const { createServer } = await import("node:net");
   const written: string[] = [];
   const server = createServer((socket) => {

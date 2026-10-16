@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { createPosixSecureStateBackend } from "@fffattiger/pix-local-authority";
@@ -135,8 +135,27 @@ export function builtInDocumentModeSafe(mode: number, nlink: number, platform: N
 function readSourceSync(agentDir: string, platform: NodeJS.Platform = process.platform): SourceSnapshot {
   const path = join(agentDir, DOCUMENT_NAME);
   let fd: number | undefined;
+  // O_NOFOLLOW is undefined on Windows (Node only exports the flags MSVC
+  // defines); `NaN` flags would fail every open. Same pattern as local-authority.
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  if (noFollow === 0) {
+    // Without O_NOFOLLOW, reject a symlinked final component explicitly so
+    // the open below can never read through one.
+    let info;
+    try {
+      info = lstatSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw runtimeError("unavailable", "built-in configuration is unavailable");
+      }
+      info = undefined;
+    }
+    if (info?.isSymbolicLink()) {
+      throw runtimeError("unavailable", "built-in configuration is unavailable");
+    }
+  }
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    fd = openSync(path, constants.O_RDONLY | noFollow);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return { revision: revisionOf(""), capabilities: defaultBuiltInCapabilities() };

@@ -948,7 +948,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       // persistent:false — an unref()'d FSWatcher still holds the event loop
       // on macOS (Node 24), so a daemon that prepared the catalog could not
       // exit after shutdown. The recursive watch stays armed either way.
-      this.projectionWatcher = watch(path, { recursive: this.sessionDir === undefined, persistent: false }, (_event, filename) => {
+      const watcher = watch(path, { recursive: this.sessionDir === undefined, persistent: false }, (_event, filename) => {
         const relative = filename?.toString().replace(/\\/g, "/");
         if (relative && relative.endsWith(".jsonl") && !relative.split("/").includes("..")) {
           const file = join(path, ...relative.split("/"));
@@ -973,11 +973,38 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
         }, 100);
         this.projectionRefreshDebounce.unref?.();
       });
-      this.projectionWatcher.unref?.();
+      watcher.unref?.();
+      // A watch error (e.g. Windows ReadDirectoryChangesW reporting the
+      // watched directory deleted) must drop the handle: an errored watcher
+      // never fires again and would otherwise hold the process open.
+      watcher.on("error", () => {
+        if (this.projectionWatcher === watcher) this.projectionWatcher = undefined;
+        watcher.close();
+      });
+      this.projectionWatcher = watcher;
     } catch {
       // Periodic scrub remains the bounded fallback on platforms/layouts where
       // recursive watch is unavailable.
     }
+  }
+
+  /** Release the projection watcher and timers. Idempotent; never throws. */
+  close(): void {
+    if (this.projectionWatcher !== undefined) {
+      const watcher = this.projectionWatcher;
+      this.projectionWatcher = undefined;
+      watcher.close();
+    }
+    if (this.projectionRefreshTimer !== undefined) {
+      clearInterval(this.projectionRefreshTimer);
+      this.projectionRefreshTimer = undefined;
+    }
+    if (this.projectionRefreshDebounce !== undefined) {
+      clearTimeout(this.projectionRefreshDebounce);
+      this.projectionRefreshDebounce = undefined;
+    }
+    for (const timer of this.projectionFileDebounce.values()) clearTimeout(timer);
+    this.projectionFileDebounce.clear();
   }
 
   private async applyProjectionMutation(upserts: readonly ProjectedSession[], removals: readonly string[]): Promise<void> {

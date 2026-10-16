@@ -68,7 +68,11 @@ test("assistant workspace resource creates the derived directory 0700 and trusts
     const stats = statSync(resource.cwd);
     assert.ok(stats.isDirectory());
     // 0700 (plus setuid-style bits are never set by mkdir mode on purpose).
-    assert.equal(stats.mode & 0o777, 0o700);
+    // NTFS has no POSIX mode bits — every file reads 0o666 — so the win32
+    // equivalent is existence + the same read-first trust ensure below.
+    if (process.platform !== "win32") {
+      assert.equal(stats.mode & 0o777, 0o700);
+    }
     // Read-first trust ensure: exactly one read, one write, on the canonical dir.
     assert.deepEqual(calls.isTrusted, [resource.cwd]);
     assert.deepEqual(calls.setTrusted, [resource.cwd]);

@@ -2498,8 +2498,11 @@ test("instance lock rejects a second live instance and recovers stale locks with
   const paths = sessiondPaths(directory);
   const first = await acquireInstanceLock(paths);
   await assert.rejects(acquireInstanceLock(paths));
-  const mode = (await stat(paths.lockFile)).mode & 0o777;
-  assert.equal(mode, 0o600);
+  // NTFS reports no POSIX mode bits; the 0600 check is POSIX-only.
+  if (process.platform !== "win32") {
+    const mode = (await stat(paths.lockFile)).mode & 0o777;
+    assert.equal(mode, 0o600);
+  }
   await first.release();
   await writeFile(paths.lockFile, JSON.stringify({ pid: 999_999_999, instanceId: "stale" }), { mode: 0o600 });
   const recovered = await acquireInstanceLock(paths);
@@ -2510,7 +2513,8 @@ test("local secret is stable and private", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-secret-"));
   const paths = sessiondPaths(directory);
   const one = await loadOrCreateLocalSecret(paths); const two = await loadOrCreateLocalSecret(paths);
-  assert.equal(one, two); assert.ok(one.length >= 32); assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+  assert.equal(one, two); assert.ok(one.length >= 32);
+  if (process.platform !== "win32") assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
   await rm(directory, { recursive: true, force: true });
 });
 

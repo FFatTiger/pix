@@ -27,7 +27,11 @@ afterEach(() => {
 const isForbidden = (error: unknown): boolean =>
   error instanceof SessiondError && error.code === "forbidden";
 
-test("startDaemon fails closed on an existing 0755 runtime dir (forbidden, fixed message, mode untouched, no partial files)", async () => {
+test("startDaemon fails closed on an existing 0755 runtime dir (forbidden, fixed message, mode untouched, no partial files)", async (t) => {
+  if (isWindows) {
+    t.skip("the 0700 mode gate is POSIX-only; the win32 acceptance equivalent is in local-posix.test.mjs");
+    return;
+  }
   const dir = await tempDir();
   chmodSync(dir, 0o755);
   try {

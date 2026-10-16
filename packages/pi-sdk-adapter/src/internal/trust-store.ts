@@ -321,10 +321,28 @@ async function readTrustFileStrict(
   trustPath: string,
 ): Promise<{ data: Record<string, boolean | null>; preImage: TrustFilePreImage | undefined }> {
   let fh: FileHandle | undefined;
+  // O_NOFOLLOW/O_NONBLOCK are undefined on Windows (Node exports only
+  // MSVC-defined flags); `NaN` flags would fail every open. Where O_NOFOLLOW
+  // is unavailable an explicit lstat rejects a symlinked final component.
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  if (noFollow === 0) {
+    let info;
+    try {
+      info = await lstat(trustPath);
+    } catch (error) {
+      if (!isErrnoException(error) || error.code !== "ENOENT") {
+        throw new PiSdkTrustMutationError("TRUST_WRITE_FAILED");
+      }
+      info = undefined;
+    }
+    if (info?.isSymbolicLink()) {
+      throw new PiSdkTrustMutationError("TRUST_STORE_UNSAFE");
+    }
+  }
   try {
     fh = await open(
       trustPath,
-      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+      fsConstants.O_RDONLY | noFollow | (fsConstants.O_NONBLOCK ?? 0),
     );
   } catch (error) {
     if (isErrnoException(error) && error.code === "ENOENT") {
@@ -391,7 +409,7 @@ async function fsyncDir(
   let fh: FileHandle | undefined;
   try {
     failDirFsync?.();
-    fh = await open(dirPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+    fh = await open(dirPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
     await fh.sync();
   } catch (error) {
     if (dirFsyncTolerated(isErrnoException(error) ? error.code : undefined, platform)) return;
@@ -464,7 +482,7 @@ async function atomicReplaceTrustFile(
   try {
     tempFh = await open(
       tempPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
       TRUST_FILE_MODE,
     );
     await tempFh.chmod(TRUST_FILE_MODE);

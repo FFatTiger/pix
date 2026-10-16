@@ -38,6 +38,8 @@ import { createPiSdkSessionStore } from "../internal/session-store.js";
  */
 export interface PiSdkSessionStore {
   prepare?(): Promise<void>;
+  /** Release background resources (projection watcher/timers). Idempotent. */
+  close?(): void;
   listSessionPage?(request: SessionPageRequest): Promise<SessionPage>;
   listProjectPage?(request: CatalogPageRequest): Promise<ProjectPage>;
   listSessions(): Promise<readonly SessionHeader[]>;

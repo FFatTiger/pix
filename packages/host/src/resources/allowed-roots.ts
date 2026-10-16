@@ -4,7 +4,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { HttpError } from "../errors.js";
 import type { HostLogger, HostMode } from "../types.js";
 import { AsyncMutex } from "./mutex.js";
-import { canonicalizeRealpath, pathWithin, samePath } from "./path-canonical.js";
+import { canonicalizeRealpath, pathWithin, sameInteger, samePath, storeInteger, type StoredInteger } from "./path-canonical.js";
 import {
   TRUSTED_ROOTS_SOURCE,
   TrustedRootsLedgerError,
@@ -29,7 +29,7 @@ export interface AllowedRootService {
   prepareExpansion(targets: readonly string[], mode: HostMode): Promise<RootExpansionPlan>;
   expandRoots(targets: readonly string[], mode: HostMode): Promise<RootExpansionResult>;
 }
-interface RootIdentity { dev: number; ino: number }
+interface RootIdentity { dev: StoredInteger; ino: StoredInteger }
 interface TrustedClaim {
   path: string;
   identity: RootIdentity;
@@ -80,8 +80,8 @@ interface RootState {
 export interface ManagedAuthorizedRootInput {
   worktreeId: string;
   path: string;
-  dev: number;
-  ino: number;
+  dev: StoredInteger;
+  ino: StoredInteger;
 }
 
 export interface TrustedCreatedRootReceipt {
@@ -146,17 +146,19 @@ async function canonicalDirectoryWithIdentity(value: string): Promise<{ canonica
   let canonical: string;
   try { canonical = canonicalizeRealpath(await realpath(normalized)); }
   catch { throw new HttpError(404, "PATH_NOT_FOUND", "Directory not found"); }
-  const info = await lstat(canonical);
+  // bigint: NTFS file indices exceed Number.MAX_SAFE_INTEGER; storeInteger
+  // keeps the exact value (Number on POSIX, decimal string elsewhere).
+  const info = await lstat(canonical, { bigint: true });
   if (!info.isDirectory() || info.isSymbolicLink()) throw new HttpError(400, "NOT_DIRECTORY", "Path is not a real directory");
-  return { canonical, identity: { dev: info.dev, ino: info.ino } };
+  return { canonical, identity: { dev: storeInteger(info.dev), ino: storeInteger(info.ino) } };
 }
 async function identityStillMatches(path: string, expected: RootIdentity): Promise<boolean> {
   try {
     // win32: realpath may answer with an extended prefix and different case;
     // samePath folds both. POSIX keeps the exact comparison.
     if (!samePath(await realpath(path), path)) return false;
-    const current = await lstat(path);
-    return current.isDirectory() && !current.isSymbolicLink() && current.dev === expected.dev && current.ino === expected.ino;
+    const current = await lstat(path, { bigint: true });
+    return current.isDirectory() && !current.isSymbolicLink() && sameInteger(current.dev, expected.dev) && sameInteger(current.ino, expected.ino);
   } catch { return false; }
 }
 function validateChildName(name: string): void {
@@ -231,11 +233,11 @@ function claimToRecord(claim: TrustedClaim): TrustedRootClaimRecord | null {
 function recordsEqual(a: TrustedRootClaimRecord, b: TrustedRootClaimRecord): boolean {
   return a.claimId === b.claimId
     && a.path === b.path
-    && a.dev === b.dev
-    && a.ino === b.ino
+    && sameInteger(a.dev, b.dev)
+    && sameInteger(a.ino, b.ino)
     && a.repoRoot === b.repoRoot
-    && a.repoDev === b.repoDev
-    && a.repoIno === b.repoIno
+    && sameInteger(a.repoDev, b.repoDev)
+    && sameInteger(a.repoIno, b.repoIno)
     && a.base === b.base
     && a.createdAt === b.createdAt
     && a.source === b.source
@@ -635,9 +637,10 @@ export async function rehydrateTrustedCreatedRoots(
     }
     // path strictly inside base
     if (!isWithin(record.base, record.path) || record.path === record.base) return false;
-    // git worktree list contains path, non-main (prunable already filtered by list)
+    // git worktree list contains path, non-main (prunable already filtered by list).
+    // Fold spellings: git prints forward slashes on Windows.
     const listed = await listedPathsFor(record.repoRoot);
-    if (!listed.has(record.path)) return false;
+    if (![...listed].some((listedPath) => samePath(listedPath, record.path))) return false;
     return true;
   }
 

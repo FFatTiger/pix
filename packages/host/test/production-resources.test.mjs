@@ -345,7 +345,9 @@ test("resolver: a pingable but protocol-v1 daemon degrades (stale daemon fail-cl
     assert.equal(String(logs[0]).includes(fake.socketPath), false);
   } finally {
     fake.server.close();
-    rmSync(fake.socketPath, { force: true });
+    // rm removes the unix socket file; a win32 named-pipe path is not a
+    // filesystem entry and rm/lstat on `\\.\\pipe\\` fails EBUSY.
+    if (process.platform !== "win32") rmSync(fake.socketPath, { force: true });
   }
 });
 
@@ -361,7 +363,7 @@ test("resolver: a compatible protocol-v2 daemon advertises the full surface", as
     assert.deepEqual(await resolver.resolve(), [...PRODUCTION_FULL_CAPABILITIES]);
   } finally {
     fake.server.close();
-    rmSync(fake.socketPath, { force: true });
+    if (process.platform !== "win32") rmSync(fake.socketPath, { force: true });
   }
 });
 

@@ -34,14 +34,13 @@
  * not route-mounted and not wired into production boot yet.
  */
 import { randomUUID } from "node:crypto";
-import { resolve, join, dirname } from "node:path";
-import { pathWithin, samePath } from "./path-canonical.js";
+import { join, dirname } from "node:path";
+import { parseStoredInteger, pathWithin, samePath, type StoredInteger } from "./path-canonical.js";
 import {
   hasControlChar,
   isAbsoluteCanonicalShape,
   isIsoTimestamp,
   isRecord,
-  isSafeInteger,
   isValidInstanceId,
   MANAGED_WORKTREES_STATE_DOCUMENT,
   openHostStateDirectoryLease,
@@ -90,20 +89,20 @@ export class ManagedWorktreesLedgerError extends Error {
 export interface ManagedWorktreeRecord {
   worktreeId: string;
   path: string;
-  dev: number;
-  ino: number;
+  dev: StoredInteger;
+  ino: StoredInteger;
   repoRoot: string;
-  repoDev: number;
-  repoIno: number;
+  repoDev: StoredInteger;
+  repoIno: StoredInteger;
   commonDir: string;
-  commonDev: number;
-  commonIno: number;
+  commonDev: StoredInteger;
+  commonIno: StoredInteger;
   adminDir: string;
-  adminDev: number;
-  adminIno: number;
+  adminDev: StoredInteger;
+  adminIno: StoredInteger;
   base: string;
-  baseDev: number;
-  baseIno: number;
+  baseDev: StoredInteger;
+  baseIno: StoredInteger;
   createdAt: string;
   source: typeof MANAGED_WORKTREES_SOURCE;
   /** Audit only — branch switch/detach later never invalidates ownership. */
@@ -300,11 +299,11 @@ function parseManagedRecord(
   if (!isAbsoluteCanonicalShape(adminDir)) return "sparse";
   if (!isAbsoluteCanonicalShape(base)) return "sparse";
   if (
-    !isSafeInteger(raw.dev) || !isSafeInteger(raw.ino)
-    || !isSafeInteger(raw.repoDev) || !isSafeInteger(raw.repoIno)
-    || !isSafeInteger(raw.commonDev) || !isSafeInteger(raw.commonIno)
-    || !isSafeInteger(raw.adminDev) || !isSafeInteger(raw.adminIno)
-    || !isSafeInteger(raw.baseDev) || !isSafeInteger(raw.baseIno)
+    parseStoredInteger(raw.dev) === undefined || parseStoredInteger(raw.ino) === undefined
+    || parseStoredInteger(raw.repoDev) === undefined || parseStoredInteger(raw.repoIno) === undefined
+    || parseStoredInteger(raw.commonDev) === undefined || parseStoredInteger(raw.commonIno) === undefined
+    || parseStoredInteger(raw.adminDev) === undefined || parseStoredInteger(raw.adminIno) === undefined
+    || parseStoredInteger(raw.baseDev) === undefined || parseStoredInteger(raw.baseIno) === undefined
   ) {
     return "sparse";
   }
@@ -328,7 +327,9 @@ function parseManagedRecord(
   // dirname on win32 rewrites the drive and each component's case, so an
   // exact `!==` rejects the path this ledger just stored.
   if (!samePath(dirname(commonDir), repoRoot)) return "sparse";
-  if (base !== `${resolve(repoRoot)}-worktrees`) return "sparse";
+  // win32: `resolve` rewrites separators/case, so an exact `===` rejects the
+  // spelling this ledger just stored; samePath folds both (POSIX: exact).
+  if (!samePath(base, `${repoRoot}-worktrees`)) return "sparse";
   if (!isWithin(base, path) || path === base) return "sparse";
   if (!isWithin(commonDir, adminDir)) return "sparse";
 
@@ -351,20 +352,20 @@ function parseManagedRecord(
   return {
     worktreeId,
     path,
-    dev: raw.dev,
-    ino: raw.ino,
+    dev: raw.dev as StoredInteger,
+    ino: raw.ino as StoredInteger,
     repoRoot,
-    repoDev: raw.repoDev,
-    repoIno: raw.repoIno,
+    repoDev: raw.repoDev as StoredInteger,
+    repoIno: raw.repoIno as StoredInteger,
     commonDir,
-    commonDev: raw.commonDev,
-    commonIno: raw.commonIno,
+    commonDev: raw.commonDev as StoredInteger,
+    commonIno: raw.commonIno as StoredInteger,
     adminDir,
-    adminDev: raw.adminDev,
-    adminIno: raw.adminIno,
+    adminDev: raw.adminDev as StoredInteger,
+    adminIno: raw.adminIno as StoredInteger,
     base,
-    baseDev: raw.baseDev,
-    baseIno: raw.baseIno,
+    baseDev: raw.baseDev as StoredInteger,
+    baseIno: raw.baseIno as StoredInteger,
     createdAt,
     source: MANAGED_WORKTREES_SOURCE,
     branchAtCreate,

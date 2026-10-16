@@ -36,10 +36,13 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+  parseStoredInteger,
+  type StoredInteger,
+} from "./path-canonical.js";
+import {
   isAbsoluteCanonicalShape,
   isIsoTimestamp,
   isRecord,
-  isSafeInteger,
   isValidInstanceId,
   openHostStateDirectoryLease,
   resolvePixHostDir as resolvePixHostDirInLease,
@@ -107,11 +110,11 @@ export class TrustedRootsLedgerError extends Error {
 export interface TrustedRootClaimRecord {
   claimId: string;
   path: string;
-  dev: number;
-  ino: number;
+  dev: StoredInteger;
+  ino: StoredInteger;
   repoRoot: string;
-  repoDev: number;
-  repoIno: number;
+  repoDev: StoredInteger;
+  repoIno: StoredInteger;
   base: string;
   createdAt: string;
   source: typeof TRUSTED_ROOTS_SOURCE;
@@ -287,8 +290,8 @@ function parseClaim(
   if (!isAbsoluteCanonicalShape(path)) return "sparse";
   if (!isAbsoluteCanonicalShape(repoRoot)) return "sparse";
   if (!isAbsoluteCanonicalShape(base)) return "sparse";
-  if (!isSafeInteger(raw.dev) || !isSafeInteger(raw.ino)) return "sparse";
-  if (!isSafeInteger(raw.repoDev) || !isSafeInteger(raw.repoIno)) return "sparse";
+  if (parseStoredInteger(raw.dev) === undefined || parseStoredInteger(raw.ino) === undefined) return "sparse";
+  if (parseStoredInteger(raw.repoDev) === undefined || parseStoredInteger(raw.repoIno) === undefined) return "sparse";
   if (!isIsoTimestamp(createdAt)) return "sparse";
   if (source !== TRUSTED_ROOTS_SOURCE) return "sparse";
   if (seen.has(claimId) || seen.has(`path:${path}`)) return "duplicate";
@@ -311,11 +314,11 @@ function parseClaim(
   const record: TrustedRootClaimRecord = {
     claimId,
     path,
-    dev: raw.dev,
-    ino: raw.ino,
+    dev: raw.dev as StoredInteger,
+    ino: raw.ino as StoredInteger,
     repoRoot,
-    repoDev: raw.repoDev,
-    repoIno: raw.repoIno,
+    repoDev: raw.repoDev as StoredInteger,
+    repoIno: raw.repoIno as StoredInteger,
     base,
     createdAt,
     source: TRUSTED_ROOTS_SOURCE,
