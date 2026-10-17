@@ -793,6 +793,8 @@ export const zhCNLocale = {
     "desktop.modelsConfigUnavailable": "模型配置功能不可用。",
     "desktop.modelsConfigurationChanged": "模型配置已在其他位置发生变化。请重新打开设置后再试。",
     "desktop.modelsInvalidConfiguration": "模型配置无效，请检查填写内容后重试。",
+    "desktop.modelsShowInPicker": "在选择器中显示 {model}",
+    "desktop.modelsDefaultHidden": "默认模型已被隐藏；新会话将回退使用第一个可见模型。",
     "desktop.modelsNetworkUnavailable": "无法连接模型配置服务。",
     "desktop.modelsRequestTimedOut": "模型配置请求超时。",
     "desktop.modelsRemoveStoredKey": "移除已保存密钥",

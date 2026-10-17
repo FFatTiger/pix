@@ -138,3 +138,47 @@ export const CompactionSettingsMutationSchema = z.strictObject({
   settings: CompactionSettingsSchema,
 });
 export type CompactionSettingsMutation = z.infer<typeof CompactionSettingsMutationSchema>;
+
+// ---------------------------------------------------------------------------
+// Picker model visibility (settings.json `enabledModels`)
+// ---------------------------------------------------------------------------
+
+/** Exact configured-model identity (`provider` + model `id`). */
+export const ModelVisibilityRefSchema = z.strictObject({
+  provider: NonEmptyStringSchema,
+  id: NonEmptyStringSchema,
+});
+export type ModelVisibilityRef = z.infer<typeof ModelVisibilityRefSchema>;
+
+/**
+ * Wire projection of the picker model-visibility scope. Canonical owner is
+ * runtime-core (`ModelVisibilitySnapshot`); `patterns` mirrors the persisted
+ * `enabledModels` entries verbatim (null = no whitelist; every configured
+ * model shows) and `visible` carries the resolved configured-model set.
+ */
+export const ModelVisibilityResponseSchema = z.strictObject({
+  revision: z.string().regex(/^[0-9a-f]{64}$/),
+  patterns: z.array(NonEmptyStringSchema).nullable(),
+  visible: z.array(ModelVisibilityRefSchema),
+  defaultModel: ModelVisibilityRefSchema.nullable(),
+});
+export type ModelVisibilityResponse = z.infer<typeof ModelVisibilityResponseSchema>;
+
+export const ModelVisibilityChangeSchema = z.strictObject({
+  provider: NonEmptyStringSchema,
+  id: NonEmptyStringSchema,
+  visible: z.boolean(),
+});
+export type ModelVisibilityChange = z.infer<typeof ModelVisibilityChangeSchema>;
+
+/**
+ * CAS write of per-model visibility intents. The adapter computes the
+ * resulting `enabledModels` entries server-side (exact `provider/id`
+ * append/remove, glob expansion, whitelist generation); a write that would
+ * leave zero visible configured models fails closed.
+ */
+export const ModelVisibilityMutationSchema = z.strictObject({
+  expectedRevision: z.string().regex(/^[0-9a-f]{64}$/),
+  changes: z.array(ModelVisibilityChangeSchema),
+});
+export type ModelVisibilityMutation = z.infer<typeof ModelVisibilityMutationSchema>;

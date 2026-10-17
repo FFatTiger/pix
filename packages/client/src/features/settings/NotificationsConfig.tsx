@@ -69,7 +69,10 @@ export function NotificationsConfig() {
     () => readPushBrowserEnv({
       navigator: typeof navigator === "undefined" ? undefined : navigator,
       Notification: typeof Notification === "undefined" ? undefined : Notification,
-      matchMedia: typeof matchMedia === "function" ? matchMedia : undefined,
+      // Bind the native getter: a detached `matchMedia` reference throws
+      // "Illegal invocation" when readPushBrowserEnv calls it, which would
+      // crash the whole settings dialog in a real browser.
+      matchMedia: typeof matchMedia === "function" ? matchMedia.bind(globalThis) : undefined,
       window: typeof window === "undefined" ? undefined : window,
     }),
     [],

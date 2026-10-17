@@ -29,6 +29,13 @@ export interface EditableModelConfig {
   contextWindow?: number;
   maxTokens?: number;
   cost?: ModelConfigCost;
+  /**
+   * Snapshot-only picker-visibility flag: whether this model is visible in
+   * the model picker under the current global `enabledModels` scope
+   * (settings.json). Read projections always set it; mutations never carry
+   * it — visibility changes go through the settings model-visibility seam.
+   */
+  visibleInPicker?: boolean;
 }
 
 export interface EditableProviderConfig {

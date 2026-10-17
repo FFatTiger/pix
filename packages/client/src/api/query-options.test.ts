@@ -291,12 +291,13 @@ describe("table-driven mutation invalidation", () => {
       { queryKey: queryKeys.cwd.all },
     ]);
 
-    // Models exposes only the global models.json mutations; skills/plugins/auth
+    // Models exposes only the global models.json mutations plus the picker
+    // visibility writer (settings.json `enabledModels`); skills/plugins/auth
     // remain read-only. Trust and mounted settings keep their narrow mutations
     // (sessionIdleTimeout + the settings writers: built-ins, subagents,
     // raw text, the structured global tool selection, the Lore connection,
     // and the MCP surface: upsert/edit/toggle/remove/probe/import).
-    expect(Object.keys(options.models)).toEqual(["saveConfig", "discover", "metadata"]);
+    expect(Object.keys(options.models)).toEqual(["saveConfig", "discover", "metadata", "saveVisibility"]);
     expect(options).not.toHaveProperty("skills");
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");

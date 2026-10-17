@@ -22,8 +22,20 @@ export const EditableModelConfigSchema = z.strictObject({
   contextWindow: z.number().int().positive().safe().optional(),
   maxTokens: z.number().int().positive().safe().optional(),
   cost: ModelConfigCostSchema.optional(),
+  /**
+   * Picker-visibility snapshot flag (settings.json `enabledModels` scope).
+   * Read projections always carry it; mutation models never do — visibility
+   * changes go through the settings model-visibility seam.
+   */
+  visibleInPicker: z.boolean().optional(),
 });
 export type EditableModelConfig = z.infer<typeof EditableModelConfigSchema>;
+
+/** Snapshot model row: the read projection always carries picker visibility. */
+export const CatalogModelConfigSchema = EditableModelConfigSchema.extend({
+  visibleInPicker: z.boolean(),
+});
+export type CatalogModelConfig = z.infer<typeof CatalogModelConfigSchema>;
 
 export const EditableProviderConfigSchema = z.strictObject({
   sourceId: NonEmptyStringSchema.nullable(),
@@ -36,6 +48,12 @@ export const EditableProviderConfigSchema = z.strictObject({
 });
 export type EditableProviderConfig = z.infer<typeof EditableProviderConfigSchema>;
 
+/** Snapshot provider row: model rows always carry `visibleInPicker`. */
+export const CatalogProviderConfigSchema = EditableProviderConfigSchema.extend({
+  models: z.array(CatalogModelConfigSchema),
+});
+export type CatalogProviderConfig = z.infer<typeof CatalogProviderConfigSchema>;
+
 export const AvailableModelProviderSchema = z.strictObject({
   id: NonEmptyStringSchema,
   name: NonEmptyStringSchema,
@@ -46,7 +64,7 @@ export type AvailableModelProvider = z.infer<typeof AvailableModelProviderSchema
 
 export const ModelsConfigResponseSchema = z.strictObject({
   revision: z.string().regex(/^[0-9a-f]{64}$/),
-  providers: z.array(EditableProviderConfigSchema),
+  providers: z.array(CatalogProviderConfigSchema),
   availableProviders: z.array(AvailableModelProviderSchema),
 });
 export type ModelsConfigResponse = z.infer<typeof ModelsConfigResponseSchema>;
@@ -62,6 +80,8 @@ export const ModelConfigProviderMutationSchema = EditableProviderConfigSchema.om
   apiKeyConfigured: true,
 }).extend({
   apiKey: ModelConfigApiKeyMutationSchema,
+  // Mutations never carry the snapshot-only visibility flag.
+  models: z.array(EditableModelConfigSchema.omit({ visibleInPicker: true })),
 });
 export type ModelConfigProviderMutation = z.infer<typeof ModelConfigProviderMutationSchema>;
 

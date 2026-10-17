@@ -494,9 +494,12 @@ function projectModelConfigModel(raw: unknown): Record<string, unknown> {
   if (!isPlainObject(raw)) throw catalogUnavailable();
   const sourceIndex = readField(raw, "sourceIndex");
   if (sourceIndex !== null && (typeof sourceIndex !== "number" || !Number.isSafeInteger(sourceIndex) || sourceIndex < 0)) throw catalogUnavailable();
+  const visibleInPicker = readField(raw, "visibleInPicker");
+  if (typeof visibleInPicker !== "boolean") throw catalogUnavailable();
   const out: Record<string, unknown> = {
     sourceIndex,
     id: requireNonEmptyString(readField(raw, "id")),
+    visibleInPicker,
   };
   for (const key of ["name", "api"] as const) {
     const value = optionalNonEmptyString(raw, key);
@@ -593,6 +596,52 @@ function projectSettingsConfigSnapshot(raw: unknown): Record<string, unknown> {
   const content = readField(raw, "content");
   if (typeof content !== "string") throw catalogUnavailable();
   return { revision, content };
+}
+
+function invalidModelVisibilityBody(): never {
+  throw new HttpError(400, "INVALID_MODEL_VISIBILITY", "Invalid model visibility body");
+}
+
+/** Exact provider/id pair, strictly two non-empty string fields. */
+function projectModelVisibilityRef(raw: unknown): { provider: string; id: string } {
+  if (!isPlainObject(raw) || !exactKeys(raw, ["provider", "id"])) throw catalogUnavailable();
+  return {
+    provider: requireNonEmptyString(readField(raw, "provider")),
+    id: requireNonEmptyString(readField(raw, "id")),
+  };
+}
+
+/** Picker model-visibility snapshot: revision + patterns + resolved set + default. */
+function projectModelVisibilitySnapshot(raw: unknown): Record<string, unknown> {
+  if (!isPlainObject(raw)) throw catalogUnavailable();
+  const revision = requireNonEmptyString(readField(raw, "revision"));
+  if (!/^[0-9a-f]{64}$/.test(revision)) throw catalogUnavailable();
+  const patternsRaw = readField(raw, "patterns");
+  if (patternsRaw !== null && !Array.isArray(patternsRaw)) throw catalogUnavailable();
+  const patterns = patternsRaw === null ? null : projectArray(patternsRaw, requireNonEmptyString);
+  const visible = projectArray(readField(raw, "visible"), projectModelVisibilityRef);
+  const defaultRaw = readField(raw, "defaultModel");
+  return {
+    revision,
+    patterns,
+    visible,
+    defaultModel: defaultRaw === null ? null : projectModelVisibilityRef(defaultRaw),
+  };
+}
+
+/** Strict visibility mutation: `{ expectedRevision, changes: [{provider,id,visible}] }`. */
+function parseModelVisibilityMutation(body: Record<string, unknown>): Record<string, unknown> {
+  if (!exactKeys(body, ["expectedRevision", "changes"])) invalidModelVisibilityBody();
+  if (typeof body.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(body.expectedRevision)) invalidModelVisibilityBody();
+  if (!Array.isArray(body.changes)) invalidModelVisibilityBody();
+  const changes = body.changes.map((raw) => {
+    if (!isPlainObject(raw) || !exactKeys(raw, ["provider", "id", "visible"])) invalidModelVisibilityBody();
+    if (typeof raw.provider !== "string" || !raw.provider.trim()) invalidModelVisibilityBody();
+    if (typeof raw.id !== "string" || !raw.id.trim()) invalidModelVisibilityBody();
+    if (typeof raw.visible !== "boolean") invalidModelVisibilityBody();
+    return { provider: raw.provider, id: raw.id, visible: raw.visible };
+  });
+  return { expectedRevision: body.expectedRevision, changes };
 }
 
 function projectSubagentSettingsSnapshot(raw: unknown) {
@@ -1167,6 +1216,37 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
       if (!input.success) invalidSettingsConfigBody();
       try {
         return c.json(projectMemorySettingsSnapshot(await deps.settingsMutation!.writeMemoryProvider(input.data)));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    // Picker model visibility (settings.json `enabledModels`, resolved
+    // against models.json-configured models): same settings.json ownership,
+    // CAS fence and HttpError paths as the other structured settings seams.
+    // The `settings.configure` capability token covers this seam; the models
+    // settings page is its UI. Writes take effect immediately for every
+    // picker/catalog read (the model store re-fingerprints settings.json).
+    app.get("/v1/settings/model-visibility", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      try {
+        return c.json(projectModelVisibilitySnapshot(await deps.settingsMutation!.readModelVisibilityConfig()));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    app.put("/v1/settings/model-visibility", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      const input = parseModelVisibilityMutation(await readJsonObject(c, SETTINGS_CONFIG_BODY_LIMIT));
+      try {
+        return c.json(projectModelVisibilitySnapshot(await deps.settingsMutation!.writeModelVisibilityConfig(input)));
       } catch (error) {
         throw mapSettingsConfigError(error);
       }

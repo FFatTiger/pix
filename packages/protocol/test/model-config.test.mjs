@@ -20,10 +20,23 @@ describe("models.json editor wire DTO", () => {
         id: "custom",
         apiKeyConfigured: true,
         modelsDefined: true,
-        models: [{ sourceIndex: 0, id: "m1", reasoning: true }],
+        models: [{ sourceIndex: 0, id: "m1", reasoning: true, visibleInPicker: true }],
       }],
       availableProviders: [{ id: "openai", name: "OpenAI", methods: ["apiKey"], modelCount: 10 }],
     }).success, true);
+    // The response projection REQUIRES the per-model picker flag; a missing
+    // flag fails closed instead of defaulting to visible.
+    assert.equal(ModelsConfigResponseSchema.safeParse({
+      revision,
+      providers: [{
+        sourceId: "custom",
+        id: "custom",
+        apiKeyConfigured: true,
+        modelsDefined: true,
+        models: [{ sourceIndex: 0, id: "m1", reasoning: true }],
+      }],
+      availableProviders: [],
+    }).success, false);
     assert.equal(ModelsConfigMutationSchema.safeParse({
       expectedRevision: revision,
       providers: [{
@@ -34,6 +47,17 @@ describe("models.json editor wire DTO", () => {
         models: [],
       }],
     }).success, true);
+    // Mutations never carry the snapshot-only visibility flag.
+    assert.equal(ModelsConfigMutationSchema.safeParse({
+      expectedRevision: revision,
+      providers: [{
+        sourceId: "custom",
+        id: "renamed",
+        apiKey: { mode: "preserve" },
+        modelsDefined: true,
+        models: [{ sourceIndex: 0, id: "m1", visibleInPicker: true }],
+      }],
+    }).success, false);
   });
 
   it("validates one-way discovery inputs and credential-blind results", () => {
@@ -96,5 +120,54 @@ describe("models.json editor wire DTO", () => {
       expectedRevision: revision,
       providers: [{ sourceId: null, id: "p", apiKey: { mode: "replace", value: "" }, modelsDefined: false, models: [] }],
     }).success, false);
+  });
+});
+
+describe("picker model visibility wire DTO", () => {
+  it("accepts the canonical snapshot and intent mutation shapes", async () => {
+    const { ModelVisibilityResponseSchema, ModelVisibilityMutationSchema } = await import("../dist/index.js");
+    assert.equal(ModelVisibilityResponseSchema.safeParse({
+      revision,
+      patterns: null,
+      visible: [{ provider: "custom", id: "m1" }],
+      defaultModel: null,
+    }).success, true);
+    assert.equal(ModelVisibilityResponseSchema.safeParse({
+      revision,
+      patterns: ["custom/*", "other/m2:high"],
+      visible: [{ provider: "custom", id: "m1" }, { provider: "other", id: "m2" }],
+      defaultModel: { provider: "custom", id: "m1" },
+    }).success, true);
+    assert.equal(ModelVisibilityMutationSchema.safeParse({
+      expectedRevision: revision,
+      changes: [{ provider: "custom", id: "m1", visible: false }],
+    }).success, true);
+    assert.equal(ModelVisibilityMutationSchema.safeParse({ expectedRevision: revision, changes: [] }).success, true);
+  });
+
+  it("fails closed on malformed shapes", async () => {
+    const { ModelVisibilityResponseSchema, ModelVisibilityMutationSchema } = await import("../dist/index.js");
+    const badResponses = [
+      { revision, patterns: "custom/*", visible: [], defaultModel: null },
+      { revision, patterns: [], visible: "x", defaultModel: null },
+      { revision, patterns: null, visible: [{ provider: "", id: "m1" }], defaultModel: null },
+      { revision, patterns: null, visible: [], defaultModel: { provider: "p" } },
+      { revision: "nothex", patterns: null, visible: [], defaultModel: null },
+      { revision, patterns: null, visible: [], defaultModel: null, extra: 1 },
+    ];
+    for (const bad of badResponses) {
+      assert.equal(ModelVisibilityResponseSchema.safeParse(bad).success, false, JSON.stringify(bad));
+    }
+    const badMutations = [
+      { expectedRevision: revision },
+      { expectedRevision: revision, changes: {} },
+      { expectedRevision: revision, changes: [{ provider: "p", id: "m1" }] },
+      { expectedRevision: revision, changes: [{ provider: "p", id: "m1", visible: "yes" }] },
+      { expectedRevision: "nothex", changes: [] },
+      { expectedRevision: revision, changes: [], extra: 1 },
+    ];
+    for (const bad of badMutations) {
+      assert.equal(ModelVisibilityMutationSchema.safeParse(bad).success, false, JSON.stringify(bad));
+    }
   });
 });
