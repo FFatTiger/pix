@@ -164,6 +164,12 @@ export interface ModelSelectorProps {
   model: { provider: string; modelId: string } | null;
   modelList: readonly { id: string; name: string; provider: string; api?: string }[];
   onModelChange: (provider: string, modelId: string) => void;
+  /**
+   * Called every time the picker opens, before the panel renders. Embedders use
+   * it to refresh the catalog in place; the currently cached list stays visible
+   * until the new data arrives.
+   */
+  onMenuOpen?: () => void;
   /** Allow re-selecting the active model (auto model selection). */
   allowReselect?: boolean;
   disabled?: boolean;
@@ -177,6 +183,7 @@ export function ModelSelector({
   model,
   modelList,
   onModelChange,
+  onMenuOpen,
   allowReselect = false,
   disabled = false,
   title,
@@ -344,6 +351,7 @@ export function ModelSelector({
         onClick={(e) => {
           setRect(anchorRectOf(e.currentTarget));
           if (!open) {
+            onMenuOpen?.();
             setSearch("");
             if (currentModelOption) {
               setExpandedProviders((current) => {

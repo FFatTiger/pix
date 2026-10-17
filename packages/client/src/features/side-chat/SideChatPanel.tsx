@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowsClockwiseIcon,
   TrashIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
 import { MAX_SIDE_CHAT_MESSAGE_CHARS, type ProtocolError, type ToolResultMessage } from "@fffattiger/pix-protocol";
-import { createQueryOptions } from "@/api/query-keys";
+import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { ChatInput, type ChatInputHandle } from "@/components/chat/ChatInput";
 import { ChatTranscriptRowView } from "@/components/transcript/TranscriptList";
 import { buildChatTranscriptRows } from "@/components/transcript/chat-projection";
@@ -118,7 +118,14 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
   // Model catalog for the selector — the same Host models query the main
   // composer uses (never a forked list source).
   const http = useHttpClient();
+  const queryClient = useQueryClient();
   const modelsQuery = useQuery({ ...createQueryOptions(http).models.list() });
+  // Same rule as the main composer: every open refreshes the catalog in place,
+  // keeping the cached list on screen until the new one lands.
+  const refreshModelCatalog = useCallback(() => {
+    if (modelsQuery.isFetching) return;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.models.list() });
+  }, [modelsQuery.isFetching, queryClient]);
   const modelList = useMemo(
     () => (modelsQuery.data?.models ?? []).map((model) => ({
       id: model.id,
@@ -258,6 +265,7 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
           sendDisabled={pending !== null || state.status !== "idle"}
           model={{ provider: state.model.provider, modelId: state.model.id }}
           modelList={modelList}
+          onModelMenuOpen={refreshModelCatalog}
           onModelChange={(provider: string, modelId: string) => applyModel(provider, modelId, state.thinkingLevel)}
           thinkingLevel={state.thinkingLevel}
           onThinkingLevelChange={(level: ThinkingLevelOption) => applyModel(state.model.provider, state.model.id, level)}

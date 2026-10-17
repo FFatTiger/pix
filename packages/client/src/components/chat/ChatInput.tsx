@@ -99,6 +99,8 @@ interface Props {
   imageInputByModel?: Record<string, boolean>;
   modelScopeWarnings?: string[];
   onModelChange?: (provider: string, modelId: string) => void;
+  /** Fired when the model picker opens (embedders refresh the catalog here). */
+  onModelMenuOpen?: () => void;
   compactResult?: CompactResultInfo | null;
   thinkingLevel?: ThinkingLevelOption;
   onThinkingLevelChange?: (level: ThinkingLevelOption) => void;
@@ -360,7 +362,7 @@ export function getUserMessageDraftImages(message: UserMessage): ChatDraftImage[
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, toolbarAccessory, variant = "main", placeholder: placeholderOverride, labels, controlsLocked = false, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange,
+  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, toolbarAccessory, variant = "main", placeholder: placeholderOverride, labels, controlsLocked = false, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange, onModelMenuOpen,
   compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, inputHistory = [],
@@ -2552,6 +2554,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 {...(model === undefined ? { model: null } : { model })}
                 modelList={selectorModelList}
                 onModelChange={onModelChange}
+                {...(onModelMenuOpen ? { onMenuOpen: onModelMenuOpen } : {})}
                 allowReselect={isAutoModelSelection === true}
                 {...(isStreaming ? { title: t("desktop.changeModelWhileRunning") } : {})}
                 {...(controlsLocked ? { disabled: true, ...(labels?.locked ? { title: labels.locked } : {}) } : {})}

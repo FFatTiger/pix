@@ -346,6 +346,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     ...createQueryOptions(http).models.list(),
     enabled: liveWorkspaceEnabled && canModels,
   });
+  // Opening the picker refreshes the catalog in place: the cached list renders
+  // immediately and the refetched one replaces it (no loading state, no empty
+  // flash). In-flight requests are never doubled up.
+  const refreshModelCatalog = useCallback(() => {
+    if (modelsQuery.isFetching) return;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.models.list() });
+  }, [modelsQuery.isFetching, queryClient]);
   const filesIndexQuery = useQuery({
     ...createQueryOptions(http).files.index(cwd ?? ""),
     enabled: liveWorkspaceEnabled && live && Boolean(cwd) && canFilesIndex,
@@ -1235,6 +1242,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         isAutoModelSelection={isAutoModelSelection}
         modelNames={modelNames}
         modelList={modelList}
+        onModelMenuOpen={refreshModelCatalog}
         {...(liveWorkspaceEnabled && modelChangeInteractive ? { onModelChange: handleModelChange } : {})}
         {...(thinkingLevel === undefined ? {} : { thinkingLevel })}
         {...(liveWorkspaceEnabled && thinkingChangeInteractive ? { onThinkingLevelChange: handleThinkingLevelChange } : {})}

@@ -2026,6 +2026,35 @@ describe("Composer — coherent history and staged context", () => {
     expect(countType(ws, "command")).toBe(0);
   });
 
+  it("refetches the model catalog on every picker open without blanking the cached list", async () => {
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: [] } });
+      await flush();
+    });
+    await settleQueryNotifications();
+    const fetchImpl = globalThis.fetch as typeof fetch;
+    const before = countMockFetchCalls(fetchImpl, "/v1/models");
+    expect(before).toBeGreaterThan(0);
+
+    await act(async () => { fireEvent.click(screen.getByLabelText("Change model")); await flush(); });
+    // The cached catalog stays on screen while the refresh runs: opening must
+    // never blank the list or swap it for a loading state.
+    expect(document.querySelectorAll(".model-row").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Search models…")).toBeTruthy();
+    await settleQueryNotifications();
+    expect(countMockFetchCalls(fetchImpl, "/v1/models")).toBe(before + 1);
+
+    // Every open refreshes, not just the first one.
+    fireEvent.click(screen.getByLabelText("Change model"));
+    await act(async () => { await flush(); });
+    fireEvent.click(screen.getByLabelText("Change model"));
+    await act(async () => { await flush(); });
+    await settleQueryNotifications();
+    expect(countMockFetchCalls(fetchImpl, "/v1/models")).toBe(before + 2);
+  });
+
   it("keeps pending model intent through automatic observation without showing another model's usage, then follows accepted context events", async () => {
     mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
     const ws = await acceptAutomaticConnection(lifecycleAck());
