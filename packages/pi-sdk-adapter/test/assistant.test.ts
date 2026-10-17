@@ -324,6 +324,8 @@ describe("assistant tools (search_sessions / read_session)", () => {
     assert.match(text, /助手调用工具: grep/);
     assert.match(text, /结果\(grep\): config\/openclash.yaml:3/);
     assert.match(text, /助手: 配置在 openclash.yaml/);
+    // The UI names the session from details even though the model passed an id.
+    assert.deepEqual(result.details, { sessionId, cwd: resolve("/repos/tools-demo"), title: "查一下路由" });
   });
 
   it("read_session resolves by title/first-message prefix and fails closed for unknown sessions", async () => {
@@ -671,8 +673,9 @@ describe("assistant session capabilities (round 3 tools)", () => {
     const ok = await runTool(tools, "open_session", { session: "目标会话" });
     assert.equal(ok.isError, undefined);
     assert.match(ok.content[0]!.text!, /已为用户打开会话/);
-    const details = ok.details as { sessionId?: unknown; cwd?: unknown };
+    const details = ok.details as { sessionId?: unknown; cwd?: unknown; title?: unknown };
     assert.equal(typeof details.sessionId, "string");
+    assert.equal(details.title, "目标会话");
     assert.equal(details.cwd, resolve("/repos/dest"));
     const miss = await runTool(tools, "open_session", { session: "不存在的" });
     assert.equal(miss.isError, true);

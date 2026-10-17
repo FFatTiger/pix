@@ -90,7 +90,19 @@ function toTarget(header: SessionHeader): ResolvedTarget {
 
 type CardStatus = "idle" | "confirm-delete" | "done" | { error: string };
 
-export function AssistantActionCard({ toolName, input }: { toolName: ActionToolName; input: Record<string, unknown> }) {
+/** The tool's own resolution (result details), which beats the cached-page guess. */
+function resultTarget(details: unknown): ResolvedTarget | null {
+  if (typeof details !== "object" || details === null) return null;
+  const { sessionId, cwd, title } = details as Record<string, unknown>;
+  if (typeof sessionId !== "string" || typeof cwd !== "string") return null;
+  return { sessionId, cwd, title: typeof title === "string" && title.trim() !== "" ? title : sessionId };
+}
+
+export function AssistantActionCard({ toolName, input, resultDetails }: {
+  toolName: ActionToolName;
+  input: Record<string, unknown>;
+  resultDetails?: unknown;
+}) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const http = useHttpClient();
@@ -101,7 +113,7 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
 
   if (toolName === "open_session") {
     const selector = typeof input.session === "string" ? input.session : "";
-    const target = resolve(selector);
+    const target = resultTarget(resultDetails) ?? resolve(selector);
     return (
       <div className="assistant-action-card" data-testid="assistant-action-card">
         <div className="assistant-action-card-title">
@@ -125,7 +137,7 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
     const selector = typeof input.session === "string" ? input.session : "";
     const message = typeof input.message === "string" ? input.message : "";
     const delivery = input.delivery === "steer" || input.delivery === "follow_up" ? input.delivery : "new";
-    const target = resolve(selector);
+    const target = resultTarget(resultDetails) ?? resolve(selector);
     return (
       <div className="assistant-action-card" data-testid="assistant-action-card">
         <div className="assistant-action-card-title">{t("desktop.assistantActionSentTitle")}</div>
@@ -155,7 +167,7 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
   if (toolName === "draft_to_session") {
     const selector = typeof input.session === "string" ? input.session : "";
     const text = typeof input.text === "string" ? input.text : "";
-    const target = resolve(selector);
+    const target = resultTarget(resultDetails) ?? resolve(selector);
     return (
       <div className="assistant-action-card" data-testid="assistant-action-card">
         <div className="assistant-action-card-title">

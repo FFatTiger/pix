@@ -88,7 +88,7 @@ function enrichedToolLabel(
   const assistantLabel = assistantToolLabel(block.toolName);
   if (assistantLabel) {
     return {
-      displayLabel: assistantToolDetailText(block.toolName, block.input, ts),
+      displayLabel: assistantToolDetailText(block.toolName, block.input, ts, block.result?.details),
       iconName: assistantLabel.iconName,
     };
   }

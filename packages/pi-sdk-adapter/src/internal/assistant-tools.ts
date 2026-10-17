@@ -568,8 +568,18 @@ export function createAssistantCreateTargetResolver(
 }
 
 
-function toolText(text: string) {
-  return { content: [{ type: "text" as const, text }], details: undefined };
+function toolText(text: string, details?: SessionTargetDetails) {
+  return { content: [{ type: "text" as const, text }], details };
+}
+/** Resolved target of a session tool, so the UI can name it instead of echoing the raw selector. */
+interface SessionTargetDetails { sessionId: string; cwd: string; title?: string }
+function sessionTargetDetails(target: AssistantSessionInfo): SessionTargetDetails {
+  const title = target.name ?? target.firstMessage;
+  return {
+    sessionId: target.id,
+    cwd: target.cwd,
+    ...(title === undefined || title.trim() === "" ? {} : { title: concise(title, 80) }),
+  };
 }
 function toolError(text: string) {
   return { content: [{ type: "text" as const, text }], details: undefined, isError: true as const };
@@ -1091,15 +1101,7 @@ export function createAssistantToolsExtension(
         const resolved = await resolveTarget(params.session, signal);
         if ("error" in resolved) return resolved.error;
         const target = resolved.target;
-        const title = target.name ?? target.firstMessage;
-        return {
-          content: [{ type: "text" as const, text: `已为用户打开会话：\n${targetLine(target)}` }],
-          details: {
-            sessionId: target.id,
-            cwd: target.cwd,
-            ...(title === undefined || title.trim() === "" ? {} : { title: concise(title, 80) }),
-          },
-        };
+        return toolText(`已为用户打开会话：\n${targetLine(target)}`, sessionTargetDetails(target));
       },
     });
 
@@ -1211,11 +1213,11 @@ export function createAssistantToolsExtension(
           const completion = await waitWithAbort(assistantOps, signal, res.delegationId, waitMinutes);
           if (completion === "aborted") throw signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
           if (completion === null) {
-            return toolText(`已发送并等待超时：目标仍在处理这条消息。它结束时你会收到通知，届时请查看并汇报。\n${res.note}`);
+            return toolText(`已发送并等待超时：目标仍在处理这条消息。它结束时你会收到通知，届时请查看并汇报。\n${res.note}`, sessionTargetDetails(target));
           }
-          return toolText(formatCompletion(res.note, completion));
+          return toolText(formatCompletion(res.note, completion), sessionTargetDetails(target));
         }
-        return toolText(`已发送：\n${res.note}\n目标会话: ${targetLine(target)}\n\n它结束时你会收到通知。`);
+        return toolText(`已发送：\n${res.note}\n目标会话: ${targetLine(target)}\n\n它结束时你会收到通知。`, sessionTargetDetails(target));
       },
     });
 
@@ -1317,7 +1319,7 @@ export function createAssistantToolsExtension(
         const res = await assistantOps.stop(target.id);
         if (res.ok === false) return toolError(res.error.message);
         if (res.kind !== "stop") return toolError("会话操作返回了意外结果。");
-        return toolText(`已停止：\n- ${targetLine(target)}\n${res.note}`);
+        return toolText(`已停止：\n- ${targetLine(target)}\n${res.note}`, sessionTargetDetails(target));
       },
     });
 
@@ -1337,7 +1339,7 @@ export function createAssistantToolsExtension(
         const resolved = await resolveTarget(params.session, signal);
         if ("error" in resolved) return resolved.error;
         const target = resolved.target;
-        return toolText(`已起草续话（等用户点击「填入输入框」按钮，不会自动发送）：\n目标: ${targetLine(target)}\n草稿: ${concise(params.text, 200)}`);
+        return toolText(`已起草续话（等用户点击「填入输入框」按钮，不会自动发送）：\n目标: ${targetLine(target)}\n草稿: ${concise(params.text, 200)}`, sessionTargetDetails(target));
       },
     });
 
@@ -1400,7 +1402,7 @@ export function createAssistantToolsExtension(
           .filter((line): line is string => line !== null);
         return {
           content: [{ type: "text", text: readSessionResultText(target, summaries, messageEntries.length) }],
-          details: undefined,
+          details: sessionTargetDetails(target),
         };
       },
     });

@@ -218,7 +218,7 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
       action: t(assistantLabel.labelKey),
       completedAction: t(assistantLabel.labelKey),
       continuedAction: t(assistantLabel.labelKey),
-      detail: assistantToolDetailText(block.toolName, block.input, t),
+      detail: assistantToolDetailText(block.toolName, block.input, t, block.result?.details),
       iconName: assistantLabel.iconName,
       tone: undefined,
     };
@@ -554,7 +554,7 @@ function CodexToolDetails({ block }: { block: ToolBlock }) {
 
   return (
     <div className={`codex-tool-details${isPresentationFailure(block) ? " is-error" : ""}`}>
-      {isAssistantActionTool(block.toolName) ? <AssistantActionCard toolName={block.toolName} input={block.input} /> : null}
+      {isAssistantActionTool(block.toolName) ? <AssistantActionCard toolName={block.toolName} input={block.input} resultDetails={block.result?.details} /> : null}
       {hasInput && (
         <div className="codex-tool-detail-section">
           <div className="codex-tool-detail-label">{t("desktop.codexProcessInput")}</div>

@@ -110,6 +110,10 @@ describe("assistantToolDetailText", () => {
     expect(assistantToolDetailText("draft_to_session", { session: "修 bug" }, zhT)).toBe("给「修 bug」填写草稿");
     expect(assistantToolDetailText("send_to_session", { session: "修 bug" }, zhT)).toBe("发消息给「修 bug」");
     expect(assistantToolDetailText("create_session", { project: "pix-next" }, zhT)).toBe("在「pix-next」新建会话");
+    // A bare id in the call reads as the session title once the result names it.
+    const id = "01a14473-841c-716c-925c-000ca123fd35";
+    expect(assistantToolDetailText("send_to_session", { session: id }, zhT, { sessionId: id, cwd: "/x", title: "修 bug" })).toBe("发消息给「修 bug」");
+    expect(assistantToolDetailText("send_to_session", { session: id }, zhT)).toBe(`发消息给「${id}」`);
     expect(assistantToolDetailText("stop_session", { session: "s-9" }, zhT)).toBe("停止「s-9」");
     expect(assistantToolDetailText("scratchpad", { action: "add", text: "检查 e2e" }, zhT)).toBe("记到便签：检查 e2e");
   });

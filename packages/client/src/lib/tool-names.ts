@@ -118,6 +118,18 @@ const TOOL_DETAIL_KEYS: Record<string, readonly string[]> = {
   scratchpad: ["text"],
 };
 
+/**
+ * Session tools take an id or a title; once the tool has run its result
+ * details carry the resolved target's title, which names the session even
+ * when the model passed a bare id.
+ */
+function resolvedSessionTitle(toolName: string, details: unknown): string | undefined {
+  if (TOOL_DETAIL_KEYS[toolName]?.[0] !== "session") return undefined;
+  if (typeof details !== "object" || details === null) return undefined;
+  const title = (details as Record<string, unknown>).title;
+  return typeof title === "string" && title.trim() !== "" ? boundedDetailText(title) : undefined;
+}
+
 /** First meaningful string argument for a tool-call detail line (bounded). */
 export function assistantToolDetailValue(toolName: string, input: Record<string, unknown> | undefined): string {
   const keys = TOOL_DETAIL_KEYS[toolName] ?? ["query", "project", "path", "range", "uri"];
@@ -139,12 +151,14 @@ export function assistantToolDetailText(
   toolName: string,
   input: Record<string, unknown> | undefined,
   t: AssistantDetailTranslator,
+  resultDetails?: unknown,
 ): string {
   const label = ASSISTANT_TOOL_LABELS[toolName];
   if (label === undefined) return "";
-  const value = label.detailValue !== undefined
-    ? label.detailValue(input, t)
-    : assistantToolDetailValue(toolName, input);
+  const value = resolvedSessionTitle(toolName, resultDetails)
+    ?? (label.detailValue !== undefined
+      ? label.detailValue(input, t)
+      : assistantToolDetailValue(toolName, input));
   if (value !== "") {
     if (label.projectDetailKey !== undefined) {
       const project = typeof input?.project === "string" ? boundedDetailText(input.project) : "";
