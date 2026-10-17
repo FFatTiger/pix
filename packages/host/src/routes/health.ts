@@ -176,6 +176,20 @@ export function normalizeAttachmentsCapabilities(
 }
 
 /**
+ * Honest Web Push filter. `push` is advertised only when the push seam is
+ * actually mounted — the same source of truth as the /v1/push/* routes. Like
+ * attachments.upload the store is host-owned and sessiond-independent, so a
+ * mounted seam keeps the token in both the full and degraded projections.
+ */
+export function normalizePushCapabilities(
+  listed: readonly HostCapability[],
+  deps: HostDeps,
+): readonly HostCapability[] {
+  if (deps.push !== undefined) return listed;
+  return listed.filter((token) => token !== "push");
+}
+
+/**
  * Strip session-mutation tokens from a list. Applied to the readonly/
  * degraded projection: `session.write` / `session.delete` / `session.settings`
  * are only advertisable while sessiond is up, so the down/unknown projection
@@ -202,12 +216,15 @@ export async function resolveCapabilities(
   // Explicit overrides still have catalog tokens rewritten from mounted seams.
   // Session mutation tokens are seam-honest: only the mutation tokens whose
   // seams are actually mounted survive in the full projection.
-  const full = normalizeAttachmentsCapabilities(
-    normalizeAssistantCapabilities(
-      normalizeSessionMutationCapabilities(
-        normalizeCatalogCapabilities(
-          deps.capabilities?.full ?? mounted,
-          deps.catalogs,
+  const full = normalizePushCapabilities(
+    normalizeAttachmentsCapabilities(
+      normalizeAssistantCapabilities(
+        normalizeSessionMutationCapabilities(
+          normalizeCatalogCapabilities(
+            deps.capabilities?.full ?? mounted,
+            deps.catalogs,
+          ),
+          deps,
         ),
         deps,
       ),
@@ -218,12 +235,15 @@ export async function resolveCapabilities(
   // The readonly projection is only ever returned while sessiond is down (or
   // unknown), so both session-mutation tokens are always stripped there.
   // attachments.upload is host-owned and stays when its seam is mounted.
-  const readonly = normalizeAttachmentsCapabilities(
-    withoutSessionMutationTokens(
-      normalizeCatalogCapabilities(
-        deps.capabilities?.readonly ?? mounted,
-        deps.catalogs,
+  const readonly = normalizePushCapabilities(
+    normalizeAttachmentsCapabilities(
+      withoutSessionMutationTokens(
+        normalizeCatalogCapabilities(
+          deps.capabilities?.readonly ?? mounted,
+          deps.catalogs,
+        ),
       ),
+      deps,
     ),
     deps,
   );

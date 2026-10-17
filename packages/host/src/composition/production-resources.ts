@@ -62,6 +62,12 @@ import {
   HostStateDirectoryError,
   type HostStateDirectoryLease,
 } from "../resources/host-state-directory.js";
+import {
+  createWebPushStoreFromLease,
+  validateWebPushDocumentBeforeLock,
+  WebPushStoreError,
+  type WebPushStore,
+} from "../resources/web-push-store.js";
 import type { HostCapability, HostLogger } from "../types.js";
 
 /** Fixed ping / RPC timeout for the resolver and the worktree safety adapter. */
@@ -139,6 +145,7 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "plugins",
   "themes",
   "project.trust",
+  "push",
 ];
 
 /**
@@ -198,6 +205,7 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "plugins",
   "themes",
   "project.trust",
+  "push",
 ];
 
 /** Single safe error class for any roots configuration/canonicalization failure. */
@@ -258,8 +266,8 @@ export class InvalidHostDirError extends Error {
 }
 
 function sanitizeHostDirError(error: unknown): string {
-  // Ledger-specific failures (both sidecars) keep their own fixed code.
-  if (error instanceof TrustedRootsLedgerError || error instanceof ManagedWorktreesLedgerError) {
+  // Ledger-specific failures (all three sidecars) keep their own fixed code.
+  if (error instanceof TrustedRootsLedgerError || error instanceof ManagedWorktreesLedgerError || error instanceof WebPushStoreError) {
     return `PIX_HOST_DIR rejected (${error.code})`;
   }
   // Shared lease lock/host-dir failures map to the trusted facade codes (the
@@ -496,6 +504,13 @@ export interface ProductionResources {
    * Missing sidecar stays absent until the first managed record is written.
    */
   managedWorktreesLedger: ManagedWorktreesLedger;
+  /**
+   * Host-owned durable Web Push store (`web-push.json`) over the SAME shared
+   * lease (one lock, one mutation mutex — never a second lock). `close()` is a
+   * no-op: the lease owner (trustedRootsLedger) releases it. Missing sidecar
+   * stays absent until the first VAPID key generation / subscription write.
+   */
+  webPushStore: WebPushStore;
   /** Managed-worktree domain service (ownership evidence + memory authorization). */
   managedWorktrees: ManagedWorktreesService;
 }
@@ -552,6 +567,7 @@ export async function createProductionResources(
   // mutex, and one installation context — there is NO second lock.
   let trustedRootsLedger: TrustedRootsLedger;
   let managedWorktreesLedger: ManagedWorktreesLedger;
+  let webPushStore: WebPushStore;
   let lease: HostStateDirectoryLease;
   try {
     const hostDir = resolvePixHostDir(options.hostDirEnv);
@@ -591,10 +607,23 @@ export async function createProductionResources(
           }
           throw new ManagedWorktreesLedgerError("MANAGED_CORRUPT", "Managed-worktrees ledger failed validation");
         }
+        // Web Push sidecar: same fail-closed pre-lock validation. A corrupt
+        // store must fail startup with no lock file and immutable evidence;
+        // a missing store stays absent until the first key/subscription write.
+        try {
+          await validateWebPushDocumentBeforeLock(readDocument);
+        } catch (error) {
+          if (error instanceof WebPushStoreError) throw error;
+          if (error instanceof HostStateDirectoryError) {
+            throw new WebPushStoreError("PUSH_DOC_CORRUPT", "Web Push store failed validation");
+          }
+          throw new WebPushStoreError("PUSH_DOC_CORRUPT", "Web Push store failed validation");
+        }
       },
     });
     trustedRootsLedger = createTrustedRootsLedgerFromLease(lease, { maxClaims: PRODUCTION_LEDGER_MAX });
     managedWorktreesLedger = createManagedWorktreesLedgerFromLease(lease, { maxRecords: PRODUCTION_LEDGER_MAX });
+    webPushStore = createWebPushStoreFromLease(lease);
   } catch (error) {
     throw new InvalidHostDirError(sanitizeHostDirError(error));
   }
@@ -640,5 +669,5 @@ export async function createProductionResources(
     limits: { ...PRODUCTION_RESOURCE_LIMITS },
     defaultCwd,
   };
-  return { deps, resolver, adapter, trustedRootsLedger, managedWorktreesLedger, managedWorktrees };
+  return { deps, resolver, adapter, trustedRootsLedger, managedWorktreesLedger, webPushStore, managedWorktrees };
 }

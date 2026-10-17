@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { HttpClient } from "./http-client";
 import { createGateApi, type GateLoginInput, type GatePasswordChangeInput } from "./gate";
 import { createPreferencesApi, type PreferencesPatchInput } from "./preferences";
+import { createPushApi } from "./push";
 import { createResourcesApi, type UploadInput } from "./resources";
 import { SuccessSchema } from "./schemas";
 import { createSessionsApi } from "./sessions";
@@ -76,6 +77,7 @@ function primeSessionTitle(queryClient: QueryClient, id: string, title: string):
 export function createMutationOptions(http: HttpClient, queryClient: QueryClient) {
   const gate = createGateApi(http);
   const preferencesApi = createPreferencesApi(http);
+  const push = createPushApi(http);
   const resources = createResourcesApi(http);
   const sessions = createSessionsApi(http);
   const configuration = createConfigurationApi(http);
@@ -318,6 +320,28 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
             queryKeys.plugins.list(input.cwd),
             queryKeys.commands.list(input.cwd),
           ),
+      }),
+    },
+    push: {
+      /**
+       * Register this browser's push subscription. The config query is not
+       * invalidated — the VAPID key never changes on subscribe; the settings
+       * page refreshes its own device state locally (honest, no fake remote
+       * change).
+       */
+      subscribe: () => ({
+        mutationKey: ["pix", "push", "subscribe"] as const,
+        mutationFn: (input: import("@fffattiger/pix-protocol").PushSubscriptionPayload) =>
+          push.subscribe(input),
+      }),
+      unsubscribe: () => ({
+        mutationKey: ["pix", "push", "unsubscribe"] as const,
+        mutationFn: (endpoint: string) => push.unsubscribe(endpoint),
+      }),
+      /** Test notification for this device's endpoint; failures stay typed. */
+      test: () => ({
+        mutationKey: ["pix", "push", "test"] as const,
+        mutationFn: (endpoint: string) => push.test(endpoint),
       }),
     },
   };

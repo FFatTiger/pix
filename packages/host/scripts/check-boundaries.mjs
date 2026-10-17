@@ -30,13 +30,12 @@ const compositionRoot = join(srcRoot, "composition");
 const GLOBAL_FORBIDDEN_IMPORT_PREFIXES = [
   "@earendil-works/",
   "next/",
-  "@fffattiger/pix-runtime-core",
   "react",
   "react-dom",
 ];
 
 // Adapter root and non-catalog subpaths are forbidden everywhere. Composition
-// may import ONLY the four exact catalog subpaths listed below.
+// may import ONLY the exact catalog subpaths listed below.
 const FORBIDDEN_ADAPTER_PREFIXES = [
   "@fffattiger/pix-pi-sdk-adapter",
 ];
@@ -50,6 +49,8 @@ const COMPOSITION_ALLOWED_ADAPTER_SUBPATHS = new Set([
   "@fffattiger/pix-pi-sdk-adapter/themes",
   "@fffattiger/pix-pi-sdk-adapter/settings",
   "@fffattiger/pix-pi-sdk-adapter/builtins",
+  "@fffattiger/pix-pi-sdk-adapter/about",
+  "@fffattiger/pix-pi-sdk-adapter/memory",
 ]);
 
 // These identifiers are intentionally assembled from parts so this
@@ -62,6 +63,9 @@ const FOUNDATION_ALLOWED_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/workspace-
 const FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/built-in-capabilities";
 const FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/settings-config";
 const FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/transport-limits";
+const FOUNDATION_ALLOWED_PUSH_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/push";
+const FOUNDATION_ALLOWED_MEMORY_SETTINGS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/memory-settings";
+const FOUNDATION_ALLOWED_CLIENT_DIAGNOSTICS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/client-diagnostics";
 
 // Protocol root / sessiond are forbidden in the foundation (handled by the
 // dedicated scans below). The sessiond main entry and every non-client
@@ -85,6 +89,17 @@ const ALLOWED_EXTERNAL_PREFIXES = [
   FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH,
   FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH,
   FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH,
+  FOUNDATION_ALLOWED_PUSH_PROTOCOL_SUBPATH,
+  FOUNDATION_ALLOWED_MEMORY_SETTINGS_PROTOCOL_SUBPATH,
+  FOUNDATION_ALLOWED_CLIENT_DIAGNOSTICS_PROTOCOL_SUBPATH,
+  // pix's own Ports/models package: the foundation may consume its pure
+  // helpers (e.g. the assistant-workspace directory resolver). Runtime-core
+  // itself depends on nothing but Node builtins (AGENTS §0), so this never
+  // drags protocol/Pi-SDK transitively.
+  "@fffattiger/pix-runtime-core",
+  // Web Push owner module (D-PUSH): the vendored web-push library is the
+  // only allowed third-party push dependency anywhere in the Host.
+  "web-push",
 ];
 
 /** Externals that composition source may import in addition to hono. */
@@ -100,6 +115,8 @@ const COMPOSITION_ALLOWED_EXTERNAL_PREFIXES = [
   "@fffattiger/pix-pi-sdk-adapter/themes",
   "@fffattiger/pix-pi-sdk-adapter/settings",
   "@fffattiger/pix-pi-sdk-adapter/builtins",
+  "@fffattiger/pix-pi-sdk-adapter/about",
+  "@fffattiger/pix-pi-sdk-adapter/memory",
 ];
 
 function walk(dir, files = []) {
@@ -155,7 +172,7 @@ for (const file of walk(srcRoot)) {
   // foundation may import only the exact narrow wire-vocabulary subpaths.
   for (const match of source.matchAll(/from\s+["'](@fffattiger\/pix-protocol(?:\/[^"']+)?)["']/g)) {
     const specifier = match[1];
-    if (!inComposition && specifier !== FOUNDATION_ALLOWED_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH) {
+    if (!inComposition && specifier !== FOUNDATION_ALLOWED_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_PUSH_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_MEMORY_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_CLIENT_DIAGNOSTICS_PROTOCOL_SUBPATH) {
       fail(`${relativePath} imports non-foundation protocol surface "${specifier}"`);
     }
   }

@@ -107,6 +107,14 @@ export const urls = {
     /** POST /v1/attachments — one file. Omit sessionId to stage under unfiled. */
     upload: (sessionId?: string) => resource("attachments", sessionId ? { sessionId } : undefined),
   },
+  push: {
+    /** GET /v1/push/config — VAPID public key + support flag. */
+    config: () => resource("push/config"),
+    /** POST /v1/push/subscriptions — register this device. */
+    subscriptions: () => resource("push/subscriptions"),
+    /** POST /v1/push/test — test notification for one endpoint. */
+    test: () => resource("push/test"),
+  },
   files: {
     resource: (path: string, op?: FilesOperation) => resource("files", { path, op }),
     /**

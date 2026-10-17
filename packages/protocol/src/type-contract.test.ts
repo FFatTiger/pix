@@ -22,6 +22,7 @@ type AttachFailure = Extract<SessiondRpcResponse, { ok: false; method: "runtime.
 type WsCreate = Extract<WsClientMessage, { type: "create" }>;
 type WsAttach = Extract<WsClientMessage, { type: "attach" }>;
 type WsInterrupt = Extract<WsClientMessage, { type: "interrupt" }>;
+type WsVisibility = Extract<WsClientMessage, { type: "visibility" }>;
 type WsInterruptResult = Extract<WsHostMessage, { type: "interrupt_result" }>;
 
 export type ProtocolTypeAssertions =
@@ -35,6 +36,7 @@ export type ProtocolTypeAssertions =
   | Assert<Equal<WsCreate["payload"]["createRequestId"], string>>
   | Assert<Equal<Extract<WsAttach["payload"], { epoch: string }>["lastEventId"], number>>
   | Assert<Equal<WsInterrupt["payload"]["commandId"], string>>
+  | Assert<Equal<WsVisibility["payload"]["visible"], boolean>>
   | Assert<Equal<WsInterruptResult["payload"]["interruptType"], RuntimeInterruptResult["type"]>>
   | Assert<Equal<import("./extension.js").ExtensionUiResponseExchange["command"]["type"], "extension_ui_response">>
   | Assert<Equal<import("./extension.js").ExtensionUiInputExchange["command"]["method"], "input" | "editor" | "custom">>

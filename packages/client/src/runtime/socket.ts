@@ -30,6 +30,7 @@ import {
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
   RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   RUNTIME_LIVENESS_FEATURE,
+  RUNTIME_VISIBILITY_FEATURE,
   RUNTIME_OBSERVE_EXISTING_FEATURE,
   RUNTIME_QUESTIONNAIRE_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
@@ -204,6 +205,8 @@ export class RuntimeSocket {
   private unsubVisibility: (() => void) | null = null;
   /** Liveness (negotiated `runtime.liveness.v1`); disabled until acked. */
   private livenessNegotiated = false;
+  /** Negotiated `runtime.visibility.v1`: this connection reports page visibility. */
+  private visibilityNegotiated = false;
   private lastInboundAt = 0;
   private hiddenAt: number | null = null;
   /** Last reported page visibility (assumed visible without a visibility hook). */
@@ -422,7 +425,7 @@ export class RuntimeSocket {
     // never enter the sessiond/Worker fingerprint. A Host that cannot support
     // them simply does not acknowledge them and the Client degrades honestly
     // (no activating fallback).
-    const features = [...new Set([RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_READ_RPC_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE, RUNTIME_EPOCH_ROLLOVER_FEATURE, RUNTIME_OBSERVE_EXISTING_FEATURE, RUNTIME_EXPLICIT_ACTIVATE_FEATURE, RUNTIME_QUESTIONNAIRE_FEATURE, RUNTIME_LIVENESS_FEATURE, RUNTIME_ASSISTANT_PRESENCE_FEATURE, ...(this.deps.features ?? [])])];
+    const features = [...new Set([RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_READ_RPC_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE, RUNTIME_EPOCH_ROLLOVER_FEATURE, RUNTIME_OBSERVE_EXISTING_FEATURE, RUNTIME_EXPLICIT_ACTIVATE_FEATURE, RUNTIME_QUESTIONNAIRE_FEATURE, RUNTIME_LIVENESS_FEATURE, RUNTIME_ASSISTANT_PRESENCE_FEATURE, RUNTIME_VISIBILITY_FEATURE, ...(this.deps.features ?? [])])];
     const handshake = buildHandshakeRequest(this.deps.identity, features);
     const frame = JSON.stringify({ type: "handshake", id: this.id(), payload: handshake });
     this.ws.send(frame);
@@ -454,9 +457,14 @@ export class RuntimeSocket {
       };
       this.reconnectAttempt = 0;
       this.livenessNegotiated = (message.payload.acceptedFeatures ?? []).includes(RUNTIME_LIVENESS_FEATURE);
+      this.visibilityNegotiated = (message.payload.acceptedFeatures ?? []).includes(RUNTIME_VISIBILITY_FEATURE);
       this.setState("ready");
       this.handler.onHandshakeAck(host, message.payload);
       if (this.livenessNegotiated) this.startHeartbeat();
+      // Visibility is reported on EVERY fresh connection (the Host's view is
+      // per-connection): right after the ack, and again on each change. A
+      // dropped connection simply stops counting as visible on the Host side.
+      this.sendVisibility(this.pageVisible);
       return;
     }
     if (message.type === "handshake_reject") {
@@ -558,6 +566,7 @@ export class RuntimeSocket {
    */
   private handleVisibilityChange(visible: boolean): void {
     this.pageVisible = visible;
+    this.sendVisibility(visible);
     if (!visible) {
       this.hiddenAt = this.deps.now();
       // iOS suspends timers for a hidden page. Stop the chain here so a
@@ -621,6 +630,26 @@ export class RuntimeSocket {
     this.ws = null;
     if (ws) {
       try { ws.close(code, reason); } catch { /* already closed */ }
+    }
+  }
+
+  // --- visibility reporting ------------------------------------------------
+
+  /**
+   * Report page visibility on the live connection (negotiated
+   * `runtime.visibility.v1` only). Fire-and-forget: the Host keeps a plain
+   * per-connection view; a lost connection is unregistered server-side. A
+   * send throw is left to the transport's own failure handling (the liveness
+   * machinery detects the dead socket) — never a reconnect from here.
+   */
+  private sendVisibility(visible: boolean): void {
+    if (!this.visibilityNegotiated || this.disposed) return;
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WS_OPEN || !canSend(this.state)) return;
+    try {
+      ws.send(JSON.stringify({ type: "visibility", payload: { visible } }));
+    } catch {
+      /* dead socket — liveness/reconnect machinery owns recovery */
     }
   }
 

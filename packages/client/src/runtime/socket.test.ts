@@ -23,7 +23,7 @@ function makeHandler(rec: Recorded): RuntimeSocketHandler {
   };
 }
 
-function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnline?: (cb: () => void) => () => void; onVisible?: (cb: () => void) => () => void } = {}): RuntimeSocketDeps {
+function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnline?: (cb: () => void) => () => void; onVisible?: (cb: () => void) => () => void; onVisibility?: (cb: (visible: boolean) => void) => () => void } = {}): RuntimeSocketDeps {
   return {
     createWebSocket: (url) => { const ws = new FakeWebSocket(url); sockets.push(ws); return ws; },
     now: () => Date.now(),
@@ -34,6 +34,7 @@ function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnl
     identity: { shell: "web", platform: "mac" } satisfies ClientIdentity,
     onOnline: opts.onOnline ?? (() => () => undefined),
     onVisible: opts.onVisible ?? (() => () => undefined),
+    ...(opts.onVisibility === undefined ? {} : { onVisibility: opts.onVisibility }),
   };
 }
 
@@ -229,5 +230,53 @@ describe("RuntimeSocket", () => {
       },
     });
     expect(sockets[0]!.sent.at(-1)).toMatchObject({ type: "command", id: "c2" });
+  });
+
+  it("negotiated visibility: initial report after ack and updates on visibilitychange", async () => {
+    const sockets: FakeWebSocket[] = [];
+    let visibilityCb: ((visible: boolean) => void) | undefined;
+    const deps = makeDeps(sockets, {
+      onVisibility: (cb) => {
+        visibilityCb = cb;
+        return () => undefined;
+      },
+    });
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(deps, makeHandler(rec));
+    socket.connect();
+    const ws = sockets[0]!;
+    ws.serverOpen();
+    const handshake = ws.sent[0] as { payload: { features: string[] } };
+    expect(handshake.payload.features).toContain("runtime.visibility.v1");
+    ws.serverSend({ type: "handshake_ack", payload: { ...ackPayload(), acceptedFeatures: ["runtime.visibility.v1"] } });
+    // Initial report (page assumed visible until reported otherwise).
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true } });
+    visibilityCb!(false);
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: false } });
+    visibilityCb!(true);
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true } });
+    socket.dispose();
+  });
+
+  it("unnegotiated visibility: no frame is ever sent", async () => {
+    const sockets: FakeWebSocket[] = [];
+    let visibilityCb: ((visible: boolean) => void) | undefined;
+    const deps = makeDeps(sockets, {
+      onVisibility: (cb) => {
+        visibilityCb = cb;
+        return () => undefined;
+      },
+    });
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(deps, makeHandler(rec));
+    socket.connect();
+    const ws = sockets[0]!;
+    ws.serverOpen();
+    ws.serverSend({ type: "handshake_ack", payload: ackPayload() });
+    const before = ws.sent.length;
+    visibilityCb!(true);
+    visibilityCb!(false);
+    expect(ws.sent.length).toBe(before);
+    socket.dispose();
   });
 });

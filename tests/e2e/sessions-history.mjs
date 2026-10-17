@@ -902,9 +902,10 @@ async function main() {
     assert.ok(!downBoot.body.capabilities.includes("sessions"), "sessions token must be retracted when sessiond is down");
     assert.ok(!downBoot.body.capabilities.includes("session.delete"), "session.delete must be retracted when sessiond is down");
     assert.ok(!downBoot.body.capabilities.includes("session.write"), "session.write must be retracted when sessiond is down");
-    // This stack mounts no attachments store, so its host-owned token is
-    // never advertised here (production keeps it in both projections).
-    assert.deepEqual(downBoot.body.capabilities, RESOURCE_DEGRADED_CAPABILITIES.filter((capability) => capability !== "attachments.upload"));
+    // This stack mounts no attachments store and no push seam, so those
+    // host-owned tokens are never advertised here (production keeps them in
+    // both projections).
+    assert.deepEqual(downBoot.body.capabilities, RESOURCE_DEGRADED_CAPABILITIES.filter((capability) => capability !== "attachments.upload" && capability !== "push"));
     const downList = await get("/v1/sessions");
     assert.equal(downList.status, 503, "read route must answer 503 when sessiond is down");
     assert.equal(downList.body.code, "SESSIONS_UNAVAILABLE");

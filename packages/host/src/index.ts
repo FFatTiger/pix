@@ -16,7 +16,7 @@ export { HttpError, apiErrorBody, isV1Path, unifiedErrorHandler } from "./errors
 export type { ApiErrorBody } from "./errors.js";
 export { consoleLogger, silentLogger } from "./logger.js";
 
-export { readGateConfig, createEnvGateConfigSource, createNormalizedGateConfigSource, normalizeGateConfig, defaultGateConfigPath } from "./gate/config.js";
+export { readGateConfig, createEnvGateConfigSource, createNormalizedGateConfigSource, normalizeGateConfig, defaultGateConfigPath, createFileGatePreferencesStore, createFileGatePasswordStore } from "./gate/config.js";
 export type { ReadGateConfigOptions } from "./gate/config.js";
 export { decideGateRequest } from "./gate/decision.js";
 export type { GateDecision, GateDecisionInput } from "./gate/decision.js";
@@ -51,6 +51,7 @@ export {
   normalizeSessionMutationCapabilities,
   normalizeAssistantCapabilities,
   normalizeAttachmentsCapabilities,
+  normalizePushCapabilities,
   registerHealthRoutes,
   registerBootstrapRoutes,
   resolveBootstrapGateStatus,
@@ -64,6 +65,7 @@ export type {
 export { registerFileRoutes, parseSingleRange } from "./routes/files.js";
 export { registerAttachmentRoutes, resolveAttachmentRouteRoot } from "./routes/attachments.js";
 export type { AttachmentRouteDeps } from "./routes/attachments.js";
+export { registerPushRoutes } from "./routes/push.js";
 export { registerFileIndexRoutes } from "./routes/file-index.js";
 export { registerGitRoutes } from "./routes/git.js";
 export { registerWorktreeRoutes } from "./routes/worktrees.js";
@@ -153,6 +155,48 @@ export type {
   SessiondRuntimeGatewayInboundLimits,
 } from "./composition/runtime-gateway.js";
 export { createRuntimeWorkspaceAuthorizer } from "./composition/runtime-workspace-authorizer.js";
+export { createVisibilityTracker } from "./composition/visibility-tracker.js";
+export type { VisibilityRegistration, VisibilityTracker } from "./composition/visibility-tracker.js";
+export {
+  PushNotifier,
+  decideNotifications,
+  classifyEndedTurn,
+  notificationUrl,
+  pickPushCopy,
+  scanLastAssistant,
+  sendTestNotification,
+  sessionDisplayName,
+  toRunningSets,
+} from "./composition/push-notifier.js";
+export type {
+  NotificationCandidate,
+  NotificationKind,
+  NotificationSessionLookup,
+  PushCopy,
+  PushNotifierOptions,
+  RunningSets,
+  RunningWatchClient,
+} from "./composition/push-notifier.js";
+export { createWebPushSender, WEB_PUSH_VAPID_SUBJECT } from "./resources/web-push-sender.js";
+export type { WebPushSender, WebPushSendResult } from "./resources/web-push-sender.js";
+export {
+  createWebPushStoreFromLease,
+  parseWebPushDocument,
+  serializeWebPushDocument,
+  validateWebPushDocumentBeforeLock,
+  WEB_PUSH_FILE_NAME,
+  WEB_PUSH_KIND,
+  WEB_PUSH_VERSION,
+  MAX_PUSH_SUBSCRIPTIONS,
+  WebPushStoreError,
+} from "./resources/web-push-store.js";
+export type {
+  WebPushDocument,
+  WebPushStore,
+  WebPushStoreCode,
+  WebPushSubscriptionRecord,
+  WebPushVapidKeys,
+} from "./resources/web-push-store.js";
 export type {
   RuntimeWorkspaceAuthorizer,
   RuntimeWorkspaceAuthorizerOptions,
@@ -245,4 +289,5 @@ export type {
   CatalogThemesSeam,
   TrustedProxyOptions,
   WsSession,
+  PushRouteDeps,
 } from "./types.js";

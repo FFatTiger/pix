@@ -167,6 +167,19 @@ export const WsPongMessageSchema = z.strictObject({
 export type WsPongMessage = z.infer<typeof WsPongMessageSchema>;
 
 /**
+ * Page-visibility report (negotiated `runtime.visibility.v1`).
+ * Fire-and-forget client→Host frame answered by the Host itself (never
+ * forwarded to sessiond/Worker): `visible: true` while the page is visible.
+ * The Host keeps only an in-memory per-connection view; a closed/unreported
+ * connection is never visible. Rejected without negotiation (fail closed).
+ */
+export const WsVisibilityMessageSchema = z.strictObject({
+  type: z.literal("visibility"),
+  payload: z.strictObject({ visible: z.boolean() }),
+});
+export type WsVisibilityMessage = z.infer<typeof WsVisibilityMessageSchema>;
+
+/**
  * Strict success-result union for a correlated WS response. Each member maps
  * to a host verb: command (CorrelatedRuntimeCommandResult), create, detach,
  * getSnapshot (RuntimeSnapshot) and stop. `unknown` is never accepted — the
@@ -251,7 +264,7 @@ export const WsInterruptExchangeSchema = z
   });
 export type WsInterruptExchange = z.infer<typeof WsInterruptExchangeSchema>;
 
-export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsActivateMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsListRunningMessageSchema, WsStopMessageSchema, WsReadMessageSchema, WsSubmitTurnMessageSchema, WsPingMessageSchema]);
+export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsActivateMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsListRunningMessageSchema, WsStopMessageSchema, WsReadMessageSchema, WsSubmitTurnMessageSchema, WsPingMessageSchema, WsVisibilityMessageSchema]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
 export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRunningStateMessageSchema, WsRuntimeUnavailableMessageSchema, WsReadResultMessageSchema, WsSubmitTurnResultMessageSchema, WsTurnStatusMessageSchema, WsPongMessageSchema, WsSessionsChangedMessageSchema, WsAssistantStateMessageSchema]);
 export type WsHostMessage = z.infer<typeof WsHostMessageSchema>;

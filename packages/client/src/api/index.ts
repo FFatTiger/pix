@@ -1,6 +1,8 @@
 export { createHttpClient, HttpError, buildLoginRedirect, redirectToLogin } from "./http-client";
 export { urls, v1Url } from "./urls";
 export { createGateApi } from "./gate";
+export { createPushApi } from "./push";
+export type { PushApi } from "./push";
 export { createSessionsApi } from "./sessions";
 export { createModelsApi } from "./models";
 export { createResourcesApi } from "./resources";

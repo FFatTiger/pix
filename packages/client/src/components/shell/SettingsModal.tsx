@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   Archive,
   ArrowLeft,
+  BellRinging,
   Brain,
   ChatCircleText,
   Cpu,
@@ -29,6 +30,7 @@ import { InputConfig } from "@/features/settings/InputConfig";
 import { MemoryConfig } from "@/features/settings/MemoryConfig";
 import { McpConfig } from "@/features/settings/McpConfig";
 import { ModelsSettingsTab } from "@/features/settings/ModelsConfig";
+import { NotificationsConfig } from "@/features/settings/NotificationsConfig";
 import { PluginsConfig } from "@/features/settings/PluginsConfig";
 import { SessionConfig } from "@/features/settings/SessionConfig";
 import { SettingsFileConfig } from "@/features/settings/SettingsFileConfig";
@@ -138,6 +140,7 @@ export function SettingsModal({
       pages: [
         { id: "appearance", labelKey: "desktop.settingsPage.appearance", descKey: "desktop.settingsPage.appearanceDesc", Icon: Monitor, render: () => <AppearanceConfig /> },
         { id: "input", labelKey: "desktop.settingsPage.input", descKey: "desktop.settingsPage.inputDesc", Icon: Keyboard, render: () => <InputConfig /> },
+        { id: "notifications", labelKey: "desktop.settingsPage.notifications", descKey: "desktop.settingsPage.notificationsDesc", Icon: BellRinging, render: () => <NotificationsConfig /> },
         { id: "archive", labelKey: "desktop.settingsPage.archive", descKey: "desktop.settingsPage.archiveDesc", Icon: Archive, render: () => <ArchiveConfig /> },
       ],
     },

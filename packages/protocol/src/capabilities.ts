@@ -31,6 +31,11 @@ import { z } from "zod";
  * the `/v1/settings/mcp…` routes over the adapter mcp.json seam (the document
  * is host-local and sessiond-independent, so the token survives in the
  * degraded projection too). Discovery, never authorization.
+ *
+ * Web Push token: `push` — advertised ONLY while the Host mounts the
+ * `/v1/push/*` seam (VAPID keys + subscriptions live in the Host state dir;
+ * the trigger watch needs sessiond but the seam itself is Host-owned, so the
+ * token stays advertised in the degraded projection like `attachments.upload`).
  */
 export const HostCapabilitySchema = z.enum([
   "agent",
@@ -58,6 +63,7 @@ export const HostCapabilitySchema = z.enum([
   "project.trust",
   "export",
   "assistant",
+  "push",
 ]);
 
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
