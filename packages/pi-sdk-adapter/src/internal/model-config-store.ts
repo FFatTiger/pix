@@ -17,9 +17,16 @@ import {
   type ModelConfigProviderMutation,
   type ModelConfigStorePort,
   type ModelDiscoveryInput,
+  type ModelMetadataEntry,
   type ModelsConfigMutation,
   type ModelsConfigSnapshot,
 } from "@fffattiger/pix-runtime-core";
+import {
+  createModelsDevCatalogStore,
+  matchModelsDevEntry,
+  modelsDevEntryToFields,
+  type ModelsDevCatalogStore,
+} from "./models-dev-catalog.js";
 
 const MODELS_MAX_BYTES = 1024 * 1024;
 const secureState = createPosixSecureStateBackend();
@@ -302,7 +309,7 @@ async function validateSerialized(serialized: string): Promise<void> {
 function cleanDiscoveredModel(value: unknown): DiscoveredModelConfig | null {
   if (typeof value === "string") {
     const id = value.trim();
-    return id ? { id } : null;
+    return id ? { id, metadataSource: null } : null;
   }
   if (!isRecord(value)) return null;
   const stringValue = (key: string): string | undefined => {
@@ -315,22 +322,25 @@ function cleanDiscoveredModel(value: unknown): DiscoveredModelConfig | null {
   if (!id) return null;
   const name = stringValue("display_name") ?? stringValue("displayName")
     ?? ((stringValue("id") || stringValue("model")) ? stringValue("name") : undefined);
-  return name && name !== id ? { id, name } : { id };
+  return name && name !== id ? { id, name, metadataSource: null } : { id, metadataSource: null };
+}
+
+function payloadValues(payload: unknown): readonly unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (isRecord(payload)) {
+    for (const key of ["data", "models", "results", "items"] as const) {
+      const candidate = payload[key];
+      if (Array.isArray(candidate)) return candidate;
+      if (isRecord(candidate)) return Object.values(candidate);
+    }
+  }
+  return [];
 }
 
 function parseDiscoveredModels(payload: unknown): readonly DiscoveredModelConfig[] {
-  let values: unknown[] = [];
-  if (Array.isArray(payload)) values = payload;
-  else if (isRecord(payload)) {
-    for (const key of ["data", "models", "results", "items"] as const) {
-      const candidate = payload[key];
-      if (Array.isArray(candidate)) { values = candidate; break; }
-      if (isRecord(candidate)) { values = Object.values(candidate); break; }
-    }
-  }
   const seen = new Set<string>();
   const models: DiscoveredModelConfig[] = [];
-  for (const value of values) {
+  for (const value of payloadValues(payload)) {
     const model = cleanDiscoveredModel(value);
     if (!model || seen.has(model.id)) continue;
     seen.add(model.id);
@@ -371,7 +381,59 @@ function resolvedDiscoveryKey(raw: unknown): string | undefined {
   return value;
 }
 
-async function discoverFromSource(agentDir: string, input: ModelDiscoveryInput): Promise<readonly DiscoveredModelConfig[]> {
+/** Hard page ceiling: one discovery stops after 10 pages even if the source
+ * keeps offering continuations (with the 1000-entry page size this bounds a
+ * single discovery at 10k models). */
+const MAX_DISCOVERY_PAGES = 10;
+
+/** Extract the next-page cursor for cursoring APIs; null when done/absent. */
+function nextPageUrl(url: URL, api: ModelConfigApi, payload: unknown): URL | null {
+  if (!isRecord(payload)) return null;
+  if (api === "anthropic-messages") {
+    if (payload.has_more !== true) return null;
+    const lastId = payload.last_id;
+    if (typeof lastId !== "string" || !lastId) return null;
+    url.searchParams.set("last_id", lastId);
+    return url;
+  }
+  if (api === "google-generative-ai") {
+    const token = payload.nextPageToken;
+    if (typeof token !== "string" || !token) return null;
+    url.searchParams.set("pageToken", token);
+    return url;
+  }
+  return null;
+}
+
+async function fetchDiscoveryJson(url: URL, headers: Headers): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers,
+      // Discovery is bound to the exact user-configured endpoint. Following an
+      // upstream redirect would silently broaden the Host's network authority.
+      redirect: "error",
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    throw runtimeError("unavailable", "model discovery is unavailable");
+  }
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > 2 * 1024 * 1024) {
+    throw runtimeError("unavailable", "model discovery is unavailable");
+  }
+  const text = await response.text();
+  if (!response.ok || Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024) {
+    throw runtimeError("unavailable", "model discovery is unavailable");
+  }
+  try { return JSON.parse(text); } catch { throw runtimeError("unavailable", "model discovery is unavailable"); }
+}
+
+async function discoverFromSource(
+  agentDir: string,
+  input: ModelDiscoveryInput,
+  modelsDev: ModelsDevCatalogStore,
+): Promise<readonly DiscoveredModelConfig[]> {
   if (!/^[0-9a-f]{64}$/.test(input.expectedRevision) || !input.providerId.trim() || !input.baseUrl.trim() || !input.api.length) {
     throw runtimeError("invalid_input", "model discovery input is invalid");
   }
@@ -403,31 +465,36 @@ async function discoverFromSource(agentDir: string, input: ModelDiscoveryInput):
     }
   }
   const discoveryUrl = modelsListUrl(input.baseUrl, input.api);
-  let response: Response;
-  try {
-    response = await fetch(discoveryUrl, {
-      headers,
-      // Discovery is bound to the exact user-configured endpoint. Following an
-      // upstream redirect would silently broaden the Host's network authority.
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-    });
-  } catch {
-    throw runtimeError("unavailable", "model discovery is unavailable");
+  let payload: unknown = await fetchDiscoveryJson(discoveryUrl, headers);
+  const pages: unknown[] = [payload];
+  // Cursoring APIs (Anthropic has_more/last_id, Google nextPageToken) are
+  // followed page by page up to the hard ceiling; page size is already maxed
+  // in modelsListUrl so this only matters for very large catalogs.
+  for (let pageCount = 1; ; pageCount += 1) {
+    const next = nextPageUrl(discoveryUrl, input.api, payload);
+    if (next === null || pageCount >= MAX_DISCOVERY_PAGES) break;
+    payload = await fetchDiscoveryJson(next, headers);
+    pages.push(payload);
   }
-  const declared = Number(response.headers.get("content-length") ?? 0);
-  if (Number.isFinite(declared) && declared > 2 * 1024 * 1024) {
-    throw runtimeError("unavailable", "model discovery is unavailable");
-  }
-  const text = await response.text();
-  if (!response.ok || Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024) {
-    throw runtimeError("unavailable", "model discovery is unavailable");
-  }
-  let payload: unknown;
-  try { payload = JSON.parse(text); } catch { throw runtimeError("unavailable", "model discovery is unavailable"); }
-  const models = parseDiscoveredModels(payload);
+  const models = parseDiscoveredModels(pages.flatMap((page) => [...payloadValues(page)]));
   if (models.length === 0) throw runtimeError("unavailable", "model discovery returned no models");
-  return models;
+  const catalog = await modelsDev.get();
+  return models.map((model) => {
+    const entry = matchModelsDevEntry(catalog, model.id, input.api);
+    const fields = entry === null ? null : modelsDevEntryToFields(entry);
+    if (fields === null) return { ...model, metadataSource: null };
+    return {
+      ...model,
+      // The endpoint's own display name (if any) outranks the catalog's.
+      ...(model.name === undefined && fields.name !== undefined ? { name: fields.name } : {}),
+      ...(fields.reasoning === undefined ? {} : { reasoning: fields.reasoning }),
+      ...(fields.input === undefined ? {} : { input: fields.input }),
+      ...(fields.contextWindow === undefined ? {} : { contextWindow: fields.contextWindow }),
+      ...(fields.maxTokens === undefined ? {} : { maxTokens: fields.maxTokens }),
+      ...(fields.cost === undefined ? {} : { cost: fields.cost }),
+      metadataSource: "models.dev" as const,
+    };
+  });
 }
 
 function withMutationQueue<T>(key: string, run: () => Promise<T>): Promise<T> {
@@ -448,6 +515,8 @@ async function snapshot(agentDir: string): Promise<ModelsConfigSnapshot> {
 
 export interface PiSdkModelConfigStoreOptions {
   agentDir?: string;
+  /** Injectable models.dev catalog (tests); defaults to the cached fetcher. */
+  modelsDev?: ModelsDevCatalogStore;
 }
 
 /**
@@ -457,6 +526,18 @@ export interface PiSdkModelConfigStoreOptions {
 export function createPiSdkModelConfigStore(options: PiSdkModelConfigStoreOptions = {}): ModelConfigStorePort {
   const configuredAgentDir = resolve(options.agentDir ?? getAgentDir());
   const canonicalAgentDir = () => secureState.canonicalizePath(configuredAgentDir);
+  const modelsDev = options.modelsDev ?? createModelsDevCatalogStore({ agentDir: configuredAgentDir });
+  const dedupedIds = (ids: readonly string[]): string[] => {
+    const seen = new Set<string>();
+    const unique: string[] = [];
+    for (const id of ids) {
+      const key = id.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      unique.push(key);
+    }
+    return unique;
+  };
   return {
     readConfig: async () => snapshot(await canonicalAgentDir()),
     writeConfig: (input) => withMutationQueue(configuredAgentDir, async () => {
@@ -492,6 +573,23 @@ export function createPiSdkModelConfigStore(options: PiSdkModelConfigStoreOption
       }
       return snapshot(agentDir);
     }),
-    discoverModels: async (input) => discoverFromSource(await canonicalAgentDir(), input),
+    discoverModels: async (input) => discoverFromSource(await canonicalAgentDir(), input, modelsDev),
+    resolveModelMetadata: async (input) => {
+      if (
+        !Array.isArray(input.ids) || input.ids.length === 0 || input.ids.length > 100
+        || input.ids.some((id) => typeof id !== "string" || !id.trim())
+        || typeof input.api !== "string" || !input.api.length
+      ) {
+        throw runtimeError("invalid_input", "model metadata input is invalid");
+      }
+      const entries = dedupedIds(input.ids).map((id) => ({ id, metadata: null }));
+      const catalog = await modelsDev.get();
+      const api = input.api;
+      return entries.map((entry) => {
+        const matched = matchModelsDevEntry(catalog, entry.id, api);
+        const fields = matched === null ? null : modelsDevEntryToFields(matched);
+        return fields === null ? entry : { ...entry, metadata: fields };
+      });
+    },
   };
 }

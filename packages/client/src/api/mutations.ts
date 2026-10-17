@@ -152,6 +152,10 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
         mutationKey: ["pix", "models", "discover"] as const,
         mutationFn: (input: Parameters<typeof models.discover>[0]) => models.discover(input),
       }),
+      metadata: () => ({
+        mutationKey: ["pix", "models", "metadata"] as const,
+        mutationFn: (input: Parameters<typeof models.metadata>[0]) => models.metadata(input),
+      }),
     },
     workspace,
     settings: {

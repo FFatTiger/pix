@@ -29,6 +29,7 @@ describe("v1 URL builders", () => {
     expect(urls.models.list()).toBe("/v1/models");
     expect(urls.models.config()).toBe("/v1/models/config");
     expect(urls.models.discover()).toBe("/v1/models/discover");
+    expect(urls.models.metadata()).toBe("/v1/models/metadata");
     expect(urls.skills.list()).toBe("/v1/skills");
     expect(urls.plugins.list()).toBe("/v1/plugins");
     expect(urls.commands.list()).toBe("/v1/commands");
@@ -46,7 +47,7 @@ describe("v1 URL builders", () => {
   it("exports only the mounted model-config mutation and no other removed catalog paths", () => {
     const catalog = urls as Record<string, unknown>;
     expect(catalog).not.toHaveProperty("models-config");
-    expect(Object.keys(urls.models)).toEqual(["list", "config", "discover"]);
+    expect(Object.keys(urls.models)).toEqual(["list", "config", "discover", "metadata"]);
     expect(Object.keys(urls.skills)).toEqual(["list"]);
     expect(Object.keys(urls.plugins)).toEqual(["list"]);
     expect(Object.keys(urls.auth)).toEqual(["providers", "providerStatus"]);
@@ -56,6 +57,7 @@ describe("v1 URL builders", () => {
     expect(urls.models).toHaveProperty("config");
     expect(urls.models).not.toHaveProperty("catalog");
     expect(urls.models).toHaveProperty("discover");
+    expect(urls.models).toHaveProperty("metadata");
     expect(urls.models).not.toHaveProperty("test");
     expect(urls.skills).not.toHaveProperty("search");
     expect(urls.skills).not.toHaveProperty("install");

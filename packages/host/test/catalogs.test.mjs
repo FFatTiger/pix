@@ -54,7 +54,8 @@ function fakeModelsMutation(impl = {}) {
   return {
     readConfig: async () => impl.readConfig ? impl.readConfig() : snapshot,
     writeConfig: async (input) => impl.writeConfig ? impl.writeConfig(input) : snapshot,
-    discoverModels: async (input) => impl.discoverModels ? impl.discoverModels(input) : [{ id: "m1" }],
+    discoverModels: async (input) => impl.discoverModels ? impl.discoverModels(input) : [{ id: "m1", metadataSource: null }],
+    resolveModelMetadata: async (input) => impl.resolveModelMetadata ? impl.resolveModelMetadata(input) : [],
   };
 }
 
@@ -197,6 +198,118 @@ function appWithCatalogs(catalogs, extra = {}) {
   }).app;
 }
 
+test("POST /v1/models/metadata projects per-id models.dev fields and fails closed on bad bodies", async () => {
+  const root = temp("pix-cat-metadata-");
+  const roots = await rootsFor(root);
+  let seenInput = null;
+  const app = appWithCatalogs({
+    roots,
+    modelsMutation: fakeModelsMutation({
+      resolveModelMetadata: async (input) => {
+        seenInput = input;
+        return [
+          {
+            id: "gpt-4o",
+            metadata: { name: "GPT-4o", reasoning: true, input: ["text", "image"], contextWindow: 128000, maxTokens: 16384, cost: { input: 2.5, output: 10 } },
+          },
+          { id: "nope", metadata: null },
+        ];
+      },
+    }),
+  });
+
+  const res = await app.request("http://localhost/v1/models/metadata", {
+    method: "POST",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ ids: ["gpt-4o", "nope"], api: "openai-responses" }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(seenInput, { ids: ["gpt-4o", "nope"], api: "openai-responses" });
+  assert.deepEqual(await res.json(), {
+    metadata: {
+      "gpt-4o": { name: "GPT-4o", reasoning: true, input: ["text", "image"], contextWindow: 128000, maxTokens: 16384, cost: { input: 2.5, output: 10 } },
+      nope: null,
+    },
+  });
+
+  for (const body of [
+    JSON.stringify({ ids: ["gpt-4o"] }),
+    JSON.stringify({ ids: [], api: "openai-completions" }),
+    JSON.stringify({ ids: Array(101).fill("m"), api: "openai-completions" }),
+    JSON.stringify({ ids: ["  "], api: "openai-completions" }),
+    JSON.stringify({ ids: ["m"], api: "openai-completions", extra: true }),
+    "not json",
+  ]) {
+    const bad = await app.request("http://localhost/v1/models/metadata", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body,
+    });
+    assert.equal(bad.status, 400, body);
+  }
+
+  // Seam failure maps to a fixed sanitized 503, never raw error text.
+  const broken = appWithCatalogs({
+    roots,
+    modelsMutation: fakeModelsMutation({
+      resolveModelMetadata: async () => { throw new Error("raw /etc/passwd detail"); },
+    }),
+  });
+  const failure = await broken.request("http://localhost/v1/models/metadata", {
+    method: "POST",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ ids: ["m"], api: "openai-completions" }),
+  });
+  assert.equal(failure.status, 503);
+  const text = JSON.stringify(await failure.json());
+  assert.equal(text.includes("raw /etc/passwd detail"), false);
+});
+
+test("POST /v1/models/discover projects metadataSource and per-model catalog fields", async () => {
+  const root = temp("pix-cat-discover-meta-");
+  const roots = await rootsFor(root);
+  const app = appWithCatalogs({
+    roots,
+    modelsMutation: fakeModelsMutation({
+      discoverModels: async () => [{
+        id: "gpt-4o",
+        name: "GPT-4o",
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 128000,
+        maxTokens: 16384,
+        cost: { input: 2.5, output: 10, cacheRead: 1.25 },
+        metadataSource: "models.dev",
+      }],
+    }),
+  });
+  const revision = "0".repeat(64);
+  const res = await app.request("http://localhost/v1/models/discover", {
+    method: "POST",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({
+      expectedRevision: revision,
+      sourceId: "custom",
+      providerId: "custom",
+      baseUrl: "http://127.0.0.1:9000/v1",
+      api: "openai-completions",
+    }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    models: [{
+      id: "gpt-4o",
+      name: "GPT-4o",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 128000,
+      maxTokens: 16384,
+      cost: { input: 2.5, output: 10, cacheRead: 1.25 },
+      metadataSource: "models.dev",
+    }],
+  });
+});
+
 // ---------------------------------------------------------------------------
 // happy path + no-store + canonical cwd
 // ---------------------------------------------------------------------------
@@ -266,7 +379,17 @@ test("GET/PUT /v1/models/config are global, strict, credential-blind, and capabi
     body: JSON.stringify(discoverInput),
   });
   assert.equal(discovered.status, 200);
-  assert.deepEqual(await discovered.json(), { models: [{ id: "m1" }] });
+  assert.deepEqual(await discovered.json(), { models: [{ id: "m1", metadataSource: null }] });
+
+  // models.dev parameter lookup: strict body, per-id record projection.
+  const metadata = await app.request("http://localhost/v1/models/metadata", {
+    method: "POST",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ ids: ["m1", "m2"], api: "openai-completions" }),
+  });
+  assert.equal(metadata.status, 200);
+  // Default stub resolves nothing; the dedicated test below covers projection.
+  assert.deepEqual(await metadata.json(), { metadata: {} });
 
   const input = {
     expectedRevision: revision,

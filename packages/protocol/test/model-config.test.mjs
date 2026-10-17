@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import {
   ModelDiscoveryInputSchema,
   ModelDiscoveryResponseSchema,
+  ModelMetadataRequestSchema,
+  ModelMetadataResponseSchema,
   ModelsConfigMutationSchema,
   ModelsConfigResponseSchema,
 } from "../dist/index.js";
@@ -43,8 +45,44 @@ describe("models.json editor wire DTO", () => {
       api: "openai-completions",
       apiKey: "one-way-secret",
     }).success, true);
+    // Legacy rows without metadataSource stay parseable (additive, strict).
     assert.equal(ModelDiscoveryResponseSchema.safeParse({ models: [{ id: "m1", name: "Model One" }] }).success, true);
+    assert.equal(ModelDiscoveryResponseSchema.safeParse({
+      models: [{
+        id: "m1",
+        metadataSource: "models.dev",
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 128000,
+        maxTokens: 32768,
+        cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+      }],
+    }).success, true);
+    assert.equal(ModelDiscoveryResponseSchema.safeParse({ models: [{ id: "m1", metadataSource: null }] }).success, true);
+    assert.equal(ModelDiscoveryResponseSchema.safeParse({ models: [{ id: "m1", metadataSource: "other-catalog" }] }).success, false);
     assert.equal(ModelDiscoveryResponseSchema.safeParse({ models: [{ id: "m1", apiKey: "secret" }] }).success, false);
+    assert.equal(ModelDiscoveryResponseSchema.safeParse({ models: [{ id: "m1", contextWindow: 0 }] }).success, false);
+    assert.equal(ModelDiscoveryResponseSchema.safeParse({ models: [{ id: "m1", contextWindow: 1.5 }] }).success, false);
+  });
+
+  it("validates the models.dev metadata lookup request and response", () => {
+    assert.equal(ModelMetadataRequestSchema.safeParse({ ids: ["m1", "m2"], api: "openai-completions" }).success, true);
+    // Bounded id list: empty, over-limit, blank ids, and extra fields fail closed.
+    assert.equal(ModelMetadataRequestSchema.safeParse({ ids: [], api: "openai-completions" }).success, false);
+    assert.equal(ModelMetadataRequestSchema.safeParse({ ids: Array(101).fill("m"), api: "openai-completions" }).success, false);
+    assert.equal(ModelMetadataRequestSchema.safeParse({ ids: ["  "], api: "openai-completions" }).success, false);
+    assert.equal(ModelMetadataRequestSchema.safeParse({ ids: ["m1"], api: "openai-completions", extra: 1 }).success, false);
+
+    const response = ModelMetadataResponseSchema.safeParse({
+      metadata: {
+        "m1": { reasoning: true, contextWindow: 65536, cost: { input: 0.5 } },
+        "m2": null,
+      },
+    });
+    assert.equal(response.success, true);
+    assert.equal(ModelMetadataResponseSchema.safeParse({ metadata: { m1: { apiKey: "secret" } } }).success, false);
+    assert.equal(ModelMetadataResponseSchema.safeParse({ metadata: { m1: { maxTokens: -1 } } }).success, false);
+    assert.equal(ModelMetadataResponseSchema.safeParse({ metadata: null }).success, false);
   });
 
   it("rejects raw API keys in responses, unknown fields, and malformed revisions", () => {

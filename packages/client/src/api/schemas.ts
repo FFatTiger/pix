@@ -119,6 +119,8 @@ export { SettingsConfigResponseSchema } from "@fffattiger/pix-protocol";
 export type { SettingsConfigResponse } from "@fffattiger/pix-protocol";
 export { ModelDiscoveryResponseSchema };
 export type ModelDiscoveryResponse = z.infer<typeof ModelDiscoveryResponseSchema>;
+export { ModelMetadataRequestSchema, ModelMetadataResponseSchema } from "@fffattiger/pix-protocol";
+export type { ModelMetadataRequest, ModelMetadataResponse } from "@fffattiger/pix-protocol";
 
 /** GET /v1/auth/providers */
 export const AuthProvidersResponseSchema = z.strictObject({

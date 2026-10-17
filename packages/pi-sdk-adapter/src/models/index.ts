@@ -19,6 +19,7 @@ import type {
 } from "@fffattiger/pix-runtime-core";
 import { createPiSdkModelStore } from "../internal/model-store.js";
 import { createPiSdkModelConfigStore } from "../internal/model-config-store.js";
+import type { ModelsDevCatalogStore } from "../internal/models-dev-catalog.js";
 
 /**
  * Injectable read-only model store contract. The default implementation
@@ -36,6 +37,8 @@ export interface PiSdkModelStore {
 export interface PiSdkModelCatalogOptions {
   /** Agent config directory; defaults to the SDK agent dir. */
   readonly agentDir?: string;
+  /** Injectable models.dev catalog store (tests); default is the cached fetcher. */
+  readonly modelsDev?: ModelsDevCatalogStore;
 }
 
 class PiSdkModelCatalog implements ModelCatalogPort {
@@ -86,5 +89,6 @@ export function createPiSdkModelsConfig(
 ): ModelConfigStorePort {
   return createPiSdkModelConfigStore({
     ...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
+    ...(options.modelsDev === undefined ? {} : { modelsDev: options.modelsDev }),
   });
 }
