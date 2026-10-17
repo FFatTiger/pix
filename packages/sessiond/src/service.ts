@@ -45,6 +45,7 @@ import {
   evaluateWorkerBuild,
   RuntimeCloseReasonSchema,
   ExtensionUiInteractiveMethodSchema,
+  ASSISTANT_SENT_MESSAGE_PREFIX,
   type ProtocolErrorCode,
   type WorkerBuild,
 } from "@fffattiger/pix-protocol";
@@ -3719,7 +3720,8 @@ export class SessiondService {
         if (!this.deps.sessionCatalog) return null;
         try {
           const header = await this.readSession(sessionId);
-          return { ...(header.title === undefined ? {} : { title: header.title }), cwd: header.cwd };
+          const title = header.title ?? firstMessageLabel(header.firstMessage);
+          return { ...(title === undefined ? {} : { title }), cwd: header.cwd };
         } catch { return null; }
       },
       readSessionContext: async (sessionId: string, opts: { limit: number }) => {
@@ -4057,4 +4059,15 @@ export class SessiondService {
       workersByStatus,
     };
   }
+}
+
+/** Untitled sessions are named by their first message, as the UI names them (never the raw id). */
+export function firstMessageLabel(firstMessage: string | undefined): string | undefined {
+  if (firstMessage === undefined) return undefined;
+  const body = firstMessage.startsWith(ASSISTANT_SENT_MESSAGE_PREFIX)
+    ? firstMessage.slice(ASSISTANT_SENT_MESSAGE_PREFIX.length)
+    : firstMessage;
+  const label = body.replace(/\s+/g, " ").trim();
+  if (label === "") return undefined;
+  return label.length > 80 ? `${label.slice(0, 79)}…` : label;
 }
