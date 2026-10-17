@@ -105,14 +105,19 @@ export class SessiondApplication implements SessiondRpcHandler {
       }
       case "sessions.list": {
         const input = params as SessiondMethodParams["sessions.list"];
-        // Service wrapper applies the service-owned revisioned title overlay so
-        // reads beginning after a confirmed rename observe the new title.
+        // Canonical query form: outer whitespace trimmed, blank → absent (the
+        // RPC schema already bounds it to 1..200 code units). The service
+        // wrapper applies the service-owned revisioned title overlay so reads
+        // beginning after a confirmed rename observe the new title.
+        const rawQuery = typeof input.query === "string" ? input.query.trim() : undefined;
+        const query = rawQuery !== undefined && rawQuery.length > 0 ? rawQuery : undefined;
         return SessionPageSchema.parse(await this.service.listSessionPage({
           page: input.page,
           pageSize: input.pageSize,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
           ...(input.projectRoot === undefined ? {} : { projectRoot: input.projectRoot }),
           ...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
+          ...(query === undefined ? {} : { query }),
         }));
       }
       case "projects.list": {

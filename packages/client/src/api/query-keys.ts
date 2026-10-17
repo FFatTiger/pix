@@ -34,7 +34,7 @@ export const queryKeys = {
   sessions: {
     all: ["pix", "sessions"] as const,
     lists: ["pix", "sessions", "page"] as const,
-    page: (page: number, pageSize: number, cwd?: string, projectRoot?: string, parentSessionId?: string) => ["pix", "sessions", "page", page, pageSize, cwd ?? null, projectRoot ?? null, parentSessionId ?? null] as const,
+    page: (page: number, pageSize: number, cwd?: string, projectRoot?: string, parentSessionId?: string, query?: string) => ["pix", "sessions", "page", page, pageSize, cwd ?? null, projectRoot ?? null, parentSessionId ?? null, query ?? null] as const,
     byId: (id: string) => ["pix", "sessions", "session", id] as const,
     detail: (id: string) => ["pix", "sessions", "session", id, "detail"] as const,
     context: (id: string) => ["pix", "sessions", "session", id, "context"] as const,
@@ -146,15 +146,16 @@ export function createQueryOptions(http: HttpClient) {
       }),
     },
     sessions: {
-      page: (page: number, pageSize: number, input: { cwd?: string; projectRoot?: string; parentSessionId?: string; enabled?: boolean } = {}) => createSessionPageQueryOptions({
+      page: (page: number, pageSize: number, input: { cwd?: string; projectRoot?: string; parentSessionId?: string; query?: string; enabled?: boolean } = {}) => createSessionPageQueryOptions({
         http,
         page,
         pageSize,
         enabled: input.enabled ?? true,
-        queryKey: queryKeys.sessions.page(page, pageSize, input.cwd, input.projectRoot, input.parentSessionId),
+        queryKey: queryKeys.sessions.page(page, pageSize, input.cwd, input.projectRoot, input.parentSessionId, input.query),
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         ...(input.projectRoot === undefined ? {} : { projectRoot: input.projectRoot }),
         ...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
+        ...(input.query === undefined ? {} : { query: input.query }),
       }),
       detail: (id: string) => queryOptions({ queryKey: queryKeys.sessions.detail(id), queryFn: ({ signal }) => sessions.detail(id, signal), enabled: Boolean(id) }),
       context: (id: string) => queryOptions({ queryKey: queryKeys.sessions.context(id), queryFn: ({ signal }) => sessions.context(id, { signal }), enabled: Boolean(id) }),

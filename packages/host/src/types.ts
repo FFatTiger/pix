@@ -251,7 +251,7 @@ export interface SessiondProbe {
  * foundation module stays free of protocol DTO imports; the route narrows.
  */
 export interface SessionHistoryReadClient {
-  list(params: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string }): Promise<unknown>;
+  list(params: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string; query?: string }): Promise<unknown>;
   projects(params: { page: number; pageSize: number }): Promise<unknown>;
   read(sessionId: string): Promise<unknown>;
   /**

@@ -13,6 +13,25 @@ export const DEFAULT_PROJECT_PAGE_SIZE = 10;
 export const MAX_PROJECT_PAGE_SIZE = 50;
 export const DEFAULT_PROJECT_SESSION_PAGE_SIZE = 20;
 
+/**
+ * Max length (Unicode JS code units) of a session-page keyword `query` after
+ * trimming. Single authority for the Host HTTP validation, the Protocol wire
+ * schema bound and every adapter/catalog guard.
+ */
+export const MAX_SESSION_QUERY_LENGTH = 200;
+
+/**
+ * Canonical match-source vocabulary for keyword-filtered session pages,
+ * ordered by descending relevance (title > project > message). SINGLE DOMAIN
+ * AUTHORITY: `packages/protocol/src/domain.ts` mirrors it as the wire zod enum
+ * (protocol must stay runtime-core-free); the catalog projections tag each
+ * query-page header with exactly one of these.
+ */
+export const SESSION_MATCH_SOURCES = ["title", "project", "message"] as const;
+
+/** Match source of one keyword-filtered session row (see {@link SESSION_MATCH_SOURCES}). */
+export type SessionMatchSource = (typeof SESSION_MATCH_SOURCES)[number];
+
 export interface CatalogPageRequest {
   /** One-based page number. */
   page: number;
@@ -26,6 +45,29 @@ export interface SessionPageRequest extends CatalogPageRequest {
   projectRoot?: string;
   /** Direct persisted children of this parent session (exact SDK parentSession). */
   parentSessionId?: string;
+  /**
+   * Keyword filter (the ⌘K search panel): a case-insensitive substring match
+   * over the row title (the first-message display name when untitled), the
+   * project name (basename of projectRoot/cwd — exactly what the sidebar
+   * shows) and the first message. When present, pages are ranked by match
+   * source (title > project > message, then latest activity desc) instead of
+   * pure activity order and each returned header carries `matchSource`.
+   * Canonical form: trimmed, 1..MAX_SESSION_QUERY_LENGTH code units.
+   */
+  query?: string;
+  /**
+   * Session ids excluded from results before totals. sessiond passes its
+   * durable archived-session organization state on keyword-filtered pages
+   * (`query` present) so archived rows never surface in search.
+   */
+  excludeSessionIds?: readonly string[];
+  /**
+   * Project roots whose sessions are excluded from results before totals
+   * (sessiond archived-project organization state on keyword-filtered pages —
+   * same visibility as the sidebar, which hides an archived project's rows
+   * entirely).
+   */
+  excludeProjectRoots?: readonly string[];
 }
 
 export interface CatalogPageMeta {
@@ -96,11 +138,91 @@ export interface SessionHeader {
    */
   pinned?: boolean;
   archived?: boolean;
+  /**
+   * Match source on keyword-filtered pages (`query` present). Populated only
+   * by the catalog projection that applied the filter; absence means an
+   * unfiltered page (or an older producer) and MUST be treated as "no match
+   * info" — the client simply renders without highlight/snippet.
+   */
+  matchSource?: SessionMatchSource;
 }
 
 export interface SessionDetail extends SessionHeader {
   /** Complete entry list of the session (truth source projection). */
   entries?: readonly SessionEntry[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Keyword search over the session catalog (⌘K panel)                  */
+/* ------------------------------------------------------------------ */
+
+/** The fields `matchSessionQuery` ranks; every catalog row can supply them. */
+export interface SessionQueryMatchInput {
+  title?: string | undefined;
+  firstMessage?: string | undefined;
+  projectRoot?: string | undefined;
+  cwd?: string | undefined;
+}
+
+/**
+ * Last non-empty path segment (posix or windows separators, trailing
+ * slashes ignored) — exactly the project label the sidebar renders for a
+ * session's project root.
+ */
+export function sessionProjectName(path: string): string {
+  const segments = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+  return segments.pop() ?? path;
+}
+
+/**
+ * SINGLE DOMAIN AUTHORITY for keyword matching over catalog rows. Returns the
+ * highest-priority match source, or null when the row does not match:
+ *
+ *   1. title      — `title`, or the first-message display name when untitled
+ *                   (the exact text a session row renders);
+ *   2. project    — the project-name basename of `projectRoot` (falling back
+ *                   to `cwd`), i.e. what the sidebar shows as the project;
+ *   3. message    — the bounded first user message.
+ *
+ * Matching is a case-insensitive (`toLowerCase`) substring test on both
+ * sides. Every catalog implementation (SQLite projection, store fallback,
+ * sessiond legacy path, reference port) resolves through this one function so
+ * the tiers can never diverge. The query is trimmed here; an empty/whitespace
+ * query matches nothing.
+ */
+export function matchSessionQuery(row: SessionQueryMatchInput, query: string): SessionMatchSource | null {
+  const needle = query.trim().toLowerCase();
+  if (needle.length === 0) return null;
+  const title = row.title !== undefined && row.title.trim().length > 0 ? row.title : row.firstMessage;
+  if (title !== undefined && title.toLowerCase().includes(needle)) return "title";
+  const projectRoot = row.projectRoot ?? row.cwd;
+  if (projectRoot !== undefined) {
+    const projectName = sessionProjectName(projectRoot);
+    if (projectName.length > 0 && projectName.toLowerCase().includes(needle)) return "project";
+  }
+  if (row.firstMessage !== undefined && row.firstMessage.toLowerCase().includes(needle)) return "message";
+  return null;
+}
+
+/**
+ * Deterministic ordering for keyword-filtered pages: match tier ascending
+ * (title > project > message), latest activity descending (updatedAt →
+ * lastMessageAt → createdAt), then session id ascending as the stable
+ * tiebreaker. Mirrors the SQLite projection's `match_rank ASC, modified_ms
+ * DESC, id ASC` — keep the two in lockstep (adapter tests pin the parity).
+ */
+export function compareSessionQueryHits(
+  a: SessionHeader & { matchSource: SessionMatchSource },
+  b: SessionHeader & { matchSource: SessionMatchSource },
+): number {
+  const tier = (source: SessionMatchSource): number => SESSION_MATCH_SOURCES.indexOf(source);
+  const byTier = tier(a.matchSource) - tier(b.matchSource);
+  if (byTier !== 0) return byTier;
+  const activity = (header: SessionHeader): number =>
+    header.updatedAt ?? header.lastMessageAt ?? header.createdAt ?? 0;
+  const byActivity = activity(b) - activity(a);
+  if (byActivity !== 0) return byActivity;
+  return a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0;
 }
 
 export interface SessionEntry {

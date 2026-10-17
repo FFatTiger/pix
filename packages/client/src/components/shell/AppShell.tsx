@@ -16,6 +16,7 @@ import { SubagentPanel } from "@/components/chat/SubagentPanel";
 import { Composer, type ComposerHandle } from "@/components/shell/Composer";
 import { toQueuedMessagesView } from "@/components/chat/chat-runtime-view";
 import { Sidebar } from "@/components/shell/Sidebar";
+import { SessionSearchPalette } from "@/components/shell/SessionSearchPalette";
 import { AppTitleBar, RightPaneToggle } from "@/components/shell/AppTitleBar";
 import { SettingsModal, type SettingsTab } from "@/components/shell/SettingsModal";
 import { LoginPage } from "@/components/shell/LoginPage";
@@ -360,6 +361,21 @@ export function AppShell({ search }: AppShellProps) {
     );
   }, [applyObservationOutcome, canAgent, gateAllowsRuntime, observeFeatureLost, registry, selectedSessionId, selectedWorkspace.accessLookupPending, workspaceAuthorized]);
   const [sidebarOpen, setSidebarOpen] = useState(() => !isMobile);
+  // ⌘K session-search palette: the single global toggle (opens, closes, and
+  // re-toggles while open). No other ⌘K/Ctrl+K shortcut exists in the app.
+  const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const openSearchPalette = useCallback(() => setSearchPaletteOpen(true), []);
+  const closeSearchPalette = useCallback(() => setSearchPaletteOpen(false), []);
   const [mobileSidebarMounted, setMobileSidebarMounted] = useState(false);
   const mobileSidebarOpeningRef = useRef(false);
   const mobileSidebarOpenFrameRef = useRef<number | null>(null);
@@ -1394,6 +1410,7 @@ export function AppShell({ search }: AppShellProps) {
           onSelectSession={handleSelectSession}
           onNewSession={handleOpenNewSessionPage}
           canNewSession={canAgent}
+          onOpenSearch={openSearchPalette}
           onOpenSettings={openSettings}
           onNewSessionInProject={handleOpenHomeForProject}
           onOpenAssistant={handleOpenAssistant}
@@ -1725,6 +1742,13 @@ export function AppShell({ search }: AppShellProps) {
         onCloseAction={() => setSettingsOpen(false)}
       />
     ) : null}
+    <SessionSearchPalette
+      open={searchPaletteOpen}
+      onClose={closeSearchPalette}
+      onOpenSession={handleSelectSession}
+      runningSessionIds={runningSessionIds}
+      waitingSessionIds={waitingSessionIds}
+    />
     </div>
     </>
   );

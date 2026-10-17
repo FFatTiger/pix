@@ -7,6 +7,7 @@
 // The projection index is always pointed at a temp Pix-owned dir (hermetic).
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -544,6 +545,175 @@ describe("SCALE1 session projection index module", () => {
       assert.notEqual(version.value, "4");
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyword search (⌘K panel): tiered matching through the shared runtime-core
+// matcher, exercised on BOTH the SQLite projection path and the store's
+// projection-disabled fallback.
+// ---------------------------------------------------------------------------
+
+describe("SCALE1 session keyword search", () => {
+  /** Three projects × titled/untitled/message-only sessions with staggered activity. */
+  function searchRows(): ProjectedSession[] {
+    const mk = (id: string, cwd: string, modifiedMs: number, extra: Omit<Partial<ProjectedSession>, "id" | "path" | "cwd" | "modifiedMs"> = {}): ProjectedSession => ({
+      id,
+      path: `/x/${id}.jsonl`,
+      cwd,
+      createdMs: 1,
+      modifiedMs,
+      messageCount: 2,
+      firstMessage: "(no messages)",
+      projectRoot: cwd,
+      browseKind: "regular",
+      mtimeMs: 1,
+      size: 1,
+      ...extra,
+    });
+    return [
+      mk("t-hit", "/repos/alpha", 5000, { name: "侧栏改版方案", firstMessage: "内容甲" }),
+      mk("m-hit", "/repos/beta", 4000, { name: "周报整理", firstMessage: "把搜索改成居中面板" }),
+      mk("p-hit", "/repos/gamma", 9000, { name: "因子清洗", firstMessage: "内容乙" }),
+      mk("none", "/repos/alpha", 8000, { name: "别的", firstMessage: "无关内容" }),
+      mk("case", "/repos/zeta", 3000, { name: "Release Notes", firstMessage: "changelog" }),
+      mk("untitled", "/repos/eta", 2000, { firstMessage: "独有锚点词" }),
+      mk("archived", "/repos/alpha", 9999, { name: "归档行", firstMessage: "x" }),
+      mk("archproj", "/repos/omega", 9998, { name: "归档项目行", firstMessage: "x" }),
+    ];
+  }
+
+  it("SQLite keyword pages rank title > project > message, tie-broken by activity", () => {
+    const root = mkdtempSync(join(tmpdir(), "pix-proj-search-"));
+    try {
+      const index = new SessionProjectionIndex(join(root, "idx.sqlite"));
+      index.replaceAll(searchRows());
+      // "搜索" hits m-hit's first message only.
+      const message = index.querySessionPage({ page: 1, pageSize: 50, query: "搜索" });
+      assert.deepEqual(message?.sessions.map((s) => [s.sessionId, s.matchSource]), [["m-hit", "message"]]);
+      // Title hit.
+      const title = index.querySessionPage({ page: 1, pageSize: 50, query: "周报" });
+      assert.deepEqual(title?.sessions.map((s) => [s.sessionId, s.matchSource]), [["m-hit", "title"]]);
+      // Project-name hit (basename), ranked below a title hit despite newer activity.
+      const project = index.querySessionPage({ page: 1, pageSize: 50, query: "gamma" });
+      assert.deepEqual(project?.sessions.map((s) => [s.sessionId, s.matchSource]), [["p-hit", "project"]]);
+      const ranked = index.querySessionPage({ page: 1, pageSize: 50, query: "搜索" });
+      void ranked;
+      // "a" hits Release (title) and every alpha/gamma/zeta/eta basename
+      // (project) — a title hit outranks project hits despite older activity.
+      const both = index.querySessionPage({ page: 1, pageSize: 50, query: "a" });
+      assert.ok(both !== null);
+      assert.equal(both.sessions[0]?.sessionId, "case");
+      assert.equal(both.sessions[0]?.matchSource, "title");
+      const kinds = both.sessions.map((s) => s.matchSource);
+      assert.ok(kinds.indexOf("title") < kinds.indexOf("project"), JSON.stringify(kinds));
+      // Untitled rows rank the first message as the display title.
+      const untitled = index.querySessionPage({ page: 1, pageSize: 50, query: "锚点" });
+      assert.deepEqual(untitled?.sessions.map((s) => [s.sessionId, s.matchSource]), [["untitled", "title"]]);
+      // Case-insensitive both directions.
+      assert.deepEqual(index.querySessionPage({ page: 1, pageSize: 50, query: "RELEASE" })?.sessions.map((s) => s.sessionId), ["case"]);
+      assert.deepEqual(index.querySessionPage({ page: 1, pageSize: 50, query: "notes" })?.sessions.map((s) => s.sessionId), ["case"]);
+      // Pagination slices after ranking with honest totals.
+      const page1 = index.querySessionPage({ page: 1, pageSize: 1, query: "a" });
+      assert.equal(page1?.total, both.total);
+      assert.equal(page1?.sessions.length, 1);
+      assert.equal(page1?.sessions[0]?.sessionId, both.sessions[0]?.sessionId);
+      const page2 = index.querySessionPage({ page: 2, pageSize: 1, query: "a" });
+      assert.equal(page2?.sessions[0]?.sessionId, both.sessions[1]?.sessionId);
+      // A blank query never matches (the daemon normalizes blanks away; the
+      // index stays fail-closed for direct calls).
+      assert.equal(index.querySessionPage({ page: 1, pageSize: 50, query: "   " })?.total, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("SQLite keyword pages exclude archived sessions and archived projects before totals", () => {
+    const root = mkdtempSync(join(tmpdir(), "pix-proj-search-excl-"));
+    try {
+      const index = new SessionProjectionIndex(join(root, "idx.sqlite"));
+      index.replaceAll(searchRows());
+      // "归档" matches exactly the two archived rows — without exclusions both
+      // surface; with them neither does and the total is honest.
+      const unexcluded = index.querySessionPage({ page: 1, pageSize: 50, query: "归档" });
+      assert.equal(unexcluded?.total, 2);
+      const page = index.querySessionPage({
+        page: 1,
+        pageSize: 50,
+        query: "归档",
+        excludeSessionIds: ["archived", "missing-id"],
+        excludeProjectRoots: ["/repos/omega"],
+      });
+      const ids = page?.sessions.map((s) => s.sessionId) ?? [];
+      assert.ok(!ids.includes("archived"), "archived session must not surface");
+      assert.ok(!ids.includes("archproj"), "session of an archived project must not surface");
+      assert.deepEqual(ids, []);
+      assert.equal(page?.total, 0);
+      // Exclusions also apply to plain (non-keyword) pages when carried.
+      const plain = index.querySessionPage({ page: 1, pageSize: 50, excludeSessionIds: ["t-hit"] });
+      assert.ok(!plain?.sessions.some((s) => s.sessionId === "t-hit"));
+      assert.equal(plain?.total, searchRows().length - 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("store fallback keyword pages match the projection path exactly (parity)", async () => {
+    const corpus = await makeCorpus(0);
+    try {
+      // Build a real corpus with distinct titles/messages per session.
+      const specs: Array<{ title?: string; question: string }> = [
+        { title: "Sidebar redesign", question: "move search into a centered palette" },
+        { title: "Weekly report", question: "collect three things into one page" },
+        { question: "sidebar palette feedback" },
+      ];
+      specs.forEach((spec, i) => {
+        const ts = 1_700_000_000_000 + i * 1_000;
+        const manager = SessionManager.create(corpus.cwd, corpus.sessionDir);
+        appendTurn(manager, spec.question, `a${i}`, ts);
+        if (spec.title !== undefined) manager.appendSessionInfo(spec.title);
+        corpus.managers.set(manager.getSessionId(), manager);
+      });
+      const { store: projected } = projectedStore(corpus);
+      await projected.prepare?.();
+      const raw = rawStore(corpus);
+      const request = { page: 1, pageSize: 50, query: "sidebar" } as const;
+      const [fromProjection, fromFallback] = await Promise.all([
+        projected.listSessionPage!(request),
+        raw.listSessionPage!(request),
+      ]);
+      const shape = (page: { sessions: readonly SessionHeader[]; total: number }) => ({
+        ids: page.sessions.map((s) => s.sessionId),
+        sources: page.sessions.map((s) => s.matchSource),
+        total: page.total,
+      });
+      // Titled hit ranks title; the untitled session's question ranks as the
+      // display title too — identical across both catalog paths.
+      assert.deepEqual(shape(fromProjection), shape(fromFallback));
+      assert.equal(fromProjection.sessions.length, 2);
+      assert.equal(fromProjection.total, 2);
+    } finally {
+      await cleanup(corpus);
+    }
+  });
+
+  it("store fallback rejects blank and over-long queries (fail-closed)", async () => {
+    const corpus = await makeCorpus(1);
+    try {
+      const raw = rawStore(corpus);
+      await assert.rejects(
+        () => raw.listSessionPage!({ page: 1, pageSize: 50, query: "   " }),
+        (error: { code?: string }) => error.code === "invalid_input",
+      );
+      await assert.rejects(
+        () => raw.listSessionPage!({ page: 1, pageSize: 50, query: "x".repeat(201) }),
+        (error: { code?: string }) => error.code === "invalid_input",
+      );
+      const ok = await raw.listSessionPage!({ page: 1, pageSize: 50, query: "x".repeat(200) });
+      assert.equal(ok.total, 0);
+    } finally {
+      await cleanup(corpus);
     }
   });
 });

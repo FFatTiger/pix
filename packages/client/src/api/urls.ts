@@ -52,7 +52,7 @@ export const urls = {
     list: (input: { page: number; pageSize: number }) => resource("projects", input),
   },
   sessions: {
-    list: (input: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string }) => resource("sessions", input),
+    list: (input: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string; query?: string }) => resource("sessions", input),
     byId: (id: string) => resource(`sessions/${encodedSegment(id)}`),
     /**
      * Session context. `leafId` pins the branch; omitting `limit` asks for the

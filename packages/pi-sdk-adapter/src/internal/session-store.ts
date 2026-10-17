@@ -115,6 +115,7 @@ import type {
   SessionEntry,
   SessionHeader,
   SessionLocation,
+  SessionMatchSource,
   SessionPage,
   SessionPageRequest,
   SessionThinkingBlock,
@@ -122,7 +123,7 @@ import type {
   TextContent,
   ThinkingLevel,
 } from "@fffattiger/pix-runtime-core";
-import { makeRuntimeError, matchesAssistantWorkspacePattern, normalizeAssistantWorkspacePath } from "@fffattiger/pix-runtime-core";
+import { compareSessionQueryHits, makeRuntimeError, matchSessionQuery, matchesAssistantWorkspacePattern, MAX_SESSION_QUERY_LENGTH, normalizeAssistantWorkspacePath } from "@fffattiger/pix-runtime-core";
 import { mapMessage } from "../mappers/index.js";
 import { mergeNestedResults, nestedResultsIndexFromSdkEntries, type NestedResultsPayload } from "./nested-results.js";
 import { projectSessionTree } from "./session-tree.js";
@@ -1024,25 +1025,50 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     if (!Number.isSafeInteger(request.page) || request.page < 1 || !Number.isSafeInteger(request.pageSize) || request.pageSize < 1 || request.pageSize > 100) {
       throw makeRuntimeError("invalid_input", "session page is invalid");
     }
+    if (request.query !== undefined) {
+      // Canonical keyword form (the sessiond wrapper already normalizes; this
+      // guard keeps direct catalog calls honest too).
+      const trimmed = request.query.trim();
+      if (trimmed.length === 0 || trimmed.length > MAX_SESSION_QUERY_LENGTH) {
+        throw makeRuntimeError("invalid_input", "session query is invalid");
+      }
+    }
     if (request.parentSessionId !== undefined) {
       const opened = await this.openSession(request.parentSessionId);
       if (!opened) throw notFound(request.parentSessionId);
     }
     if (!this.projectionEnabled) {
       const sessions = await this.listSessions();
+      const excludedIds = new Set(request.excludeSessionIds ?? []);
+      const excludedRoots = new Set(request.excludeProjectRoots ?? []);
       const filtered = sessions.filter((session) =>
         (request.parentSessionId !== undefined
           ? session.parentSessionId === request.parentSessionId
           : session.parentSessionId === undefined)
         && (request.cwd === undefined || session.cwd === request.cwd)
         && (request.projectRoot === undefined || session.projectRoot === request.projectRoot)
+        && !excludedIds.has(session.sessionId)
+        && !excludedRoots.has(session.projectRoot)
         // The assistant workspace is hidden from every list page. The
         // projection path enforces this via browse_kind; this fallback keeps
         // the same assistant exclusion (minimal, scoped to the assistant dir —
         // the broader browse-kind policy stays projection-only as before).
         && !matchesAssistantWorkspacePattern(normalizeAssistantWorkspacePath(session.cwd)));
+      // Keyword pages filter through the SAME runtime-core matcher and rank
+      // with the shared comparator — identical tiers to the SQLite projection
+      // path (which wraps the same matcher as a SQL function).
+      let selected: readonly SessionHeader[] = filtered;
+      if (request.query !== undefined) {
+        const matched: Array<SessionHeader & { matchSource: SessionMatchSource }> = [];
+        for (const session of filtered) {
+          const source = matchSessionQuery(session, request.query);
+          if (source !== null) matched.push({ ...session, matchSource: source });
+        }
+        matched.sort(compareSessionQueryHits);
+        selected = matched;
+      }
       const offset = (request.page - 1) * request.pageSize;
-      return { sessions: filtered.slice(offset, offset + request.pageSize), page: request.page, pageSize: request.pageSize, total: filtered.length, totalPages: filtered.length === 0 ? 0 : Math.ceil(filtered.length / request.pageSize), catalogRevision: this.lastAppliedRevision };
+      return { sessions: selected.slice(offset, offset + request.pageSize), page: request.page, pageSize: request.pageSize, total: selected.length, totalPages: selected.length === 0 ? 0 : Math.ceil(selected.length / request.pageSize), catalogRevision: this.lastAppliedRevision };
     }
     const page = (await this.readyProjectionIndex()).querySessionPage(request);
     if (page === null) throw makeRuntimeError("unavailable", "session catalog index is unavailable", { retryable: true });

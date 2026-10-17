@@ -171,6 +171,54 @@ test("GET /v1/sessions forwards parentSessionId and rejects unknown query keys",
   assert.equal(captured.parentSessionId, "parent-1");
 });
 
+test("GET /v1/sessions forwards a trimmed query, treats blank as absent and rejects over-long", async () => {
+  const captured = [];
+  const app = appWith(
+    fakeClient({
+      async list(params) {
+        captured.push(params);
+        return {
+          sessions: [header({ sessionId: "hit", title: "pix release", matchSource: "title" })],
+          page: params.page,
+          pageSize: params.pageSize,
+          total: 1,
+          totalPages: 1,
+          catalogRevision: 0,
+        };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context() {
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
+      },
+    }),
+  );
+  // Trimmed passthrough; the matchSource projection survives the wire.
+  const res = await call(app, "/v1/sessions?page=1&pageSize=20&query=%20%20pix%20%20");
+  assert.equal(res.status, 200);
+  assert.equal(captured.at(-1).query, "pix");
+  const body = await res.json();
+  assert.equal(body.sessions[0].matchSource, "title");
+
+  // Blank / whitespace-only query is treated as absent (never a 400).
+  await call(app, "/v1/sessions?query=");
+  assert.equal(captured.at(-1).query, undefined);
+  await call(app, "/v1/sessions?query=%20%20");
+  assert.equal(captured.at(-1).query, undefined);
+
+  // Over-long query fails closed with a fixed 400 BEFORE the RPC.
+  const tooLong = await call(app, `/v1/sessions?query=${"x".repeat(201)}`);
+  assert.equal(tooLong.status, 400);
+  assert.equal((await tooLong.json()).code, "INVALID_QUERY");
+  assert.equal(captured.length, 3);
+
+  // Exactly 200 still passes through.
+  const edge = await call(app, `/v1/sessions?query=${"x".repeat(200)}`);
+  assert.equal(edge.status, 200);
+  assert.equal(captured.at(-1).query, "x".repeat(200));
+});
+
 test("GET /v1/sessions maps unknown parent not_found to 404", async () => {
   const app = appWith(
     fakeClient({

@@ -242,6 +242,15 @@ export const SessionsListParamsSchema = z.strictObject({
   cwd: NonEmptyStringSchema.optional(),
   projectRoot: NonEmptyStringSchema.optional(),
   parentSessionId: NonEmptyStringSchema.optional(),
+  /**
+   * Keyword filter (⌘K search panel): case-insensitive substring match over
+   * title / project name / first message, ranked title > project > message
+   * then latest activity (the runtime-core `matchSessionQuery` authority).
+   * Non-empty, at most 200 code units (the runtime-core
+   * `MAX_SESSION_QUERY_LENGTH` mirror); sessiond normalizes outer whitespace
+   * and treats a blank as absent before paging.
+   */
+  query: z.string().min(1).max(200).optional(),
 });
 export type SessionsListParams = z.infer<typeof SessionsListParamsSchema>;
 
