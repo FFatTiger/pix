@@ -10,7 +10,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ASSISTANT_NOTIFY_MESSAGE_PREFIX, ASSISTANT_SENT_MESSAGE_PREFIX, type CorrelatedRuntimeCommandResult, type ProtocolError, type RuntimeCommand, type RuntimeCreateParams, type RuntimeCreateResult, type RuntimeSubmitTurnParams, type SubmitTurnAdmission } from "@fffattiger/pix-protocol";
 import { resolveAssistantWorkspaceDir } from "@fffattiger/pix-runtime-core";
-import { AssistantOpsAuthority, type AssistantCreateGuardResult, type AssistantOpsRecordView, type AssistantOpsSurface } from "../src/assistant-ops.js";
+import { AssistantOpsAuthority, type AssistantCreateGuardResult, type AssistantOpsRecordView, type AssistantOpsSurface, type PendingUiRef } from "../src/assistant-ops.js";
 import { FileWorkspaceStateStore } from "../src/workspace-state.js";
 
 const HOME = "/Users/proxy";
@@ -23,7 +23,7 @@ interface FakeRecord {
   epoch: string;
   status: string;
   running: boolean;
-  pendingUi: number;
+  pendingUi: PendingUiRef[];
   lastEventId: number;
   capabilities: string[];
   operationId: string | null;
@@ -66,7 +66,14 @@ class FakeSurface implements AssistantOpsSurface {
     }
     return { status: "accepted" } as SubmitTurnAdmission;
   }
+  uiResponses: Array<{ sessionId: string; command: RuntimeCommand }> = [];
   async command(sessionId: string, command: RuntimeCommand, epoch?: string): Promise<CorrelatedRuntimeCommandResult> {
+    if (command.type === "extension_ui_response") {
+      this.uiResponses.push({ sessionId, command });
+      const record = this.records.get(sessionId);
+      if (record !== undefined && "id" in command) record.pendingUi = record.pendingUi.filter((request) => request.id !== command.id);
+      return { commandId: command.commandId, result: { ok: true, type: "extension_ui_response" } } as CorrelatedRuntimeCommandResult;
+    }
     const kind = command.type === "steer" ? "steer" as const : "follow_up" as const;
     const message = "message" in command && typeof command.message === "string" ? command.message : "";
     this.commands.push({ sessionId, command: { commandId: command.commandId, type: kind, message }, ...(epoch === undefined ? {} : { epoch }) });
@@ -106,7 +113,7 @@ class FakeSurface implements AssistantOpsSurface {
 
 function makeRecord(sessionId: string, cwd: string, overrides: Partial<FakeRecord> = {}): FakeRecord {
   return {
-    sessionId, cwd, epoch: `epoch-${sessionId}`, status: "ready", running: false, pendingUi: 0,
+    sessionId, cwd, epoch: `epoch-${sessionId}`, status: "ready", running: false, pendingUi: [],
     lastEventId: 0, capabilities: ["runtime.prompt", "runtime.steer", "runtime.follow_up"],
     operationId: null, writtenFiles: [], sent: [], ...overrides,
   };
@@ -491,6 +498,34 @@ test("routing: idle is fenced submit, busy is a command at the target epoch, mis
   env.authority.dispose();
 });
 
+test("a send to a turn blocked on an ask queues the message, then cancels the ask", async () => {
+  const env = harness();
+  const blocked = makeRecord("blocked", "/repos/app", {
+    running: true,
+    pendingUi: [{ id: "ask-1", method: "questionnaire" }],
+    capabilities: ["runtime.prompt", "runtime.steer", "runtime.follow_up", "runtime.extension_ui"],
+  });
+  env.surface.records.set("blocked", blocked);
+  env.surface.exists.add("blocked");
+  const steered = payload(await send(env, "a1", { kind: "send", targetSessionId: "blocked", message: "用方案 B", delivery: "steer", waitMinutes: 0 }));
+  assert.equal(steered.ok, true);
+  assert.equal(env.surface.commands.at(-1)?.command.type, "steer");
+  assert.deepEqual(env.surface.uiResponses.map(({ command }) => command), [{
+    commandId: (env.surface.uiResponses[0]!.command as { commandId: string }).commandId,
+    type: "extension_ui_response", id: "ask-1", method: "questionnaire", responseKind: "cancelled", cancelled: true,
+  }]);
+  assert.deepEqual(blocked.pendingUi, []);
+
+  // Without the extension UI capability nothing is cancelled.
+  const legacy = makeRecord("legacy", "/repos/app", { running: true, pendingUi: [{ id: "ask-2", method: "confirm" }] });
+  env.surface.records.set("legacy", legacy);
+  env.surface.exists.add("legacy");
+  env.assistant.operationId = "op-legacy";
+  await send(env, "a2", { kind: "send", targetSessionId: "legacy", message: "go", delivery: "follow_up", waitMinutes: 0 });
+  assert.equal(env.surface.uiResponses.length, 1);
+  env.authority.dispose();
+});
+
 test("delivered prompt is exactly the marker line plus the raw message", async () => {
   const env = harness();
   const target = makeRecord("target", "/repos/app");
@@ -586,7 +621,7 @@ test("settlement: completed, failed, stopped, waiting_user, crashed, and the idl
   // pending extension UI settles immediately, even while the turn still looks busy.
   env.authority.noteRpcSubmitTurn("assistant");
   await wait(20);
-  const waiting = makeRecord("waiting", "/repos/app", { running: true, pendingUi: 1, lastEventId: 1 });
+  const waiting = makeRecord("waiting", "/repos/app", { running: true, pendingUi: [{ id: "ask-1", method: "questionnaire" }], lastEventId: 1 });
   env.surface.records.set("waiting", waiting);
   env.surface.exists.add("waiting");
   env.assistant.operationId = "op-waiting";

@@ -24,6 +24,7 @@ import {
   type AssistantDeliveryPath,
   type AssistantWorkOutcome,
   type CorrelatedRuntimeCommandResult,
+  type ExtensionUiInteractiveMethod,
   type ProtocolError,
   type RuntimeCommand,
   type RuntimeCreateParams,
@@ -54,6 +55,11 @@ const NOTIFY_MERGE_MS = 1_500;
 const NOTIFY_RETRY_MS = 5_000;
 const NOTIFY_ATTEMPT_CAP = 3;
 const NAME_MAX = 200;
+/** How long a send waits for cancelled extension UI to leave the projection. */
+const UI_RELEASE_WAIT_MS = 2_000;
+const UI_RELEASE_POLL_MS = 50;
+
+export interface PendingUiRef { id: string; method: ExtensionUiInteractiveMethod }
 
 /** Live record view the authority needs. The service owns the real record. */
 export interface AssistantOpsRecordView {
@@ -62,7 +68,8 @@ export interface AssistantOpsRecordView {
   epoch: string;
   status: string;
   isTurnRunning(): boolean;
-  pendingExtensionUi(): number;
+  /** Unanswered interactive extension UI (ask/confirm/select/...) the turn is blocked on. */
+  pendingExtensionUi(): readonly PendingUiRef[];
   lastEventId: number;
   capabilities(): readonly string[];
   /** Current assistant turn's operation id, or null when the assistant is idle. */
@@ -585,6 +592,7 @@ export class AssistantOpsAuthority {
       const command: RuntimeCommand = { commandId: `assistant-op:${randomUUID()}`, type: busyDelivery, message };
       const result = await this.surface.command(sessionId, command, target.epoch);
       if (!result.result.ok) return { ok: false, error: opError(result.result.error) };
+      await this.releasePendingUi(target, sessionId);
       return { ok: true, delivery: busyDelivery };
     }
     if (live) {
@@ -608,6 +616,35 @@ export class AssistantOpsAuthority {
     });
     if (admission.status === "rejected") return { ok: false, error: opError(admission.error) };
     return { ok: true, delivery: "new_turn" };
+  }
+
+  /**
+   * A turn blocked on an unanswered ask/confirm never reaches its queued
+   * steer/follow-up: the agent loop only drains the queue after the tool
+   * returns. The assistant speaks for the user here, so cancel that UI the
+   * way the user's Cancel button does (after queueing the message, so the
+   * agent reads it as soon as the tool returns), then wait for the
+   * projection to drop it so settlement does not mistake the cancelled
+   * prompt for a fresh waiting_user.
+   */
+  private async releasePendingUi(target: AssistantOpsRecordView, sessionId: string): Promise<void> {
+    const pending = target.pendingExtensionUi();
+    if (pending.length === 0 || !target.capabilities().includes("runtime.extension_ui")) return;
+    for (const request of pending) {
+      await this.surface.command(sessionId, {
+        commandId: `assistant-op:${randomUUID()}`,
+        type: "extension_ui_response",
+        id: request.id,
+        method: request.method,
+        responseKind: "cancelled",
+        cancelled: true,
+      }, target.epoch);
+    }
+    const ids = new Set(pending.map((request) => request.id));
+    const deadline = Date.now() + UI_RELEASE_WAIT_MS;
+    while (Date.now() < deadline && target.pendingExtensionUi().some((request) => ids.has(request.id))) {
+      await new Promise((resolve) => setTimeout(resolve, UI_RELEASE_POLL_MS));
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -807,7 +844,7 @@ export class AssistantOpsAuthority {
         await this.settle(delegation, "failed", "会话异常退出");
         continue;
       }
-      if (target.pendingExtensionUi() > 0) {
+      if (target.pendingExtensionUi().length > 0) {
         this.clearConfirm(delegation);
         await this.settle(delegation, "waiting_user");
         continue;
@@ -829,7 +866,7 @@ export class AssistantOpsAuthority {
         needsConfirm = true;
         continue;
       }
-      if (target.isTurnRunning() || target.pendingExtensionUi() > 0 || target.lastEventId !== delegation.confirmEventId) {
+      if (target.isTurnRunning() || target.pendingExtensionUi().length > 0 || target.lastEventId !== delegation.confirmEventId) {
         this.clearConfirm(delegation);
         needsConfirm = true;
         continue;

@@ -44,6 +44,7 @@ import {
   WORKER_BUILD_IDENTITY,
   evaluateWorkerBuild,
   RuntimeCloseReasonSchema,
+  ExtensionUiInteractiveMethodSchema,
   type ProtocolErrorCode,
   type WorkerBuild,
 } from "@fffattiger/pix-protocol";
@@ -3649,7 +3650,10 @@ export class SessiondService {
       epoch: record.epoch,
       status: record.status,
       isTurnRunning: () => this.isTurnRunning(record),
-      pendingExtensionUi: () => record.projection.snapshot().state.pendingExtensionUi?.length ?? 0,
+      pendingExtensionUi: () => (record.projection.snapshot().state.pendingExtensionUi ?? []).flatMap((request) => {
+        const method = ExtensionUiInteractiveMethodSchema.safeParse(request.method);
+        return method.success ? [{ id: request.id, method: method.data }] : [];
+      }),
       get lastEventId() { return record.journal.lastEventId; },
       capabilities: () => record.projection.snapshot().capabilities.capabilities,
       runningOperationId: () => {
