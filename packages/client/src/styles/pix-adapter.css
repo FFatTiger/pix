@@ -1153,17 +1153,20 @@ html.dark .catalog-meta-item--error {
   gap: 10px;
 }
 
-.sidebar-nav-item > svg,
-.sidebar-list-row > svg,
-.sidebar-session-select > svg {
+.sidebar-nav-item > svg {
   flex-shrink: 0;
   opacity: 0.72;
 }
 
+/* Row icons (project folders, fork branches) sit quieter than nav icons. */
+.sidebar-list-row > svg,
+.sidebar-session-select > svg {
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
 .sidebar-nav-item:hover,
 .sidebar-nav-item[data-active="true"],
-.sidebar-list-row:hover,
-.sidebar-list-row[data-active="true"],
 .sidebar-section-head:hover {
   background: var(--bg-hover);
   color: var(--text);
@@ -1201,22 +1204,46 @@ html.dark .catalog-meta-item--error {
   min-width: 0;
   height: 32px;
   padding: 0 8px 0 10px;
-  border: 0;
+  /* 0.5px transparent border keeps geometry identical when the selected
+     treatment adds its hairline — no width/height jump. */
+  border: 0.5px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--text);
+  color: var(--text-muted);
   font-size: 13px;
   font-weight: var(--text-weight-regular);
   line-height: 1.35;
   text-align: left;
   cursor: pointer;
   gap: 8px;
-  transition: none;
-  transform: none;
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
 }
 
 .sidebar-list-row--project {
-  font-size: 14px;
+  color: var(--text);
+}
+
+/* Row interaction treatment (approved harness values): 5% hover wash, 8%
+   press, and a raised white card for the active row that survives hover. */
+.sidebar-list-row:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text);
+}
+
+.sidebar-list-row:active {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.sidebar-list-row[data-active="true"] {
+  background: var(--surface-content);
+  border-color: color-mix(in srgb, var(--text) 8%, transparent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+.sidebar-list-row[data-active="true"]:hover,
+.sidebar-list-row[data-active="true"]:active {
+  background: var(--surface-content);
 }
 
 /* Liveness is independent of selection and busy state. A completed JSONL-only
@@ -1452,16 +1479,43 @@ html.dark .catalog-meta-item--error {
 }
 
 .sidebar-row-meta {
-  flex-shrink: 0;
-  margin-left: auto;
-  padding-right: 2px;
   color: var(--text-dim);
   font-size: 11px;
+  font-weight: var(--text-weight-regular);
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
   line-height: 1;
-  text-transform: uppercase;
+  text-align: right;
   pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+/* Trailing slot: the busy marker and the compact time share one grid cell
+   (crossfade, never both visible, no layout shift on swap). */
+.sidebar-row-trailing {
+  display: grid;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.sidebar-row-trailing > * {
+  grid-area: 1 / 1;
+  transition: opacity 120ms ease;
+}
+
+.sidebar-row-trailing-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  justify-self: end;
+  opacity: 0;
+}
+
+.sidebar-row-trailing-status[data-on="true"] {
+  opacity: 1;
+}
+
+.sidebar-row-trailing .sidebar-row-meta[data-on="false"] {
+  opacity: 0;
 }
 
 .sidebar-list-row:hover .sidebar-row-title,
@@ -1490,9 +1544,7 @@ html.dark .catalog-meta-item--error {
    no resting background, no container shape (the time chip owns the slot
    by default). */
 
-.sidebar-list-row:hover .sidebar-row-meta,
-.sidebar-list-row:hover .sidebar-row-status,
-.sidebar-list-row:hover .sidebar-list-row > .session-status-dot,
+.sidebar-list-row:hover .sidebar-row-trailing > *,
 .sidebar-list-row:hover .sidebar-fork-caret {
   opacity: 0;
   pointer-events: none;
@@ -1651,20 +1703,67 @@ html.dark .catalog-meta-item--error {
   flex-shrink: 0;
 }
 
-.sidebar-section-sessions {
-  flex: 0 0 auto;
-  min-height: 0;
-}
-
-.sidebar-session-list {
-  min-height: 0;
-}
-
 .sidebar-project-sessions {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 200ms ease;
+}
+
+/* First user-driven expansion mounts at 0fr and grows in; later toggles ride
+   the data-open transition between 0fr and 1fr. */
+.sidebar-project-sessions[data-motion="open"] {
+  grid-template-rows: 0fr;
+  animation: sidebar-disclosure-grow 200ms ease forwards;
+}
+
+.sidebar-project-sessions[data-open="false"] {
+  grid-template-rows: 0fr;
+}
+
+.sidebar-project-sessions-inner {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   /* Match the project title start: 16px folder icon + 8px row gap. */
   padding: 2px 0 8px 24px;
+  transition: opacity 200ms ease;
+}
+
+.sidebar-project-sessions[data-open="false"] > .sidebar-project-sessions-inner {
+  opacity: 0;
+}
+
+.sidebar-project-sessions[data-motion="open"] > .sidebar-project-sessions-inner {
+  animation: sidebar-fade-in 200ms ease;
+}
+
+@keyframes sidebar-disclosure-grow {
+  to { grid-template-rows: 1fr; }
+}
+
+@keyframes sidebar-fade-in {
+  from { opacity: 0; }
+}
+
+/* Nested "Load more" aligns its text with the session titles above it. */
+.sidebar-project-sessions-inner .sidebar-show-more {
+  width: auto;
+  margin-left: 10px;
+  padding: 0;
+}
+
+/* Fresh session rows grow in from 0fr and fade once on mount. */
+.sidebar-row-fresh {
+  display: grid;
+  grid-template-rows: 0fr;
+  overflow: hidden;
+  animation: sidebar-disclosure-grow 200ms ease forwards;
+}
+
+.sidebar-row-fresh > .sidebar-list-row {
+  min-height: 0;
+  animation: sidebar-fade-in 200ms ease;
 }
 
 .sidebar-files {
@@ -1812,6 +1911,27 @@ html.dark .catalog-meta-item--error {
   background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
+/* Delete-confirm accent line (pure CSS — no JS hover state): grows on row
+   hover or when the row is the selected one. */
+.sidebar-list-row--confirm::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-left: solid 4px var(--danger);
+  transform: scaleX(0.5);
+  transform-origin: left center;
+  transition: transform 0.15s ease;
+  pointer-events: none;
+}
+
+.sidebar-list-row--confirm:hover::before,
+.sidebar-list-row--confirm[data-active="true"]::before {
+  transform: scaleX(1);
+}
+
 .sidebar-session-indicator {
   display: inline-flex;
   align-items: center;
@@ -1863,6 +1983,31 @@ html.dark .catalog-meta-item--error {
   .sidebar-rail .sidebar-row-actions,
   .sidebar-rail .sidebar-section-actions {
     transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
+  }
+
+  .sidebar-list-row,
+  .sidebar-row-trailing > *,
+  .sidebar-project-sessions,
+  .sidebar-project-sessions-inner {
+    transition: none;
+  }
+
+  .sidebar-project-sessions[data-motion="open"] {
+    animation: none;
+    grid-template-rows: 1fr;
+  }
+
+  .sidebar-project-sessions[data-open="false"] {
+    grid-template-rows: 0fr;
+  }
+
+  .sidebar-row-fresh,
+  .sidebar-row-fresh > .sidebar-list-row {
+    animation: none;
+  }
+
+  .sidebar-row-fresh {
+    grid-template-rows: 1fr;
   }
 
   .sidebar-nav-item:active,

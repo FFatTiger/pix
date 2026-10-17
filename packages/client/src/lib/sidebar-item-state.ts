@@ -6,10 +6,13 @@ import { useWorkspaceFlags } from "@/lib/workspace-flags";
  *
  * SESSION and PROJECT pin/archive are SERVER state (sessiond-owned workspace
  * state, written via PATCH /v1/workspace-flags — see lib/workspace-flags.ts).
- * Only project EXPANSION stays device-local (each device's own view). The
- * localStorage document now carries only expandedProjects; legacy pin/archive
- * arrays are migrated to the server once (migrateLocalOrganizationPrefsToServer).
- * Components keep consuming the SAME hook shape.
+ * Only project EXPANSION stays device-local (each device's own view):
+ * `expandedProjects` records explicit expansions, `collapsedProjects`
+ * records explicit collapses (which override the "active in the last 3 days
+ * → expanded by default" rule). The localStorage document carries only those
+ * two arrays; legacy pin/archive arrays are migrated to the server once
+ * (migrateLocalOrganizationPrefsToServer). Components keep consuming the
+ * SAME hook shape.
  */
 
 const STORAGE_KEY = "pi-sidebar-item-state";
@@ -22,6 +25,7 @@ export interface SidebarItemState {
   archivedSessions: string[];
   archivedProjects: string[];
   expandedProjects: string[];
+  collapsedProjects: string[];
 }
 
 const EMPTY_STATE: SidebarItemState = {
@@ -30,6 +34,7 @@ const EMPTY_STATE: SidebarItemState = {
   archivedSessions: [],
   archivedProjects: [],
   expandedProjects: [],
+  collapsedProjects: [],
 };
 
 function uniqueIds(ids: readonly string[]): string[] {
@@ -52,6 +57,7 @@ function normalizeState(value: unknown): SidebarItemState {
     archivedSessions: Array.isArray(record.archivedSessions) ? uniqueIds(record.archivedSessions.filter((id): id is string => typeof id === "string")) : [],
     archivedProjects: Array.isArray(record.archivedProjects) ? uniqueIds(record.archivedProjects.filter((id): id is string => typeof id === "string")) : [],
     expandedProjects: Array.isArray(record.expandedProjects) ? uniqueIds(record.expandedProjects.filter((id): id is string => typeof id === "string")) : [],
+    collapsedProjects: Array.isArray(record.collapsedProjects) ? uniqueIds(record.collapsedProjects.filter((id): id is string => typeof id === "string")) : [],
   };
 }
 
@@ -63,7 +69,8 @@ function sameState(left: SidebarItemState, right: SidebarItemState): boolean {
     && left.pinnedProjects.join("\0") === right.pinnedProjects.join("\0")
     && left.archivedSessions.join("\0") === right.archivedSessions.join("\0")
     && left.archivedProjects.join("\0") === right.archivedProjects.join("\0")
-    && left.expandedProjects.join("\0") === right.expandedProjects.join("\0");
+    && left.expandedProjects.join("\0") === right.expandedProjects.join("\0")
+    && left.collapsedProjects.join("\0") === right.collapsedProjects.join("\0");
 }
 
 export function loadSidebarItemState(): SidebarItemState {
@@ -115,6 +122,7 @@ export function applySidebarItemPatch(
     archivedSessions: [...state.archivedSessions],
     archivedProjects: [...state.archivedProjects],
     expandedProjects: [...state.expandedProjects],
+    collapsedProjects: [...state.collapsedProjects],
   };
   if (patch.sessionId !== undefined) {
     if (patch.archived !== undefined) {
@@ -132,6 +140,7 @@ export function applySidebarItemPatch(
       if (patch.archived) {
         next.pinnedProjects = toggleMembership(next.pinnedProjects, patch.projectRoot, false);
         next.expandedProjects = toggleMembership(next.expandedProjects, patch.projectRoot, false);
+        next.collapsedProjects = toggleMembership(next.collapsedProjects, patch.projectRoot, false);
       }
     }
     if (patch.pinned !== undefined) {
@@ -139,7 +148,11 @@ export function applySidebarItemPatch(
       if (patch.pinned) next.archivedProjects = toggleMembership(next.archivedProjects, patch.projectRoot, false);
     }
     if (patch.expanded !== undefined) {
+      // Expansion is an explicit either/or write: expanding removes the
+      // explicit-collapse mark and collapsing adds it, so the default
+      // (recent → expanded) rule can never resurrect a user-collapsed project.
       next.expandedProjects = toggleMembership(next.expandedProjects, patch.projectRoot, patch.expanded);
+      next.collapsedProjects = toggleMembership(next.collapsedProjects, patch.projectRoot, !patch.expanded);
     }
   }
   return next;
@@ -182,6 +195,7 @@ export function useSidebarItemState(): {
     pinnedProjects: workspace.pinnedProjects,
     archivedProjects: workspace.archivedProjects,
     expandedProjects: local.expandedProjects,
+    collapsedProjects: local.collapsedProjects,
   };
 
   return {

@@ -4,9 +4,7 @@ import { SessionStatusDot, type SessionDisplayStatus } from "@/components/Sessio
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
-  ArrowClockwise,
   CaretRight,
-  Check,
   DotsThree,
   Folder,
   FolderOpen,
@@ -31,6 +29,9 @@ import {
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { createMutationOptions } from "@/api/mutations";
 import { PROJECT_PAGE_SIZE, PROJECT_SESSION_PAGE_SIZE, SESSION_PAGE_SIZE } from "@/api/session-list";
+
+/** Sessiond caps a sessions page at 100 rows. */
+const SEARCH_PAGE_SIZE = 100;
 import { urls } from "@/api/urls";
 import { SessionContextResponseSchema } from "@/api/schemas";
 import { HttpError } from "@/api/http-client";
@@ -40,14 +41,23 @@ import { useI18n } from "@/hooks/useI18n";
 import { useContextMenu, type ContextMenuEntry } from "@/components/ContextMenu";
 import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state";
 import { downloadVisibleBranch } from "@/lib/visible-branch-export";
-import { loadPinnedSectionOpen, loadProjectsSectionOpen, loadSessionsSectionOpen, savePinnedSectionOpen, saveProjectsSectionOpen, saveSessionsSectionOpen } from "@/lib/sidebar-section-state";
+import { loadPinnedSectionOpen, loadProjectsSectionOpen, savePinnedSectionOpen, saveProjectsSectionOpen } from "@/lib/sidebar-section-state";
 import { useSidebarItemState } from "@/lib/sidebar-item-state";
+import { formatCompactActivity } from "@/lib/i18n/format";
 import { configuredTitleModel, requestLiveSessionTitle } from "@/features/session-title/session-title";
 import { useRuntimeConnection } from "@/runtime";
 import type { SettingsTab } from "@/components/shell/SettingsModal";
 
 const SESSION_LONG_PRESS_MS = 520;
 const SESSION_LONG_PRESS_MOVE_PX = 10;
+/** A project whose latest activity is within this window starts expanded. */
+const RECENT_PROJECT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+/** Expanded projects reveal this many root sessions before "Load more". */
+const PROJECT_SESSIONS_INITIAL = 3;
+/** Each "Load more" click inside a project reveals this many more roots. */
+const PROJECT_SESSIONS_STEP = 5;
+/** Sessions younger than this animate their sidebar row in on mount. */
+const FRESH_SESSION_MS = 5_000;
 
 export interface SidebarProps {
   /** Current workspace cwd (AppShell is the URL owner). */
@@ -122,31 +132,6 @@ function activityMs(session: SessionHeader): number | undefined {
     return value;
   }
   return undefined;
-}
-
-function formatRelativeTime(
-  ms: number,
-  t: (key: string, params?: Record<string, string | number>) => string,
-): string {
-  const compact = formatCompactActivity(ms);
-  if (compact === "NOW") return t("desktop.justNow");
-  if (compact.endsWith("M")) return t("desktop.minutesAgo", { count: Number(compact.slice(0, -1)) });
-  if (compact.endsWith("H")) return t("desktop.hoursAgo", { count: Number(compact.slice(0, -1)) });
-  if (compact.endsWith("D")) return t("desktop.daysAgo", { count: Number(compact.slice(0, -1)) });
-  return compact;
-}
-
-/** Compact idle-time chip: NOW / 3M / 1H / 2D / 12-24. */
-export function formatCompactActivity(ms: number, now = Date.now()): string {
-  const diff = Math.max(0, now - ms);
-  const mins = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  if (mins < 1) return "NOW";
-  if (mins < 60) return `${mins}M`;
-  if (hours < 24) return `${hours}H`;
-  if (days < 7) return `${days}D`;
-  return new Date(ms).toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
 }
 
 /**
@@ -224,6 +209,13 @@ export function validateSessionName(
     }
   }
   return { ok: true, name: trimmed };
+}
+
+/** Sessions created moments ago animate their row in on first mount. */
+function isFreshSession(session: SessionHeader): boolean {
+  if (typeof session.createdAt !== "number" || !Number.isFinite(session.createdAt)) return false;
+  const age = Date.now() - session.createdAt;
+  return age >= 0 && age < FRESH_SESSION_MS;
 }
 
 function pathBaseName(path: string): string {
@@ -357,19 +349,17 @@ export function Sidebar({
     void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.byId(sessionId) });
   }, [runtimeConnection, queryClient]);
 
-  // Projects, Sessions, and each expanded project's Sessions keep independent
+  // Projects and each expanded project's Sessions keep independent
   // loaded-page counts. "Load more" adds exactly one next numbered page to
   // that resource; the backend remains true page/pageSize SQL pagination while
   // the rail presents one continuous list (no previous/next/page-number UI).
+  // The global first sessions page stays loaded for search, pinned-session
+  // hydration, and selected-session project resolution (no Recent section).
   const [projectPagesLoaded, setProjectPagesLoaded] = useState(1);
-  const [sessionPagesLoaded, setSessionPagesLoaded] = useState(1);
   const [projectSessionPagesLoaded, setProjectSessionPagesLoaded] = useState<Readonly<Record<string, number>>>({});
-  const sessionPageQueries = useQueries({
-    queries: Array.from({ length: sessionPagesLoaded }, (_, index) => options.sessions.page(
-      index + 1,
-      SESSION_PAGE_SIZE,
-      { enabled: canBrowseSessions },
-    )),
+  const [projectSessionRowsShown, setProjectSessionRowsShown] = useState<Readonly<Record<string, number>>>({});
+  const sessionPageQuery = useQuery({
+    ...options.sessions.page(1, SESSION_PAGE_SIZE, { enabled: canBrowseSessions }),
   });
   const projectPageQueries = useQueries({
     queries: Array.from({ length: projectPagesLoaded }, (_, index) => options.projects.page(
@@ -382,7 +372,7 @@ export function Sidebar({
     ...options.sessions.detail(selectedSessionId ?? ""),
     enabled: canBrowseSessions && selectedSessionId !== null,
   });
-  const loadedSessions = dedupeSessions(sessionPageQueries.flatMap((query) => query.data?.sessions ?? []));
+  const loadedSessions = dedupeSessions(sessionPageQuery.data?.sessions ?? []);
   const loadedProjects = dedupeProjects(projectPageQueries.flatMap((query) => query.data?.projects ?? []));
   const selectedHeader = selectedDetail.data?.session
     ?? loadedSessions.find((session) => session.sessionId === selectedSessionId);
@@ -402,13 +392,6 @@ export function Sidebar({
   const removeMutation = useMutation(createMutationOptions(http, queryClient).sessions.remove());
   const renameMutation = useMutation(createMutationOptions(http, queryClient).sessions.rename());
 
-  const [sessionsOpen, setSessionsOpen] = useState<boolean>(() => loadSessionsSectionOpen());
-  const toggleSessions = useCallback(() => {
-    setSessionsOpen((open) => {
-      saveSessionsSectionOpen(!open);
-      return !open;
-    });
-  }, []);
   const [pinnedOpen, setPinnedOpen] = useState<boolean>(() => loadPinnedSectionOpen());
   const togglePinned = useCallback(() => {
     setPinnedOpen((open) => {
@@ -423,10 +406,16 @@ export function Sidebar({
       return !open;
     });
   }, []);
-  // Session-list quick-search: searchOpen swaps the header for a filter box,
-  // and sessionSearch drives live filtering of the visible session rows.
+  // Session-list quick-search: the header icon opens a filter box pinned at
+  // the top of the scroll area, and sessionSearch live-filters the loaded
+  // sessions; a non-empty query replaces the whole scroll area with results.
   const [searchOpen, setSearchOpen] = useState(false);
   const [sessionSearch, setSessionSearch] = useState("");
+  // ponytail: search filters titles of the newest SEARCH_PAGE_SIZE sessions
+  // client-side; add a server search param when that window is not enough.
+  const searchPageQuery = useQuery({
+    ...options.sessions.page(1, SEARCH_PAGE_SIZE, { enabled: canBrowseSessions && searchOpen }),
+  });
   const {
     state: itemState,
     pinSession,
@@ -437,43 +426,14 @@ export function Sidebar({
     flagError,
   } = useSidebarItemState();
   const expandedProjects = new Set(itemState.expandedProjects);
-  const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
-  const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    return () => {
-      if (sessionRefreshTimerRef.current) clearTimeout(sessionRefreshTimerRef.current);
-    };
-  }, []);
-
-  const handleRefreshSessions = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.lists }).then(() => {
-      setSessionRefreshDone(true);
-      if (sessionRefreshTimerRef.current) clearTimeout(sessionRefreshTimerRef.current);
-      sessionRefreshTimerRef.current = setTimeout(() => setSessionRefreshDone(false), 2000);
-    });
-  }, [queryClient]);
+  const collapsedProjects = new Set(itemState.collapsedProjects);
 
   // Honesty / fail-closed: when the sessions capability is retracted the visible
   // list is pinned empty regardless of cache state or any in-flight response.
   // Exact selected detail stays out-of-band: never insert it into the loaded
   // page sequence or alter the authority-owned totals.
   const visibleSessions = canBrowseSessions ? loadedSessions : [];
-  const showLoading = canBrowseSessions && sessionPageQueries[0]?.isLoading === true;
-  const showError = canBrowseSessions && sessionPageQueries[0]?.isError === true;
-  const lastSessionPageQuery = sessionPageQueries[sessionPageQueries.length - 1];
-  const sessionTotalPages = lastDefinedTotalPages(sessionPageQueries);
-  const canLoadMoreSessions = canBrowseSessions && (
-    lastSessionPageQuery?.isError === true
-    || (sessionPagesLoaded > 1 && lastSessionPageQuery?.isFetching === true)
-    || sessionPagesLoaded < sessionTotalPages
-  );
-  const loadMoreSessions = () => {
-    if (lastSessionPageQuery?.isError) {
-      void lastSessionPageQuery.refetch();
-      return;
-    }
-    setSessionPagesLoaded((count) => count + 1);
-  };
+  const sessionsListError = canBrowseSessions && sessionPageQuery.isError === true;
 
   /** Resolve the project root for a cwd from the freshest data available. */
   const projectRootFor = useCallback((cwd: string | null | undefined): string | null => {
@@ -512,9 +472,23 @@ export function Sidebar({
     setProjectPagesLoaded((count) => count + 1);
   };
   const selectedProject = projectRootFor(cwd);
-  const toggleProjectExpanded = useCallback((project: string) => {
-    setProjectExpanded(project, !itemState.expandedProjects.includes(project));
-  }, [itemState.expandedProjects, setProjectExpanded]);
+
+  // Effective expansion = explicitly expanded, or (not explicitly collapsed
+  // AND active within the recency window). Pinned projects outside the loaded
+  // catalog pages have no latestActivity and answer to expandedProjects only.
+  const latestActivityByRoot = new Map<string, number>();
+  for (const project of loadedProjects) {
+    latestActivityByRoot.set(project.projectRoot, project.latestActivity);
+  }
+  const isProjectExpanded = (projectRoot: string): boolean => {
+    if (expandedProjects.has(projectRoot)) return true;
+    if (collapsedProjects.has(projectRoot)) return false;
+    const latest = latestActivityByRoot.get(projectRoot);
+    return latest !== undefined && Date.now() - latest < RECENT_PROJECT_WINDOW_MS;
+  };
+  const toggleProjectExpanded = (project: string) => {
+    setProjectExpanded(project, !isProjectExpanded(project));
+  };
 
   // Direct session URLs reveal their owning project (and the session row's
   // ancestor chain) without any click. This runs only when the SELECTED
@@ -532,21 +506,17 @@ export function Sidebar({
     const root = session.projectRoot || session.cwd;
     if (!root) return;
     autoRevealedSessionRef.current = selectedSessionId;
-    if (!itemState.expandedProjects.includes(root)) setProjectExpanded(root, true);
-  }, [itemState.expandedProjects, selectedHeader, selectedSessionId, setProjectExpanded, visibleSessions]);
+    if (!isProjectExpanded(root)) setProjectExpanded(root, true);
+  }, [collapsedProjects, expandedProjects, latestActivityByRoot, selectedHeader, selectedSessionId, setProjectExpanded, visibleSessions]);
 
-  // Recent is the currently loaded session sequence (server-hidden rows never
-  // arrive). Expanding a project reveals that project's independently loaded
-  // sequence in place; it never filters Recent or changes cwd.
-  const projectSessions = visibleSessions;
-
-  // Live quick-search: filters against the exact title shown in the list
-  // (a user-set name, else a short id). Applied after the project scope so
-  // search only ever narrows the currently visible project's sessions.
+  // Live quick-search: filters the loaded first sessions page against the
+  // exact title shown in the list (a user-set name, else a short id). A
+  // non-empty query replaces the whole scroll area with the matching tree.
   const searchQuery = sessionSearch.trim().toLowerCase();
   const searchScopedSessions = searchQuery
-    ? projectSessions.filter((s) => sessionRowTitle(s).toLowerCase().includes(searchQuery))
-    : projectSessions;
+    ? dedupeSessions([...visibleSessions, ...(canBrowseSessions ? searchPageQuery.data?.sessions ?? [] : [])])
+      .filter((s) => sessionRowTitle(s).toLowerCase().includes(searchQuery))
+    : visibleSessions;
 
   const projectQueryRoots = [...new Set([
     ...itemState.pinnedProjects.filter((projectRoot) => !itemState.archivedProjects.includes(projectRoot)),
@@ -560,7 +530,7 @@ export function Sidebar({
     queries: projectSessionSpecs.map(({ projectRoot, page }) => options.sessions.page(
       page,
       PROJECT_SESSION_PAGE_SIZE,
-      { projectRoot, enabled: canBrowseSessions && expandedProjects.has(projectRoot) },
+      { projectRoot, enabled: canBrowseSessions && isProjectExpanded(projectRoot) },
     )),
   });
   const projectSessionsByRoot = new Map<string, {
@@ -662,7 +632,7 @@ export function Sidebar({
     // like multiple sessions are activated. The project row is selected only
     // on its own/home view; `running` remains a separate busy-only indicator.
     const selected = selectedSessionId === null && project === selectedProject;
-    const expanded = expandedProjects.has(project);
+    const expanded = isProjectExpanded(project);
     const nestedPages = projectSessionsByRoot.get(project);
     const nestedSessions = (nestedPages?.sessions ?? []).filter(
       (session) => !archivedSessionIds.has(session.sessionId),
@@ -670,7 +640,17 @@ export function Sidebar({
     const nestedTree = buildSessionTree(nestedSessions);
     const projectRunning = runningProjectRoots.has(project)
       || nestedSessions.some((session) => runningSessionIds.has(session.sessionId));
+    // Collapsed-row summary (busy spinner / waiting dot) matches the loaded
+    // sessions of this project — scoped pages plus the global first page.
+    const projectWaiting = !projectRunning && (
+      nestedSessions.some((session) => waitingSessionIds.has(session.sessionId))
+      || visibleSessions.some((session) => session.projectRoot === project && waitingSessionIds.has(session.sessionId))
+    );
     const pinned = pinnedProjectRoots.has(project);
+    const shown = projectSessionRowsShown[project] ?? PROJECT_SESSIONS_INITIAL;
+    const visibleRoots = nestedTree.slice(0, shown);
+    const hasHiddenRoots = nestedTree.length > visibleRoots.length;
+    const morePagesAvailable = (nestedPages?.pagesLoaded ?? 1) < (nestedPages?.totalPages ?? 0);
     return (
       <div key={project} data-testid="sidebar-project-card" data-expanded={expanded ? "true" : "false"}>
         <ProjectRow
@@ -678,42 +658,48 @@ export function Sidebar({
           selected={selected}
           expanded={expanded}
           running={projectRunning}
+          waiting={projectWaiting}
           pinned={pinned}
           onToggle={() => toggleProjectExpanded(project)}
           onPin={(nextPinned) => pinProject(project, nextPinned)}
           onArchive={(archived) => archiveProject(project, archived)}
           onNewSession={() => onNewSessionInProject?.(project)}
         />
-        {expanded ? (
-          <div className="sidebar-project-sessions" data-testid="sidebar-project-sessions">
-            {nestedPages?.firstIsLoading ? (
-              <div className="sidebar-status">{t("desktop.loading")}</div>
-            ) : nestedPages?.hasError && nestedTree.length === 0 ? (
-              <div className="sidebar-status sidebar-status--error">{t("desktop.sessionsUnavailable")}</div>
-            ) : nestedTree.length === 0 ? (
-              <div className="sidebar-status">{t("desktop.noSessionsFound")}</div>
-            ) : (
-              nestedTree.map((node) => renderTreeItem(node))
-            )}
-            <LoadMoreButton
-              visible={nestedPages?.lastIsError === true
-                || ((nestedPages?.pagesLoaded ?? 1) > 1 && nestedPages?.isFetching === true)
-                || (nestedPages?.pagesLoaded ?? 1) < (nestedPages?.totalPages ?? 0)}
-              loading={nestedPages?.isFetching ?? false}
-              onLoad={() => {
-                if (nestedPages?.lastIsError) {
-                  nestedPages.refetchLast();
-                  return;
-                }
+        <ProjectSessionDisclosure expanded={expanded}>
+          {nestedPages?.firstIsLoading ? (
+            <div className="sidebar-status">{t("desktop.loading")}</div>
+          ) : nestedPages?.hasError && nestedTree.length === 0 ? (
+            <div className="sidebar-status sidebar-status--error">{t("desktop.sessionsUnavailable")}</div>
+          ) : nestedTree.length === 0 ? (
+            <div className="sidebar-status">{t("desktop.noSessionsFound")}</div>
+          ) : (
+            visibleRoots.map((node) => renderTreeItem(node))
+          )}
+          <LoadMoreButton
+            visible={nestedPages?.lastIsError === true
+              || ((nestedPages?.pagesLoaded ?? 1) > 1 && nestedPages?.isFetching === true)
+              || hasHiddenRoots
+              || morePagesAvailable}
+            loading={nestedPages?.isFetching ?? false}
+            onLoad={() => {
+              if (nestedPages?.lastIsError) {
+                nestedPages.refetchLast();
+                return;
+              }
+              // One click reveals STEP more roots; when that outreaches the
+              // loaded roots, the next scoped page loads in the same click.
+              const nextShown = shown + PROJECT_SESSIONS_STEP;
+              setProjectSessionRowsShown((previous) => ({ ...previous, [project]: nextShown }));
+              if (nextShown > nestedTree.length && morePagesAvailable) {
                 setProjectSessionPagesLoaded((previous) => ({
                   ...previous,
                   [project]: (previous[project] ?? 1) + 1,
                 }));
-              }}
-              testId={`project-${project}-load-more`}
-            />
-          </div>
-        ) : null}
+              }
+            }}
+            testId={`project-${project}-load-more`}
+          />
+        </ProjectSessionDisclosure>
       </div>
     );
   };
@@ -731,7 +717,6 @@ export function Sidebar({
               title={t("desktop.searchSessions")}
               aria-label={t("desktop.searchSessions")}
               onClick={() => {
-                setSessionsOpen(true);
                 setSearchOpen((open) => !open);
                 if (searchOpen) setSessionSearch("");
               }}
@@ -796,7 +781,57 @@ export function Sidebar({
         {flagError !== null ? (
           <div className="sidebar-status sidebar-status--error" role="alert">{t(flagError)}</div>
         ) : null}
-        {showPinnedSection ? (
+
+        {searchOpen ? (
+          <div className="sidebar-search-field" data-testid="sidebar-search-field">
+            <div className="sidebar-search-wrap">
+              <MagnifyingGlass size={13} className="sidebar-search-icon" aria-hidden="true" />
+              <input
+                value={sessionSearch}
+                onChange={(e) => setSessionSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    if (sessionSearch) setSessionSearch("");
+                    else setSearchOpen(false);
+                  }
+                }}
+                placeholder={t("desktop.searchSessionsPlaceholder")}
+                aria-label={t("desktop.searchSessions")}
+                autoFocus
+              />
+            </div>
+            <button
+              type="button"
+              className="sidebar-icon-btn"
+              onClick={() => { setSearchOpen(false); setSessionSearch(""); }}
+              title={t("desktop.exitSearch")}
+              aria-label={t("desktop.exitSearch")}
+            >
+              <X size={13} weight="regular" aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
+
+        {searchOpen && searchQuery ? (
+          // Active query: the scroll area IS the result list (pinned sessions
+          // first, then every loaded matching root) — nothing else shows.
+          <section className="sidebar-section" data-testid="sidebar-search-results">
+            {!canBrowseSessions ? (
+              <div className="sidebar-status">Session history unavailable until the runtime connects.</div>
+            ) : sessionsListError ? (
+              <div className="sidebar-status sidebar-status--error">{t("desktop.sessionsUnavailable")}</div>
+            ) : pinnedSessionNodes.length === 0 && recentSessionNodes.length === 0 ? (
+              <div className="sidebar-status">{t("desktop.noMatchingSessions")}</div>
+            ) : (
+              <>
+                {pinnedSessionNodes.map((node) => renderTreeItem(node))}
+                {recentSessionNodes.map((node) => renderTreeItem(node))}
+              </>
+            )}
+          </section>
+        ) : (
+          <>
+            {showPinnedSection ? (
           <section className="sidebar-section" data-testid="sidebar-pinned">
             <div className="sidebar-section-head" data-expanded={pinnedOpen ? "true" : "false"}>
               <button
@@ -864,106 +899,8 @@ export function Sidebar({
           </div>
           ) : null}
         </section>
-
-        <section className="sidebar-section sidebar-section-sessions" data-testid="sidebar-sessions">
-          <div className="sidebar-section-head" data-expanded={sessionsOpen ? "true" : "false"}>
-            <button
-              type="button"
-              className="sidebar-section-toggle"
-              data-testid="sessions-section-toggle"
-              aria-expanded={sessionsOpen}
-              onClick={toggleSessions}
-            >
-              <span className="sidebar-section-label-text">{t("desktop.sessions")}</span>
-              <CaretRight
-                className="sidebar-section-chevron"
-                size={14}
-                weight="bold"
-                style={{ transform: sessionsOpen ? "rotate(90deg)" : "none" }}
-                aria-hidden="true"
-              />
-            </button>
-            <div className="sidebar-section-actions">
-              <button
-                type="button"
-                className="sidebar-icon-btn"
-                title={t("desktop.searchSessions")}
-                aria-label={t("desktop.searchSessions")}
-                onClick={() => {
-                  setSessionsOpen(true);
-                  setSearchOpen(true);
-                }}
-              >
-                <MagnifyingGlass size={14} weight="regular" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="sidebar-icon-btn"
-                title={t("desktop.refresh")}
-                aria-label={t("desktop.refresh")}
-                onClick={handleRefreshSessions}
-              >
-                {sessionRefreshDone ? (
-                  <Check size={14} color="#4ade80" weight="regular" aria-hidden="true" />
-                ) : (
-                  <ArrowClockwise size={14} weight="regular" aria-hidden="true" />
-                )}
-              </button>
-            </div>
-          </div>
-
-          {searchOpen && (
-            <div className="sidebar-search-field">
-              <div className="sidebar-search-wrap">
-                <MagnifyingGlass size={13} className="sidebar-search-icon" aria-hidden="true" />
-                <input
-                  value={sessionSearch}
-                  onChange={(e) => setSessionSearch(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      if (sessionSearch) setSessionSearch("");
-                      else setSearchOpen(false);
-                    }
-                  }}
-                  placeholder={t("desktop.searchSessionsPlaceholder")}
-                  aria-label={t("desktop.searchSessions")}
-                  autoFocus
-                />
-              </div>
-              <button
-                type="button"
-                className="sidebar-icon-btn"
-                onClick={() => { setSearchOpen(false); setSessionSearch(""); }}
-                title={t("desktop.exitSearch")}
-                aria-label={t("desktop.exitSearch")}
-              >
-                <X size={13} weight="regular" aria-hidden="true" />
-              </button>
-            </div>
-          )}
-
-          {sessionsOpen && (
-            <div className="sidebar-session-list">
-              {showLoading && <div className="sidebar-status">{t("desktop.loading")}</div>}
-              {showError && <div className="sidebar-status sidebar-status--error">{t("desktop.noSessionsFound")}</div>}
-              {!canBrowseSessions && (
-                <div className="sidebar-status">Session history unavailable until the runtime connects.</div>
-              )}
-              {canBrowseSessions && !showLoading && !showError && recentSessionPool.length === 0 && (
-                <div className="sidebar-status">
-                  {searchQuery ? t("desktop.noMatchingSessions") : t("desktop.noSessionsFound")}
-                </div>
-              )}
-              {recentSessionNodes.map((node) => renderTreeItem(node))}
-              <LoadMoreButton
-                visible={canLoadMoreSessions}
-                loading={sessionPageQueries.some((query) => query.isFetching)}
-                onLoad={loadMoreSessions}
-                testId="sidebar-session-load-more"
-              />
-            </div>
-          )}
-        </section>
+          </>
+        )}
       </div>
 
       <div className="sidebar-footer">
@@ -1065,11 +1002,54 @@ function LoadMoreButton({
   );
 }
 
+/**
+ * Collapsible body under a project row. Children mount on the FIRST
+ * expansion and then stay mounted: collapsing plays the 200ms grid-rows
+ * transition and hides the subtree (`inert` + 0fr) instead of unmounting it,
+ * so the animation never races the scoped queries' `enabled` flag. Only the
+ * very first expansion mounts with the grow-in animation (data-motion="open");
+ * the initial page-load expansions render at rest like the approved harness.
+ */
+function ProjectSessionDisclosure({
+  expanded,
+  children,
+}: {
+  expanded: boolean;
+  children: ReactNode;
+}) {
+  const initiallyExpanded = useRef(expanded).current;
+  const [everExpanded, setEverExpanded] = useState(expanded);
+  const [mountAnimation, setMountAnimation] = useState(!initiallyExpanded);
+  if (expanded && !everExpanded) {
+    // Render-phase state adjustment (React-sanctioned): flipping to expanded
+    // mounts the subtree that same render.
+    setEverExpanded(true);
+  }
+  if (!everExpanded) return null;
+  return (
+    <div
+      className="sidebar-project-sessions"
+      data-testid="sidebar-project-sessions"
+      data-open={expanded ? "true" : "false"}
+      data-motion={mountAnimation ? "open" : "rest"}
+      inert={!expanded}
+      onAnimationEnd={(event) => {
+        if (event.target === event.currentTarget && event.animationName === "sidebar-disclosure-grow") {
+          setMountAnimation(false);
+        }
+      }}
+    >
+      <div className="sidebar-project-sessions-inner">{children}</div>
+    </div>
+  );
+}
+
 function ProjectRow({
   project,
   selected,
   expanded,
   running,
+  waiting,
   pinned,
   onToggle,
   onPin,
@@ -1080,6 +1060,7 @@ function ProjectRow({
   selected: boolean;
   expanded: boolean;
   running: boolean;
+  waiting: boolean;
   pinned: boolean;
   onToggle: () => void;
   onPin: (pinned: boolean) => void;
@@ -1129,8 +1110,14 @@ function ProjectRow({
           <Folder size={16} weight="regular" aria-hidden="true" />
         )}
         <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
-        {running ? <RunningSessionIndicator /> : null}
       </button>
+      {/* Collapsed summary: busy spinner wins over the waiting dot; an
+          expanded project shows nothing here (its session rows own markers). */}
+      {expanded ? null : (
+        <span className="sidebar-row-trailing">
+          {running ? <RunningSessionIndicator /> : waiting ? <SessionStatusDot status="waiting" /> : null}
+        </span>
+      )}
       <div className="sidebar-row-actions">
         <button
           type="button"
@@ -1228,10 +1215,13 @@ function SessionTreeItem({
   };
 
   const isSelected = node.session.sessionId === selectedSessionId;
+  // Fresh rows animate in once on mount; the flag is captured at mount so a
+  // later rerender can never cut the CSS animation short.
+  const [fresh] = useState(() => isFreshSession(node.session));
 
   return (
     <div>
-      <div style={{ position: "relative" }}>
+      <div className={fresh ? "sidebar-row-fresh" : undefined} style={{ position: "relative" }}>
         {/* Indent line for child sessions */}
         {depth > 0 && (
           <div style={{
@@ -1405,10 +1395,9 @@ function SessionItem({
   onSelectSession: (sessionId: string, cwd?: string) => void;
   depth?: number;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const http = useHttpClient();
   const { openMenu } = useContextMenu();
-  const [hovered, setHovered] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -1663,16 +1652,14 @@ function SessionItem({
 
   const workspaceStatus = sessionWorkspaceStatus(session, t);
   const historyOnly = workspaceStatus !== null;
+  const activity = activityMs(session);
   const rowTitle = isWaiting
     ? `${title} · ${t("desktop.sessionStatus.waiting")}`
     : isRunning
       ? `${title} · ${t("desktop.agentRunning")}`
       : historyOnly
           ? `${title} · ${workspaceStatus}`
-          : (() => {
-              const activity = activityMs(session);
-              return activity === undefined ? title : `${title} · ${formatRelativeTime(activity, t)}`;
-            })();
+          : activity === undefined ? title : `${title} · ${formatCompactActivity(activity, locale)}`;
 
   return (
     <div
@@ -1695,32 +1682,14 @@ function SessionItem({
         if ((event.target as HTMLElement).closest("button")) return;
         onSelectSession(session.sessionId, session.cwd);
       }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => { setHovered(false); }}
       style={{
         paddingLeft: depth > 0 ? depth * 12 + 10 : 10,
         cursor: confirmDelete || renaming ? "default" : undefined,
         opacity: deleting ? 0.5 : 1,
       }}
     >
-      {/* Left accent line overlay: delete-confirm red, otherwise none. */}
-      {confirmDelete && (
-        <div
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: 4,
-            borderLeft: `solid 4px #ef4444`,
-            transform: `scaleX(${isSelected || hovered ? 1 : 0.5})`,
-            transformOrigin: "left center",
-            transition: "transform 0.15s ease",
-            pointerEvents: "none",
-          }}
-        />
-      )}
+      {/* Delete-confirm accent line: pure CSS (::before in
+          .sidebar-list-row--confirm), no JS hover state. */}
       {confirmDelete ? (
         <>
           <div className="sidebar-row-title sidebar-title-fade">
@@ -1778,13 +1747,16 @@ function SessionItem({
             {depth > 0 && <GitBranch size={14} weight="regular" aria-hidden="true" />}
             <span className="sidebar-row-title sidebar-title-fade">{title}</span>
           </button>
-          {isWaiting ? <SessionStatusDot status="waiting" /> : isRunning ? <RunningSessionIndicator /> : null}
-          {!isRunning && !isWaiting ? (() => {
-            const activity = activityMs(session);
-            return activity === undefined ? null : (
-              <span className="sidebar-row-meta" aria-hidden="true">{formatCompactActivity(activity)}</span>
-            );
-          })() : null}
+          {/* Trailing slot: the busy marker and the compact time crossfade in
+              the same grid cell so they never overlap or shift the row. */}
+          <span className="sidebar-row-trailing">
+            <span className="sidebar-row-trailing-status" data-on={isWaiting || isRunning ? "true" : "false"}>
+              {isWaiting ? <SessionStatusDot status="waiting" /> : <RunningSessionIndicator />}
+            </span>
+            {activity === undefined ? null : (
+              <span className="sidebar-row-meta" data-on={isWaiting || isRunning ? "false" : "true"} aria-hidden="true">{formatCompactActivity(activity, locale)}</span>
+            )}
+          </span>
           {!busy && (
             <div className="sidebar-row-actions">
               <button type="button" className="sidebar-icon-btn" onClick={(event) => { event.stopPropagation(); onPin(!pinned); }} title={pinned ? t("desktop.unpin") : t("desktop.pin")} aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}>

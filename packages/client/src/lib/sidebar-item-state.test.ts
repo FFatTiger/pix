@@ -39,11 +39,37 @@ describe("sidebar item pin/archive", () => {
       archivedProjects: [],
     }));
     expect(loadSidebarItemState().expandedProjects).toEqual([]);
+    expect(loadSidebarItemState().collapsedProjects).toEqual([]);
 
     const expanded = applySidebarItemPatch(loadSidebarItemState(), { projectRoot: "/old", expanded: true });
     saveSidebarItemState(expanded);
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}").expandedProjects).toEqual(["/old"]);
     expect(loadSidebarItemState().expandedProjects).toEqual(["/old"]);
+  });
+
+  it("parses persisted collapsedProjects and drops invalid entries", () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      expandedProjects: ["/open"],
+      collapsedProjects: ["/closed", "", 5, "/closed"],
+    }));
+    const state = loadSidebarItemState();
+    expect(state.expandedProjects).toEqual(["/open"]);
+    expect(state.collapsedProjects).toEqual(["/closed"]);
+  });
+
+  it("collapsing marks the project explicit-collapsed so the recency default cannot reopen it", () => {
+    const expanded = applySidebarItemPatch(loadSidebarItemState(), { projectRoot: "/p", expanded: true });
+    expect(expanded.expandedProjects).toEqual(["/p"]);
+    expect(expanded.collapsedProjects).toEqual([]);
+
+    const collapsed = applySidebarItemPatch(expanded, { projectRoot: "/p", expanded: false });
+    expect(collapsed.expandedProjects).toEqual([]);
+    expect(collapsed.collapsedProjects).toEqual(["/p"]);
+
+    // Re-expanding clears the explicit-collapse mark again.
+    const reopened = applySidebarItemPatch(collapsed, { projectRoot: "/p", expanded: true });
+    expect(reopened.expandedProjects).toEqual(["/p"]);
+    expect(reopened.collapsedProjects).toEqual([]);
   });
 
   it("archiving a project clears both its pin and expanded state", () => {
@@ -52,6 +78,13 @@ describe("sidebar item pin/archive", () => {
     const archived = applySidebarItemPatch(expanded, { projectRoot: "/p", archived: true });
     expect(archived.pinnedProjects).toEqual([]);
     expect(archived.expandedProjects).toEqual([]);
+    expect(archived.archivedProjects).toEqual(["/p"]);
+  });
+
+  it("archiving a project also drops its explicit-collapse mark", () => {
+    const collapsed = applySidebarItemPatch(loadSidebarItemState(), { projectRoot: "/p", expanded: false });
+    const archived = applySidebarItemPatch(collapsed, { projectRoot: "/p", archived: true });
+    expect(archived.collapsedProjects).toEqual([]);
     expect(archived.archivedProjects).toEqual(["/p"]);
   });
 });

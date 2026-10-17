@@ -2958,7 +2958,6 @@ describe("AppShell — source-like sidebar rail", () => {
       "sidebar-home-header",
       "sidebar-new-session",
       "sidebar-projects",
-      "sidebar-sessions",
       "sidebar-nav-settings",
     ].filter((id) => document.querySelector(`[data-testid="${id}"]`));
   }
@@ -2967,7 +2966,7 @@ describe("AppShell — source-like sidebar rail", () => {
   // Round 5: pin/archive writes ride the session.write seam (PATCH flags).
   const catalogWriteCaps: HostInfo["capabilities"] = [...catalogCaps, "session.write"];
 
-  it("renders the source hierarchy: Pix, New Session, Projects, Sessions, Settings + pinned right pane", async () => {
+  it("renders the source hierarchy: Pix, New Session, Projects, Settings + pinned right pane (no Recent section)", async () => {
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
     expect(screen.getByTestId("sidebar-brand").textContent).toBe("Pix");
@@ -2977,7 +2976,9 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.queryByTestId("sidebar-nav-plugins")).toBeNull();
     expect(screen.queryByTestId("sidebar-nav-resources")).toBeNull();
     expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
-    expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
+    // The standalone "Recent" section is gone: sessions live under their
+    // projects (plus search); its testid must not render.
+    expect(screen.queryByTestId("sidebar-sessions")).toBeNull();
     expect(screen.queryByTestId("sidebar-files")).toBeNull();
     expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
     // Desktop: the right pane is driven by the icon rail; the corner toggle is
@@ -2989,7 +2990,6 @@ describe("AppShell — source-like sidebar rail", () => {
       "sidebar-home-header",
       "sidebar-new-session",
       "sidebar-projects",
-      "sidebar-sessions",
       "sidebar-nav-settings",
     ]);
   });
@@ -3393,7 +3393,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getAllByTestId("session-select-A")[0]!.closest(".sidebar-list-row")?.getAttribute("data-active")).toBe("true");
   });
 
-  it("expands a project in place without changing cwd or filtering Recent", async () => {
+  it("recent projects start expanded by default; clicking collapses in place without changing cwd", async () => {
     mountApp({ cwd: "/x" });
     await settle();
     const rows = screen.getAllByTestId("sidebar-project-row");
@@ -3401,16 +3401,51 @@ describe("AppShell — source-like sidebar rail", () => {
     const other = rows.find((row) => row.textContent === "y");
     expect(current).toBeTruthy();
     expect(other).toBeTruthy();
-    fireEvent.click(other!);
-    await settle();
-    expect(navigateMock).not.toHaveBeenCalled();
+    // Both projects were active within the last three days → expanded by default.
+    expect(current!.getAttribute("aria-expanded")).toBe("true");
     expect(other!.getAttribute("aria-expanded")).toBe("true");
     const otherCard = other!.closest("[data-testid=sidebar-project-card]") as HTMLElement;
     expect(within(otherCard).getByText("Session D")).toBeTruthy();
-    expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
+    fireEvent.click(other!);
+    await settle();
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(other!.getAttribute("aria-expanded")).toBe("false");
+    expect(otherCard.getAttribute("data-expanded")).toBe("false");
+    // The collapsed body stays mounted for the height transition but is closed.
+    expect(otherCard.querySelector('[data-testid="sidebar-project-sessions"]')?.getAttribute("data-open")).toBe("false");
+    fireEvent.click(other!);
+    await settle();
+    expect(other!.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getAllByTestId("session-select-A").length).toBeGreaterThan(0);
-    expect(screen.getAllByTestId("session-select-D").length).toBeGreaterThan(1);
+    expect(screen.getAllByTestId("session-select-D").length).toBeGreaterThan(0);
     expect(screen.getByTestId("right-pane-rail")).toBeTruthy();
+  });
+
+  it("projects expand by recency default only; an explicit collapse persists", async () => {
+    const now = Date.now();
+    const sessions: SessionHeader[] = [
+      { sessionId: "fresh", cwd: "/fresh", projectRoot: "/fresh", title: "Fresh session", createdAt: 1000, updatedAt: now, messageCount: 1, workspaceAccess: AUTHORIZED },
+      { sessionId: "stale", cwd: "/stale", projectRoot: "/stale", title: "Stale session", createdAt: 1000, updatedAt: now - 5 * 24 * 60 * 60 * 1000, messageCount: 1, workspaceAccess: AUTHORIZED },
+    ];
+    globalThis.fetch = controllableStubFetch({ sessions });
+    mountApp({ cwd: "/fresh" });
+    await settle();
+    const row = (root: string) => screen.getAllByTestId("sidebar-project-row").find((r) => r.getAttribute("title") === root)!;
+    // Active within 3 days → expanded; older → collapsed until opened by hand.
+    expect(row("/fresh").getAttribute("aria-expanded")).toBe("true");
+    expect(row("/stale").getAttribute("aria-expanded")).toBe("false");
+    expect(within(screen.getAllByTestId("sidebar-project-card")[0]!).getByTestId("session-select-fresh")).toBeTruthy();
+    // Collapsing the recent project records an explicit collapse that wins
+    // over the recency default — and expanding the stale one records the opposite.
+    fireEvent.click(row("/fresh"));
+    fireEvent.click(row("/stale"));
+    await settle();
+    expect(row("/fresh").getAttribute("aria-expanded")).toBe("false");
+    expect(row("/stale").getAttribute("aria-expanded")).toBe("true");
+    expect(JSON.parse(window.localStorage.getItem("pi-sidebar-item-state") ?? "{}")).toMatchObject({
+      expandedProjects: ["/stale"],
+      collapsedProjects: ["/fresh"],
+    });
   });
 
   it("a selected session's auto-revealed project stays collapsed after the user collapses it", async () => {
@@ -3499,6 +3534,38 @@ describe("AppShell — source-like sidebar rail", () => {
     // Transport ack is not a terminal state: indicators stay running until an
     // authoritative event takes ownership, so there is no ack→agent_start blink.
     expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
+  });
+
+  it("collapsed project rows summarize a waiting session, then the running spinner", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
+    mountApp({ cwd: "/x" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(watchAck());
+    await settle();
+    const row = () => screen.getAllByTestId("sidebar-project-row").find((r) => r.getAttribute("title") === "/x")!;
+    const rowEl = () => row().closest(".sidebar-list-row") as HTMLElement;
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: [], waitingSessionIds: ["A"] } });
+      await flush(4);
+    });
+    // Expanded (recency default): no summary on the project row — the
+    // session rows own their markers.
+    expect(rowEl().querySelector(".session-status-dot")).toBeNull();
+    // Collapsed: the waiting dot summarizes the project.
+    fireEvent.click(row());
+    await settle();
+    expect(rowEl().querySelector('.session-status-dot[data-status="waiting"]')).toBeTruthy();
+    // Busy outranks waiting on the same project: the spinner replaces the dot.
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 2, sessionIds: ["A"], busySessionIds: ["A"], waitingSessionIds: [] } });
+      await flush(4);
+    });
+    expect(rowEl().querySelector(".session-status-dot")).toBeNull();
+    expect(rowEl().querySelector(".sidebar-row-status")).toBeTruthy();
+    expect(rowEl().getAttribute("data-running")).toBe("true");
+    // Re-expanding hides the summary again (the session row owns the marker).
+    fireEvent.click(row());
+    await settle();
+    expect(rowEl().querySelector(".sidebar-row-status")).toBeNull();
   });
 
   it("selects a session from a real button via keyboard and keeps sibling actions reachable", async () => {
@@ -3601,7 +3668,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.queryByTestId("session-select-A")).toBeNull();
   });
 
-  it("hides parent-linked subagents from both global and project session lists", async () => {
+  it("hides parent-linked subagents from the project body and search", async () => {
     const now = Date.now();
     globalThis.fetch = controllableStubFetch({
       sessions: [
@@ -3611,14 +3678,15 @@ describe("AppShell — source-like sidebar rail", () => {
     });
     mountApp({ cwd: "/x" });
     await settle();
-    expect(screen.getByTestId("session-select-parent")).toBeTruthy();
-    expect(screen.queryByTestId("session-select-child")).toBeNull();
-    const project = screen.getByTestId("sidebar-project-row");
-    fireEvent.click(project);
-    await settle();
     const projectSessions = screen.getByTestId("sidebar-project-sessions");
     expect(within(projectSessions).getByTestId("session-select-parent")).toBeTruthy();
     expect(within(projectSessions).queryByTestId("session-select-child")).toBeNull();
+    // Search filters the loaded root-only sequence — the fork never surfaces.
+    fireEvent.click(screen.getByTestId("sidebar-search"));
+    const input = screen.getByTestId("sidebar-search-field").querySelector("input")!;
+    fireEvent.change(input, { target: { value: "Child" } });
+    await settle();
+    expect(within(screen.getByTestId("sidebar-search-results")).queryByTestId("session-select-child")).toBeNull();
   });
 
   it("keeps a directly deep-linked subagent out of browse lists", async () => {
@@ -3638,7 +3706,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=2&pageSize=5")).toBe(0);
   });
 
-  it("keeps recent and project session order stable when selecting an older session", async () => {
+  it("keeps project session order stable when selecting an older session", async () => {
     const now = Date.now();
     globalThis.fetch = controllableStubFetch({
       sessions: [
@@ -3650,17 +3718,15 @@ describe("AppShell — source-like sidebar rail", () => {
     await settle();
     const order = (container: HTMLElement) => Array.from(container.querySelectorAll("[data-testid^='session-select-']"))
       .map((row) => row.getAttribute("data-testid"));
-    expect(order(screen.getByTestId("sidebar-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
     expect(order(screen.getByTestId("sidebar-project-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
     view.rerender({ cwd: "/x", session: "newer" });
     await settle();
     view.rerender({ cwd: "/x", session: "older" });
     await settle();
-    expect(order(screen.getByTestId("sidebar-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
     expect(order(screen.getByTestId("sidebar-project-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
   });
 
-  it("shows five recent sessions initially, then appends the remaining page", async () => {
+  it("search replaces the scroll area with matching loaded sessions; Esc exits", async () => {
     const now = Date.now();
     const many: SessionHeader[] = Array.from({ length: 7 }, (_, index) => ({
       sessionId: `S${index + 1}`,
@@ -3676,46 +3742,32 @@ describe("AppShell — source-like sidebar rail", () => {
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
-    const recent = screen.getByTestId("sidebar-sessions");
-    for (let index = 1; index <= 5; index += 1) {
-      expect(within(recent).getByTestId(`session-select-S${index}`)).toBeTruthy();
-    }
-    expect(within(recent).queryByTestId("session-select-S6")).toBeNull();
-    fireEvent.click(within(recent).getByTestId("sidebar-session-load-more"));
+    fireEvent.click(screen.getByTestId("sidebar-search"));
+    const field = screen.getByTestId("sidebar-search-field");
+    const input = field.querySelector("input")!;
+    // Search covers the loaded first page (S1..S5) — no extra paging fires.
+    fireEvent.change(input, { target: { value: "Session 4" } });
     await settle();
-    expect(within(recent).getByTestId("session-select-S6")).toBeTruthy();
-    expect(within(recent).getByTestId("session-select-S7")).toBeTruthy();
-    expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=2&pageSize=5")).toBe(1);
-  });
-
-  it("loads exactly five more recent sessions per click and appends in place", async () => {
-    const now = Date.now();
-    const many: SessionHeader[] = Array.from({ length: 12 }, (_, index) => ({
-      sessionId: `P${index + 1}`,
-      cwd: "/x",
-      projectRoot: "/x",
-      title: `Paged ${index + 1}`,
-      createdAt: 1000,
-      updatedAt: now - index * 1000,
-      messageCount: 1,
-      workspaceAccess: AUTHORIZED,
-    }));
-    const fetchImpl = controllableStubFetch({ sessions: many });
-    globalThis.fetch = fetchImpl;
-    mountApp({ cwd: "/x" });
+    const results = screen.getByTestId("sidebar-search-results");
+    expect(within(results).getByTestId("session-select-S4")).toBeTruthy();
+    expect(within(results).queryByTestId("session-select-S1")).toBeNull();
+    // An active query replaces the whole scroll area: no section chrome.
+    expect(screen.queryByTestId("sidebar-projects")).toBeNull();
+    expect(screen.queryByTestId("sidebar-pinned")).toBeNull();
+    expect(countMockFetchCalls(fetchImpl, "page=2")).toBe(0);
+    fireEvent.change(input, { target: { value: "zzz" } });
     await settle();
-    const recent = screen.getByTestId("sidebar-sessions");
-    expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=1&pageSize=5")).toBe(1);
-    expect(within(recent).getByTestId("session-select-P5")).toBeTruthy();
-    expect(within(recent).queryByTestId("session-select-P6")).toBeNull();
-    fireEvent.click(within(recent).getByTestId("sidebar-session-load-more"));
+    expect(within(screen.getByTestId("sidebar-search-results")).getByText("No matching sessions")).toBeTruthy();
+    // First Esc clears the query (sections return); the field stays open.
+    fireEvent.keyDown(input, { key: "Escape" });
     await settle();
-    expect(within(recent).getByTestId("session-select-P1")).toBeTruthy();
-    expect(within(recent).getByTestId("session-select-P10")).toBeTruthy();
-    expect(within(recent).queryByTestId("session-select-P11")).toBeNull();
-    expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=2&pageSize=5")).toBe(1);
-    expect(within(recent).getByTestId("sidebar-session-load-more")).toBeTruthy();
-    expect(within(recent).queryByText(/1 \/ 3|Previous|Next/)).toBeNull();
+    expect(screen.queryByTestId("sidebar-search-results")).toBeNull();
+    expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
+    // Second Esc closes search entirely.
+    fireEvent.keyDown(input, { key: "Escape" });
+    await settle();
+    expect(screen.queryByTestId("sidebar-search-field")).toBeNull();
+    expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
   });
 
   it("Projects and Sessions load more independently; project rows append", async () => {
@@ -3772,7 +3824,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(countMockFetchCalls(fetchImpl, "projectRoot=%2Fpersisted-project-12")).toBeGreaterThan(0);
   });
 
-  it("restores a pinned session outside the initial five-session page", async () => {
+  it("restores a pinned session outside the initial project rows", async () => {
     const now = Date.now();
     const many: SessionHeader[] = Array.from({ length: 12 }, (_, index) => ({
       sessionId: `PS${index + 1}`,
@@ -3789,7 +3841,9 @@ describe("AppShell — source-like sidebar rail", () => {
     await settle();
 
     expect(within(screen.getByTestId("sidebar-pinned")).getByTestId("session-select-PS12")).toBeTruthy();
-    expect(within(screen.getByTestId("sidebar-sessions")).queryByTestId("session-select-PS12")).toBeNull();
+    // The project body reveals only the first three scoped roots; PS12
+    // (never paged in) stays out of it.
+    expect(within(screen.getByTestId("sidebar-project-sessions")).queryByTestId("session-select-PS12")).toBeNull();
   });
 
   it("keeps Load more reachable when every Project on the first page is archived", async () => {
@@ -3835,7 +3889,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(countMockFetchCalls(fetchImpl, "/v1/projects?page=1&pageSize=10")).toBe(2);
   });
 
-  it("loads exactly five more project-scoped sessions without replacing the first batch", async () => {
+  it("shows three project sessions initially, then five more per click with scoped paging", async () => {
     const now = Date.now();
     const grouped: SessionHeader[] = Array.from({ length: 12 }, (_, index) => ({
       sessionId: `G${index + 1}`,
@@ -3851,18 +3905,27 @@ describe("AppShell — source-like sidebar rail", () => {
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
-    fireEvent.click(screen.getByTestId("sidebar-project-row"));
-    await settle();
+    // /x is recent → expanded by default; only the first three roots render.
     const nested = screen.getByTestId("sidebar-project-sessions");
     expect(within(nested).getByTestId("session-select-G1")).toBeTruthy();
-    expect(within(nested).getByTestId("session-select-G5")).toBeTruthy();
-    expect(within(nested).queryByTestId("session-select-G6")).toBeNull();
+    expect(within(nested).getByTestId("session-select-G3")).toBeTruthy();
+    expect(within(nested).queryByTestId("session-select-G4")).toBeNull();
+    expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=1&pageSize=5&projectRoot=%2Fx")).toBe(1);
+    // One click reveals five more roots and loads the next scoped page.
     fireEvent.click(within(nested).getByTestId("project-/x-load-more"));
     await settle();
     expect(within(nested).getByTestId("session-select-G1")).toBeTruthy();
-    expect(within(nested).getByTestId("session-select-G10")).toBeTruthy();
-    expect(within(nested).queryByTestId("session-select-G11")).toBeNull();
+    expect(within(nested).getByTestId("session-select-G8")).toBeTruthy();
+    expect(within(nested).queryByTestId("session-select-G9")).toBeNull();
     expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=2&pageSize=5&projectRoot=%2Fx")).toBe(1);
+    // A second click outreaches the loaded pages again and pulls page 3 in;
+    // with every root visible the button disappears (no counts are shown).
+    fireEvent.click(within(nested).getByTestId("project-/x-load-more"));
+    await settle();
+    expect(within(nested).getByTestId("session-select-G12")).toBeTruthy();
+    expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=3&pageSize=5&projectRoot=%2Fx")).toBe(1);
+    expect(within(nested).queryByTestId("project-/x-load-more")).toBeNull();
+    expect(within(nested).queryByText(/\d+ \//)).toBeNull();
   });
 
   it("shows an honest nested Sessions error and retries its first scoped page", async () => {
@@ -3873,11 +3936,11 @@ describe("AppShell — source-like sidebar rail", () => {
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
-    const project = screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/x");
-    expect(project).toBeTruthy();
-    fireEvent.click(project!);
-    await settle();
-    const nested = screen.getByTestId("sidebar-project-sessions");
+    // /x is recent → expanded by default: the scoped page fires without a click.
+    const project = screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/x")!;
+    expect(project.getAttribute("aria-expanded")).toBe("true");
+    const card = project.closest("[data-testid=sidebar-project-card]") as HTMLElement;
+    const nested = within(card).getByTestId("sidebar-project-sessions");
     expect(within(nested).getByText("Sessions are temporarily unavailable.")).toBeTruthy();
     expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=1&pageSize=5&projectRoot=%2Fx")).toBe(1);
     fireEvent.click(within(nested).getByTestId("project-/x-load-more"));
@@ -3905,8 +3968,8 @@ describe("AppShell — source-like sidebar rail", () => {
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
-    fireEvent.click(screen.getByTestId("sidebar-project-row"));
-    await settle();
+    // /x is recent → expanded by default; the archived first page leaves the
+    // body empty but Load more stays reachable (scoped pages remain).
     const nested = screen.getByTestId("sidebar-project-sessions");
     expect(within(nested).queryByTestId("session-select-R1")).toBeNull();
     fireEvent.click(within(nested).getByTestId("project-/x-load-more"));
@@ -3931,7 +3994,12 @@ describe("AppShell — source-like sidebar rail", () => {
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x", session: "D55" });
     await settle();
-    expect(within(screen.getByTestId("sidebar-sessions")).queryByTestId("session-select-D55")).toBeNull();
+    // The project body reveals only the first three scoped roots; the
+    // deep-linked D55 stays out-of-band (exact detail only).
+    const nested = screen.getByTestId("sidebar-project-sessions");
+    expect(within(nested).getByTestId("session-select-D1")).toBeTruthy();
+    expect(within(nested).queryByTestId("session-select-D4")).toBeNull();
+    expect(within(nested).queryByTestId("session-select-D55")).toBeNull();
     expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=1&pageSize=5")).toBeGreaterThanOrEqual(1);
     expect(countMockFetchCalls(fetchImpl, "/v1/sessions/D55")).toBeGreaterThanOrEqual(1);
     expect(countMockFetchCalls(fetchImpl, "/v1/models")).toBeGreaterThanOrEqual(1);
@@ -4084,6 +4152,9 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(document.querySelector(".sidebar-container")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show sidebar" }));
     await act(async () => { vi.advanceTimersByTime(20); });
+    // The drawer mounts the sidebar fresh: settle the projects → scoped
+    // sessions query chain before querying rows.
+    await settle();
     const drawer = document.querySelector(".sidebar-container") as HTMLElement;
     expect(drawer.className).toContain("sidebar-open");
     expect(document.querySelector(".sidebar-overlay-backdrop")?.className).toContain("is-open");

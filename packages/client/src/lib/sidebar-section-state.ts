@@ -1,13 +1,12 @@
 /**
  * Persisted open/collapsed state for the sidebar's top-level sections
- * (Recent sessions / Pinned / Projects).
+ * (Pinned / Projects).
  *
  * Same localStorage pattern as draft-store / file-explorer-state: the user's
  * section visibility survives reloads without blocking on failure.
  */
 
 const PROJECTS_KEY = "pi-sidebar-projects-open";
-const SESSIONS_KEY = "pi-sidebar-sessions-open";
 const PINNED_KEY = "pi-sidebar-pinned-open";
 import { reportPreferenceWrite } from "@/lib/preferences/preference-sync";
 
@@ -38,14 +37,6 @@ export function loadProjectsSectionOpen(): boolean {
 
 export function saveProjectsSectionOpen(open: boolean): void {
   writeBool(PROJECTS_KEY, open);
-}
-
-export function loadSessionsSectionOpen(): boolean {
-  return readBool(SESSIONS_KEY, true);
-}
-
-export function saveSessionsSectionOpen(open: boolean): void {
-  writeBool(SESSIONS_KEY, open);
 }
 
 export function loadPinnedSectionOpen(): boolean {

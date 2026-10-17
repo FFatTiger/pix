@@ -20,7 +20,6 @@ import type { HttpClient } from "@/api/http-client";
 /** The synced preference keys (raw localStorage key names). */
 export const PREFERENCE_KEYS: readonly string[] = [
   "pi-sidebar-projects-open",
-  "pi-sidebar-sessions-open",
   "pi-sidebar-pinned-open",
   "pi-fork-tree-collapsed",
   "pi-collapsed-time-groups",
