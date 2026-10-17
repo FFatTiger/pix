@@ -2,6 +2,7 @@ import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { HttpClient } from "./http-client";
 import { createGateApi } from "./gate";
 import { createPreferencesApi } from "./preferences";
+import { createPushApi } from "./push";
 import { createAboutApi } from "./about";
 import { createModelsApi } from "./models";
 import { createResourcesApi } from "./resources";
@@ -77,6 +78,7 @@ export const queryKeys = {
   git: { all: ["pix", "git"] as const, status: (cwd: string) => ["pix", "git", "status", cwd] as const, diff: (cwd: string, path: string) => ["pix", "git", "diff", cwd, path] as const },
   cwd: { all: ["pix", "cwd"] as const, browse: (path?: string) => ["pix", "cwd", "browse", path ?? null] as const, roots: () => ["pix", "cwd", "roots"] as const },
   worktrees: { all: ["pix", "worktrees"] as const, list: (cwd: string) => ["pix", "worktrees", "list", cwd] as const },
+  push: { all: ["pix", "push"] as const, config: () => ["pix", "push", "config"] as const },
   skills: {
     all: ["pix", "skills"] as const,
     /** `null` is the global disk catalog; a string is a project-scoped consumer. */
@@ -108,6 +110,7 @@ export const queryKeys = {
 export function createQueryOptions(http: HttpClient) {
   const gate = createGateApi(http);
   const preferences = createPreferencesApi(http);
+  const push = createPushApi(http);
   const about = createAboutApi(http);
   const sessions = createSessionsApi(http);
   const assistant = createAssistantApi(http);
@@ -117,6 +120,7 @@ export function createQueryOptions(http: HttpClient) {
   return {
     gate: { status: () => queryOptions({ queryKey: queryKeys.gate.status(), queryFn: ({ signal }) => gate.status(signal), staleTime: 30_000, retry: false }) },
     preferences: { map: () => queryOptions({ queryKey: queryKeys.preferences.map(), queryFn: ({ signal }) => preferences.get(signal), staleTime: Infinity, retry: 1 }) },
+    push: { config: () => queryOptions({ queryKey: queryKeys.push.config(), queryFn: ({ signal }) => push.config(signal), staleTime: 60_000, retry: false }) },
     about: {
       // Version facts are immutable for the host process lifetime.
       info: () => queryOptions({ queryKey: queryKeys.about.info(), queryFn: ({ signal }) => about.get(signal), staleTime: Infinity, retry: false }),

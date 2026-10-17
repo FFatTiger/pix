@@ -14,10 +14,11 @@ import {
   RUNTIME_RUNNING_WATCH_FEATURE,
   RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
+  RUNTIME_VISIBILITY_FEATURE,
   SESSIOND_BUILD_CAPABILITIES,
   SESSIOND_BUILD_IDENTITY,
 } from "@fffattiger/pix-protocol";
-import { SessiondRuntimeGateway, mapRpcError } from "../dist/index.js";
+import { SessiondRuntimeGateway, createVisibilityTracker, mapRpcError } from "../dist/index.js";
 
 // --- fixtures -------------------------------------------------------------
 
@@ -49,6 +50,10 @@ const hello = JSON.stringify({
 const livenessHello = JSON.stringify({
   type: "handshake",
   payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [RUNTIME_LIVENESS_FEATURE] },
+});
+const visibilityHello = JSON.stringify({
+  type: "handshake",
+  payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [RUNTIME_VISIBILITY_FEATURE] },
 });
 const watchHello = JSON.stringify({
   type: "handshake",
@@ -346,6 +351,47 @@ test("ping without the negotiated liveness feature fails closed", async () => {
   session.receive(JSON.stringify({ type: "ping", id: "p1" }));
   await wait();
   assert.ok(session.closed, "unnegotiated ping must fail closed");
+});
+
+test("negotiated visibility: reports feed the Host tracker; close unregisters (never visible)", async () => {
+  const client = new FakeClient();
+  const tracker = createVisibilityTracker();
+  const session = await connect(makeGateway(client, { visibilityTracker: tracker }), visibilityHello);
+  await wait();
+  const ack = session.jsonAt(0);
+  assert.equal(ack.type, "handshake_ack");
+  assert.deepEqual(ack.payload.acceptedFeatures, [RUNTIME_VISIBILITY_FEATURE]);
+  // A fresh connection is NOT visible until it reports.
+  assert.equal(tracker.hasVisible(), false);
+  session.receive(JSON.stringify({ type: "visibility", payload: { visible: true } }));
+  await wait();
+  assert.equal(tracker.hasVisible(), true);
+  assert.equal(session.closed, null, "a negotiated visibility frame never closes the connection");
+  session.receive(JSON.stringify({ type: "visibility", payload: { visible: false } }));
+  await wait();
+  assert.equal(tracker.hasVisible(), false);
+  // Report visible again, then drop the connection: close unregisters.
+  session.receive(JSON.stringify({ type: "visibility", payload: { visible: true } }));
+  await wait();
+  assert.equal(tracker.hasVisible(), true);
+  session.close(1000, "bye");
+  await wait();
+  assert.equal(tracker.hasVisible(), false);
+});
+
+test("visibility without the negotiated feature (or without a tracker) fails closed / is not accepted", async () => {
+  const client = new FakeClient();
+  const tracker = createVisibilityTracker();
+  const session = await connect(makeGateway(client, { visibilityTracker: tracker }), hello);
+  await wait();
+  session.receive(JSON.stringify({ type: "visibility", payload: { visible: true } }));
+  await wait();
+  assert.ok(session.closed, "unnegotiated visibility frame must fail closed");
+  // No tracker wired: the feature is never acknowledged (fail closed).
+  const untracked = await connect(makeGateway(client), visibilityHello);
+  await wait();
+  assert.deepEqual(untracked.jsonAt(0).payload.acceptedFeatures ?? [], []);
+  untracked.close(1000, "bye");
 });
 
 test("negotiated running watch sends an unattached baseline and remains independent from attach lifecycle", async () => {

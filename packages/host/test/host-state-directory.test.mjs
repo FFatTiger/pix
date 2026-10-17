@@ -21,6 +21,7 @@ import {
   HostStateDirectoryError,
   TRUSTED_ROOTS_STATE_DOCUMENT,
   MANAGED_WORKTREES_STATE_DOCUMENT,
+  WEB_PUSH_STATE_DOCUMENT,
   HOST_STATE_LOCK_NAME,
   DEFAULT_RECOGNIZED_DOCUMENTS,
 } from "../dist/resources/host-state-directory.js";
@@ -340,7 +341,7 @@ test("lease: recognized temp pattern covers both state documents", async () => {
 });
 
 test("lease: DEFAULT_RECOGNIZED_DOCUMENTS covers the full Pix layout", () => {
-  assert.deepEqual([...DEFAULT_RECOGNIZED_DOCUMENTS], [TRUSTED_ROOTS_STATE_DOCUMENT, MANAGED_WORKTREES_STATE_DOCUMENT]);
+  assert.deepEqual([...DEFAULT_RECOGNIZED_DOCUMENTS], [TRUSTED_ROOTS_STATE_DOCUMENT, MANAGED_WORKTREES_STATE_DOCUMENT, WEB_PUSH_STATE_DOCUMENT]);
 });
 
 // ---------------------------------------------------------------------------

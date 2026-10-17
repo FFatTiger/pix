@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { SendFailureReportSchema } from "@fffattiger/pix-protocol";
+import { SendFailureReportSchema } from "@fffattiger/pix-protocol/client-diagnostics";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import { readJsonObject } from "../resources/request-body.js";

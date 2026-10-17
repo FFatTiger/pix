@@ -16,6 +16,10 @@
       "types": "./dist/memory-settings.d.ts",
       "import": "./dist/memory-settings.js"
     },
+    "./client-diagnostics": {
+      "types": "./dist/client-diagnostics.d.ts",
+      "import": "./dist/client-diagnostics.js"
+    },
     "./transport-limits": {
       "types": "./dist/transport-limits.d.ts",
       "import": "./dist/transport-limits.js"
@@ -27,6 +31,10 @@
     "./built-in-capabilities": {
       "types": "./dist/built-in-capabilities.d.ts",
       "import": "./dist/built-in-capabilities.js"
+    },
+    "./push": {
+      "types": "./dist/push.d.ts",
+      "import": "./dist/push.js"
     }
   },
   "main": "./dist/index.js",

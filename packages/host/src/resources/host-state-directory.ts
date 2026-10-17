@@ -24,7 +24,8 @@
  *
  * Layout (default `~/.pi/pix/host`, override via absolute `PIX_HOST_DIR`):
  *   trusted-roots.json     — trusted-roots schema v1 claims (0600)
- *   managed-worktrees.json — future managed-worktrees schema v1 records (0600)
+ *   managed-worktrees.json — managed-worktrees schema v1 records (0600)
+ *   web-push.json          — Web Push VAPID keys + subscriptions (0600)
  *   trusted-roots.lock     — EXCLUSIVE LIFETIME host-dir lock (0600, pid+instanceId)
  *
  * Frozen architecture decisions (parent D3A-P0 mandate, preserved verbatim):
@@ -107,9 +108,11 @@ export const DEFAULT_PIX_HOST_DIR_SEGMENTS = [".pi", "pix", "host"] as const;
 /** Recognized host-owned state documents (the full layout policy). */
 export const TRUSTED_ROOTS_STATE_DOCUMENT = "trusted-roots.json" as const;
 export const MANAGED_WORKTREES_STATE_DOCUMENT = "managed-worktrees.json" as const;
+export const WEB_PUSH_STATE_DOCUMENT = "web-push.json" as const;
 export const DEFAULT_RECOGNIZED_DOCUMENTS = [
   TRUSTED_ROOTS_STATE_DOCUMENT,
   MANAGED_WORKTREES_STATE_DOCUMENT,
+  WEB_PUSH_STATE_DOCUMENT,
 ] as const;
 
 /** Single canonical exclusive lifetime lock name for the host state dir. */

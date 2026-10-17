@@ -62,7 +62,8 @@ export type HostCapability =
   | "plugins"
   | "themes"
   | "project.trust"
-  | "assistant";
+  | "assistant"
+  | "push";
 
 export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -88,6 +89,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "themes",
   "project.trust",
   "assistant",
+  "push",
 ] as const;
 
 /**
@@ -189,6 +191,8 @@ export interface SessionRevocationStore {
 
 import type { GatePreferencesStore } from "./gate/config.js";
 export type { GatePreferencesStore };
+/** Web Push route seam (mounted only when the push deps are wired). */
+export type { PushRouteDeps } from "./routes/push.js";
 /** Mutable access-key store; the default persists into ~/.pi/pix.json. */
 export interface GatePasswordStore {
   write(password: string): void;
@@ -637,6 +641,14 @@ export interface HostDeps {
   attachments?: {
     limits?: ResourceLimits;
   };
+  /**
+   * Web Push surface (GET /v1/push/config, POST/DELETE /v1/push/subscriptions,
+   * POST /v1/push/test). Omitted ⇒ the routes are not mounted and `push` is
+   * never advertised. Host-owned (state dir + VAPID + subscriptions); the
+   * token is sessiond-independent like `attachments.upload` and stays
+   * advertised in the degraded projection.
+   */
+  push?: import("./routes/push.js").PushRouteDeps;
   /** H0B seam: injected runtime protocol WS handler. */
   runtimeWs?: RuntimeWsSeam;
   /** Hello-frame timeout in ms for the WS upgrade seam (default 10_000). */

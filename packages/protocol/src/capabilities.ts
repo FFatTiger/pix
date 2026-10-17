@@ -26,6 +26,11 @@ import { z } from "zod";
  * ONLY while the Host mounts GET/PUT `/v1/settings/built-ins`. Independent of
  * the read-only `plugins` inventory and of generic Pi `settings.json`.
  * `plugins.manage` stays rejected.
+ *
+ * Web Push token: `push` — advertised ONLY while the Host mounts the
+ * `/v1/push/*` seam (VAPID keys + subscriptions live in the Host state dir;
+ * the trigger watch needs sessiond but the seam itself is Host-owned, so the
+ * token stays advertised in the degraded projection like `attachments.upload`).
  */
 export const HostCapabilitySchema = z.enum([
   "agent",
@@ -52,6 +57,7 @@ export const HostCapabilitySchema = z.enum([
   "project.trust",
   "export",
   "assistant",
+  "push",
 ]);
 
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;

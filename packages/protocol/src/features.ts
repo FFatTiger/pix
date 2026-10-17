@@ -93,3 +93,15 @@ export type RuntimeLivenessFeature = typeof RUNTIME_LIVENESS_FEATURE;
  */
 export const RUNTIME_ASSISTANT_PRESENCE_FEATURE = "runtime.assistant-presence.v1" as const;
 export type RuntimeAssistantPresenceFeature = typeof RUNTIME_ASSISTANT_PRESENCE_FEATURE;
+
+/**
+ * Page-visibility reporting (Web Push suppression). A negotiated Client
+ * sends the tiny fire-and-forget `visibility` frame on connect and on every
+ * visibilitychange; the Host answers it itself (no sessiond/Worker seam) and
+ * keeps only an in-memory per-connection view. A connection that never
+ * reports — or dies — is NOT visible, so a disconnected client can never
+ * suppress notifications. Old strict v2 peers that omit this token keep the
+ * exact pre-visibility behavior (the frame is rejected without negotiation).
+ */
+export const RUNTIME_VISIBILITY_FEATURE = "runtime.visibility.v1" as const;
+export type RuntimeVisibilityFeature = typeof RUNTIME_VISIBILITY_FEATURE;

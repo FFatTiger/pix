@@ -130,6 +130,7 @@ describe("capabilities", () => {
       "project.trust",
       "export",
       "assistant",
+      "push",
     ];
     assert.deepEqual([...ALL_HOST_CAPABILITIES].sort(), [...expected].sort());
     for (const cap of expected) {

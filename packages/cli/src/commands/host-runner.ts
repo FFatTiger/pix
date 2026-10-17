@@ -4,6 +4,7 @@ import {
   exposureModeForBind,
   consoleLogger,
   createEnvGateConfigSource,
+  createFileGatePreferencesStore,
   SessiondRuntimeGateway,
   createRuntimeWorkspaceAuthorizer,
   createProductionResources,
@@ -17,6 +18,10 @@ import {
   createSessiondAssistantClient,
   createAssistantWorkspaceResource,
   createCapabilityResolver,
+  createVisibilityTracker,
+  createWebPushSender,
+  PushNotifier,
+  sendTestNotification,
   InvalidAllowedRootsError,
   InvalidHostDirError,
   InvalidCatalogAgentDirError,
@@ -247,6 +252,22 @@ export async function runHost(
   // this ONE resolver, so health/capabilities/bootstrap and the runtime
   // handshake can never disagree and no raw production list bypasses
   // mounted-seam normalization.
+  const sessionsClient = createSessiondSessionsClient({ endpoint: location.paths.endpoint, secret });
+  // Web Push (D-PUSH): preferences/locale + the durable store over the shared
+  // Host-state lease. The sender and the single running-watch notifier are
+  // created further below (they need the shared sessiond client); the locale
+  // comes from the SAME server preference map the preferences routes serve —
+  // one file owner, no second source.
+  const preferencesStore = createFileGatePreferencesStore();
+  const pushLocale = (): string => {
+    try {
+      return preferencesStore.read()["pi-locale"] ?? "en";
+    } catch {
+      return "en";
+    }
+  };
+  const visibilityTracker = createVisibilityTracker();
+  const webPushSender = createWebPushSender();
   const hostDeps = {
     exposureMode,
     clientDist,
@@ -268,6 +289,17 @@ export async function runHost(
     attachments: {
       ...(production.deps.limits ? { limits: production.deps.limits } : {}),
     },
+    // Web Push HTTP surface (/v1/push/*). Host-owned; advertised via the
+    // `push` capability token in both full and degraded projections.
+    push: {
+      store: production.webPushStore,
+      sender: webPushSender,
+      sendTest: (endpoint: string) =>
+        sendTestNotification(
+          { store: production.webPushStore, sender: webPushSender, locale: pushLocale, logger: consoleLogger },
+          endpoint,
+        ),
+    },
     // D3B-R1B: read-only catalogs (models/auth/skills/plugins/commands/trust).
     // Catalog capability tokens stay advertised even when sessiond is down.
     catalogs,
@@ -285,7 +317,7 @@ export async function runHost(
     // resource composition exposes the rename seam; null/unavailable seams fail
     // closed (route not mounted / 503).
     sessions: {
-      client: createSessiondSessionsClient({ endpoint: location.paths.endpoint, secret }),
+      client: sessionsClient,
       roots: production.deps.allowedRoots,
       delete: {
         client: createSessiondSessionDeleteClient({ endpoint: location.paths.endpoint, secret }),
@@ -307,6 +339,7 @@ export async function runHost(
       },
     },
     gate: { config: createBootGateConfigSource() },
+    preferences: { store: preferencesStore },
     logger: consoleLogger,
     ...(assistantWorkspace
       ? {
@@ -324,6 +357,18 @@ export async function runHost(
   // One trusted sessiond client for the runtime gateway and the Host-owned
   // exact-session authorizer. AllowedRoots stays the only workspace policy.
   const sessiondClient = new SessiondRpcClient({ endpoint: location.paths.endpoint, secret });
+  // The push notifier owns exactly ONE sessiond running-watch subscription for
+  // the whole Host process (never one per WS connection) plus the debounce
+  // bookkeeping; visibility suppression reads the shared tracker.
+  const pushNotifier = new PushNotifier({
+    watch: sessiondClient,
+    sessions: sessionsClient,
+    store: production.webPushStore,
+    sender: webPushSender,
+    visibility: visibilityTracker,
+    locale: pushLocale,
+    logger: consoleLogger,
+  });
   const runtimeWs = new SessiondRuntimeGateway({
     client: sessiondClient,
     mode: exposureMode,
@@ -339,6 +384,9 @@ export async function runHost(
     // WS advertised upload ceiling mirrors the resource upload limit so the two
     // projections can never drift apart.
     limits: { maxUpload: PRODUCTION_MAX_UPLOAD_BYTES },
+    // Page-visibility sink for Web Push suppression: one tracker shared by the
+    // gateway (per-connection reporting) and the push notifier (suppression).
+    visibilityTracker,
     logger: consoleLogger,
   });
 
@@ -347,6 +395,12 @@ export async function runHost(
     capabilityResolver,
     runtimeWs,
   });
+
+  // The push notifier owns exactly ONE sessiond running-watch subscription for
+  // the whole Host process. Starting after the app is assembled keeps the
+  // startup sequence deterministic; a sessiond that is momentarily down only
+  // delays the watch (bounded backoff reconnect, fresh silent baseline).
+  pushNotifier.start();
 
   const handle: NodeServerHandle = await createNodeServer(host, {
     port: options.port,
@@ -368,6 +422,7 @@ export async function runHost(
     if (closing) return;
     closing = true;
     pixLog(`${signal} received — closing host (sessiond keeps running)`);
+    pushNotifier.stop();
     try {
       await handle.close();
     } catch (error) {

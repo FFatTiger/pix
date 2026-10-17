@@ -7,6 +7,7 @@
 export type SettingsPageId =
   | "appearance"
   | "input"
+  | "notifications"
   | "archive"
   | "providers"
   | "capabilities"

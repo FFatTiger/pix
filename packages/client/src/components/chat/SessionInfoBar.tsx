@@ -5,8 +5,6 @@ import {
   ArrowsSplit,
   BellRinging,
   BellSlash,
-  ChatCentered,
-  ChatCenteredSlash,
   Check,
   ClockCounterClockwise,
   Copy,
@@ -31,9 +29,6 @@ export interface SessionInfoBarProps {
   showChat: boolean;
   soundEnabled?: boolean;
   onSoundToggle?: () => void;
-  /** Completion-notification state — same shape as the sound toggle. */
-  notificationsEnabled?: boolean;
-  onNotificationsToggle?: () => void;
   onCompact?: () => void;
   isCompacting?: boolean;
   compactError?: string | null;
@@ -75,8 +70,6 @@ export function SessionInfoBar({
   showChat,
   soundEnabled,
   onSoundToggle,
-  notificationsEnabled,
-  onNotificationsToggle,
   onCompact,
   isCompacting,
   compactError,
@@ -367,8 +360,8 @@ export function SessionInfoBar({
   ) : null;
 
   // Compact mode: only the context ring lives in the composer; everything the
-  // old footer row offered (sound, notifications, history, branches, system
-  // prompt, compact, stats) moves into the ring's popover.
+  // old footer row offered (sound, history, branches, system prompt, compact,
+  // stats) moves into the ring's popover.
   if (compact) {
     // No session yet (home): nothing to measure, so no ring.
     if (!hasSession) return null;
@@ -401,9 +394,6 @@ export function SessionInfoBar({
     }
     if (onSoundToggle) {
       actions.push(actionButton("sound", soundEnabled ? translate("desktop.disableCompletionSound") : translate("desktop.enableCompletionSound"), soundEnabled ? <BellRinging size={14} aria-hidden="true" /> : <BellSlash size={14} aria-hidden="true" />, onSoundToggle, { active: Boolean(soundEnabled) }));
-    }
-    if (onNotificationsToggle) {
-      actions.push(actionButton("notify", notificationsEnabled ? translate("desktop.disableCompletionNotification") : translate("desktop.enableCompletionNotification"), notificationsEnabled ? <ChatCentered size={14} aria-hidden="true" /> : <ChatCenteredSlash size={14} aria-hidden="true" />, onNotificationsToggle, { active: Boolean(notificationsEnabled) }));
     }
     return (
       <div className="session-info-bar is-compact">
@@ -466,22 +456,6 @@ export function SessionInfoBar({
           {showSoundLabel && (
             <span style={{ marginLeft: 4 }}>
               {soundEnabled ? translate("desktop.soundLabelOn") : translate("desktop.soundLabelOff")}
-            </span>
-          )}
-        </button>
-      )}
-      {onNotificationsToggle && (
-        <button
-          type="button"
-          className="session-info-bar-button"
-          onClick={onNotificationsToggle}
-          title={notificationsEnabled ? translate("desktop.disableCompletionNotification") : translate("desktop.enableCompletionNotification")}
-          aria-label={notificationsEnabled ? translate("desktop.disableCompletionNotification") : translate("desktop.enableCompletionNotification")}
-        >
-          {notificationsEnabled ? <ChatCentered size={13} /> : <ChatCenteredSlash size={13} />}
-          {showSoundLabel && (
-            <span style={{ marginLeft: 4 }}>
-              {notificationsEnabled ? translate("desktop.notificationLabelOn") : translate("desktop.notificationLabelOff")}
             </span>
           )}
         </button>

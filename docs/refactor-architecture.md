@@ -638,6 +638,32 @@ packages/
 - **迁移**：首次加载把 localStorage 里旧的会话+项目置顶/归档一次性 additive 上传
   （server-wins），成功后剥离本地四个数组（只留 expandedProjects）。
 
+### Web Push 系统通知（feat/web-push）
+
+- **Host 唯一拥有**：VAPID 密钥对与设备订阅存 `PIX_HOST_DIR/web-push.json`
+  （kind `pix.host.web-push` schema v1；共享 Host 状态租约：同一把锁、同一互斥、
+  原子写 0600、损坏 fail-closed 不改写；密钥首次使用时生成且此后不变）。发送用
+  vendored `web-push` 库（host 精确版本依赖）；VAPID subject 固定
+  `https://github.com/FFatTiger/pix`。`push` 能力 token 与 `attachments.upload`
+  同级：Host 自有、降级投影仍保留（seam 未挂即剥除）。
+- **一条触发链**：`PushNotifier` 持有进程内唯一一条 sessiond running-watch 订阅
+  （绝不按 WS 连接各自判定）。启动/重连的第一份 running_state 只建基线；此后
+  按集合变化判定：进入 waiting → 「等你回答」；离开 running 且不在 waiting → 读
+  只读会话目录（`sessions.read` + `sessions.context`，零 Worker 激活）分正常完成
+  （标题「已完成」+ 最后回复前 80 字）/ stopReason error（「出错了」）/ aborted
+  （不推）；目录读失败降级为通用文案，绝不伪造。同一会话同类通知 10 秒去抖。
+- **可见性抑制**：协商了 `runtime.visibility.v1` 的连接在 ack 后与每次
+  visibilitychange 发 `visibility` 小帧（Host 自应答、不排队、不经 sessiond）；
+  Host 内存 tracker 按连接登记，断线即注销 ⇒ 永远不会被断线客户端抑制。任一
+  连接页面可见即不推。
+- **HTTP 面**：`GET /v1/push/config`、`POST/DELETE /v1/push/subscriptions`
+  （endpoint 去重、仅 https、长度与字段严格 fail-closed）、`POST /v1/push/test`；
+  DTO 在 protocol `/push` 子路径，客户端走 typed transport。发送 404/410 删除订阅，
+  其它错误只记日志不重试。
+- **客户端**：`sw.js` 的 push/notificationclick（聚焦已开窗口并导航，否则开新窗；
+  同会话 tag 互替）；设置 → 本设备 → 通知页（开关=请求权限并订阅本设备、测试
+  按钮、不支持/被拒/iOS 未加主屏的诚实文案）；权限请求仅由用户点击触发。
+
 ## 9. 跨端策略（当前主线：PWA）
 
 | 端 | 连接 | 能力 |

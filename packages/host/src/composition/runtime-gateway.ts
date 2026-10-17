@@ -15,6 +15,7 @@ import {
   RUNTIME_RUNNING_WATCH_FEATURE,
   RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
+  RUNTIME_VISIBILITY_FEATURE,
   SESSIOND_BUILD_IDENTITY,
   evaluateSessiondBuild,
   RuntimeActivateResultSchema,
@@ -49,6 +50,7 @@ import {
   type RuntimeWorkspaceAuthorization,
   type RuntimeWorkspaceAuthorizer,
 } from "./runtime-workspace-authorizer.js";
+import type { VisibilityRegistration, VisibilityTracker } from "./visibility-tracker.js";
 
 /**
  * Narrow sessiond client surface the gateway consumes. The real
@@ -163,6 +165,13 @@ export interface SessiondRuntimeGatewayOptions {
   /** Testable timer for the lifecycle-authorization deadline. */
   readonly setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   readonly clearTimeoutFn?: (handle: unknown) => void;
+  /**
+   * Host-level page-visibility sink (Web Push suppression). Wired ⇒ the
+   * gateway accepts `runtime.visibility.v1` and feeds the tracker one entry
+   * per live connection; a connection that closes is unregistered (never
+   * visible). Unwired ⇒ the feature is never acknowledged (fail closed).
+   */
+  readonly visibilityTracker?: VisibilityTracker;
 }
 
 const DEFAULT_MAX_FRAMES = MAX_RUNTIME_FRAME_COUNT;
@@ -403,6 +412,9 @@ interface GatewayConfig {
   readonly questionnaireEnabled: boolean;
   /** Transport liveness (negotiated `runtime.liveness.v1`): Host-answered pings. */
   readonly livenessEnabled: boolean;
+  /** Page-visibility reporting (negotiated `runtime.visibility.v1`): Host-answered. */
+  readonly visibilityEnabled: boolean;
+  readonly visibilityTracker: VisibilityTracker | undefined;
   readonly runtimeWorkspaceAuthorizer: RuntimeWorkspaceAuthorizer | undefined;
   readonly currentCapabilities: () => Promise<readonly HostCapability[]>;
   readonly lifecycleAuthorizationTimeoutMs: number;
@@ -468,6 +480,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
   private readonly lifecycleAuthorizationTimeoutMs: number;
   private readonly setTimeoutFn: (fn: () => void, ms: number) => unknown;
   private readonly clearTimeoutFn: (handle: unknown) => void;
+  private readonly visibilityTracker: VisibilityTracker | undefined;
 
   constructor(options: SessiondRuntimeGatewayOptions) {
     if (options.client) {
@@ -514,6 +527,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     );
     this.setTimeoutFn = options.setTimeoutFn ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+    this.visibilityTracker = options.visibilityTracker;
   }
 
   /** Build a per-connection handshake response (serverTime is fresh per connection). */
@@ -578,6 +592,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     const requestedExplicitActivate = handshake.payload.features.includes(RUNTIME_EXPLICIT_ACTIVATE_FEATURE);
     const requestedQuestionnaire = handshake.payload.features.includes(RUNTIME_QUESTIONNAIRE_FEATURE);
     const requestedLiveness = handshake.payload.features.includes(RUNTIME_LIVENESS_FEATURE);
+    const requestedVisibility = handshake.payload.features.includes(RUNTIME_VISIBILITY_FEATURE);
     let runningWatchEnabled = false;
     let assistantPresenceEnabled = false;
     let readRpcEnabled = false;
@@ -589,6 +604,10 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     // Host-answered transport probe: no sessiond/Worker seam, so any build of
     // this Host can accept it. Not acknowledged → the Client never pings.
     const livenessEnabled = requestedLiveness;
+    // Page-visibility reporting is equally Host-answered, but ONLY while a
+    // visibility sink is wired — without a tracker the feature is never
+    // acknowledged (the frame would be rejected anyway).
+    const visibilityEnabled = requestedVisibility && this.visibilityTracker !== undefined;
     const wantsLifecycle = requestedObserveExisting || requestedExplicitActivate;
     if (requestedRunningWatch || requestedReadRpc || requestedSubmitTurn || requestedEpochRollover || wantsLifecycle || requestedQuestionnaire) {
       try {
@@ -629,6 +648,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       ...(explicitActivateEnabled ? [RUNTIME_EXPLICIT_ACTIVATE_FEATURE] : []),
       ...(questionnaireEnabled ? [RUNTIME_QUESTIONNAIRE_FEATURE] : []),
       ...(livenessEnabled ? [RUNTIME_LIVENESS_FEATURE] : []),
+      ...(visibilityEnabled ? [RUNTIME_VISIBILITY_FEATURE] : []),
     ];
     const handshakeResponse = this.buildHandshakeResponse(resolved.capabilities, acceptedFeatures);
     this.write(session, {
@@ -653,6 +673,8 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       explicitActivateEnabled,
       questionnaireEnabled,
       livenessEnabled,
+      visibilityEnabled,
+      visibilityTracker: this.visibilityTracker,
       runtimeWorkspaceAuthorizer: this.runtimeWorkspaceAuthorizer,
       currentCapabilities: async () => (await this.resolveConnectionCapabilities()).capabilities,
       lifecycleAuthorizationTimeoutMs: this.lifecycleAuthorizationTimeoutMs,
@@ -796,6 +818,12 @@ class GatewayConnection {
   private active: ActiveAttach | undefined;
   private runningWatch: ActiveRunningWatch | undefined;
   /**
+   * Per-connection visibility entry (negotiated `runtime.visibility.v1`).
+   * Present only while the feature was accepted; unregistered on close so a
+   * dead connection can never suppress notifications.
+   */
+  private visibilityRegistration: VisibilityRegistration | undefined;
+  /**
    * Active turn status subscriptions keyed by the exact composite
    * (sessionId, operationId) — never by operationId alone, so the same
    * operationId on sessions A and B coexists and closing/removal uses the
@@ -825,6 +853,9 @@ class GatewayConnection {
     this.session.onMessage((data) => this.onFrame(data));
     this.session.onClose(() => this.onBrowserClose());
     if (this.config.runningWatchEnabled) void this.openRunningWatch();
+    if (this.config.visibilityEnabled && this.config.visibilityTracker !== undefined) {
+      this.visibilityRegistration = this.config.visibilityTracker.register();
+    }
   }
 
   private async openRunningWatch(): Promise<void> {
@@ -906,6 +937,18 @@ class GatewayConnection {
         return;
       }
       this.send({ type: "pong", ...(message.id !== undefined ? { id: message.id } : {}) });
+      return;
+    }
+    if (message.type === "visibility") {
+      // Page-visibility report: fire-and-forget and Host-answered, routed
+      // ahead of every lane (like ping) so it can never wait behind a long
+      // prompt — suppression accuracy depends on it arriving immediately.
+      if (!this.config.visibilityEnabled) {
+        this.config.logger.warn?.("runtime gateway visibility frame without negotiated feature");
+        this.failProtocol("visibility frame without negotiated visibility feature");
+        return;
+      }
+      this.visibilityRegistration?.report(message.payload.visible);
       return;
     }
     if (message.type === "interrupt") {
@@ -1415,6 +1458,8 @@ class GatewayConnection {
     this.interleavingSerial.close(); // interleaving lane short-circuits too
     this.turnSerial.close(); // turn admission lane short-circuits too
     this.controlSerial.close(); // control lane short-circuits too
+    this.visibilityRegistration?.unregister();
+    this.visibilityRegistration = undefined;
     // Best-effort detach only; NEVER runtime.stop on a browser disconnect.
     this.closeActive(true, true);
     this.closeRunningWatch();

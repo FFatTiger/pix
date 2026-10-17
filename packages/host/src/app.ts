@@ -22,6 +22,7 @@ import { consoleLogger } from "./logger.js";
 import type { GateDeps, HostDeps, HostLogger } from "./types.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerAttachmentRoutes } from "./routes/attachments.js";
+import { registerPushRoutes } from "./routes/push.js";
 import { registerFileIndexRoutes } from "./routes/file-index.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerWorktreeRoutes } from "./routes/worktrees.js";
@@ -155,6 +156,9 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
     registerAttachmentRoutes(app, {
       ...(deps.attachments.limits ? { limits: deps.attachments.limits } : {}),
     });
+  }
+  if (deps.push) {
+    registerPushRoutes(app, deps.push);
   }
   if (deps.resources) {
     registerFileRoutes(app, { roots: deps.resources.allowedRoots, ...(deps.resources.limits ? { limits: deps.resources.limits } : {}), ...(deps.resources.defaultCwd ? { defaultCwd: deps.resources.defaultCwd } : {}), ...(deps.resources.defaultCwdFactory ? { defaultCwdFactory: deps.resources.defaultCwdFactory } : {}) });
