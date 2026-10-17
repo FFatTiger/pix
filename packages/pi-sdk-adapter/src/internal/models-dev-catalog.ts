@@ -27,6 +27,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createPosixSecureStateBackend } from "@fffattiger/pix-local-authority";
 import type { ModelConfigApi, ModelMetadataFields } from "@fffattiger/pix-runtime-core";
+import type { ModelsDevCatalog, ModelsDevCatalogStore, ModelsDevModelEntry } from "../models/index.js";
 
 export const MODELS_DEV_API_URL = "https://models.dev/api.json";
 /** Fetch bound: 10s, redirect-forbidden, bounded body. */
@@ -40,21 +41,7 @@ const MAX_ENTRIES = 20_000;
 
 const secureState = createPosixSecureStateBackend();
 
-/** One models.dev model row, reduced to the fields Pix can consume. */
-export interface ModelsDevModelEntry {
-  /** models.dev provider key (e.g. "openai", "openrouter"). */
-  provider: string;
-  /** Model id as addressed at that provider. */
-  id: string;
-  name?: string;
-  reasoning?: boolean;
-  input?: readonly ("text" | "image")[];
-  contextWindow?: number;
-  maxTokens?: number;
-  cost?: ModelMetadataFields["cost"];
-}
-
-export type ModelsDevCatalog = readonly ModelsDevModelEntry[];
+export type { ModelsDevCatalog, ModelsDevCatalogStore, ModelsDevModelEntry };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -246,15 +233,6 @@ interface CacheDocument {
 }
 
 /** Cached, failure-tolerant accessor for the models.dev dataset. */
-export interface ModelsDevCatalogStore {
-  /**
-   * Current catalog snapshot. Fresh cache → served as-is. Expired cache →
-   * stale entries served immediately while a single-flight background refresh
-   * runs (failure keeps the old cache). No cache → one bounded foreground
-   * fetch; on failure the store answers empty — it never throws.
-   */
-  get(): Promise<ModelsDevCatalog>;
-}
 
 export interface ModelsDevCatalogOptions {
   /** Agent config directory; the cache lives under `<agentDir>/pix/`. */

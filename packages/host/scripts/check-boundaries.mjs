@@ -51,6 +51,7 @@ const COMPOSITION_ALLOWED_ADAPTER_SUBPATHS = new Set([
   "@fffattiger/pix-pi-sdk-adapter/builtins",
   "@fffattiger/pix-pi-sdk-adapter/about",
   "@fffattiger/pix-pi-sdk-adapter/memory",
+  "@fffattiger/pix-pi-sdk-adapter/mcp",
 ]);
 
 // These identifiers are intentionally assembled from parts so this
@@ -64,6 +65,7 @@ const FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/
 const FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/settings-config";
 const FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/transport-limits";
 const FOUNDATION_ALLOWED_PUSH_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/push";
+const FOUNDATION_ALLOWED_MCP_SETTINGS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/mcp-settings";
 const FOUNDATION_ALLOWED_MEMORY_SETTINGS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/memory-settings";
 const FOUNDATION_ALLOWED_CLIENT_DIAGNOSTICS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/client-diagnostics";
 
@@ -90,6 +92,7 @@ const ALLOWED_EXTERNAL_PREFIXES = [
   FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH,
   FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH,
   FOUNDATION_ALLOWED_PUSH_PROTOCOL_SUBPATH,
+  FOUNDATION_ALLOWED_MCP_SETTINGS_PROTOCOL_SUBPATH,
   FOUNDATION_ALLOWED_MEMORY_SETTINGS_PROTOCOL_SUBPATH,
   FOUNDATION_ALLOWED_CLIENT_DIAGNOSTICS_PROTOCOL_SUBPATH,
   // pix's own Ports/models package: the foundation may consume its pure
@@ -117,6 +120,7 @@ const COMPOSITION_ALLOWED_EXTERNAL_PREFIXES = [
   "@fffattiger/pix-pi-sdk-adapter/builtins",
   "@fffattiger/pix-pi-sdk-adapter/about",
   "@fffattiger/pix-pi-sdk-adapter/memory",
+  "@fffattiger/pix-pi-sdk-adapter/mcp",
 ];
 
 function walk(dir, files = []) {
@@ -172,7 +176,7 @@ for (const file of walk(srcRoot)) {
   // foundation may import only the exact narrow wire-vocabulary subpaths.
   for (const match of source.matchAll(/from\s+["'](@fffattiger\/pix-protocol(?:\/[^"']+)?)["']/g)) {
     const specifier = match[1];
-    if (!inComposition && specifier !== FOUNDATION_ALLOWED_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_PUSH_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_MEMORY_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_CLIENT_DIAGNOSTICS_PROTOCOL_SUBPATH) {
+    if (!inComposition && specifier !== FOUNDATION_ALLOWED_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_PUSH_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_MCP_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_MEMORY_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_CLIENT_DIAGNOSTICS_PROTOCOL_SUBPATH) {
       fail(`${relativePath} imports non-foundation protocol surface "${specifier}"`);
     }
   }

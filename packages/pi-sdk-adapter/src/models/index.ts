@@ -14,12 +14,12 @@ import type {
   ModelCatalogPort,
   ModelConfigStorePort,
   ModelInfo,
+  ModelMetadataFields,
   ModelRef,
   ModelSelector,
 } from "@fffattiger/pix-runtime-core";
 import { createPiSdkModelStore } from "../internal/model-store.js";
 import { createPiSdkModelConfigStore } from "../internal/model-config-store.js";
-import type { ModelsDevCatalogStore } from "../internal/models-dev-catalog.js";
 
 /**
  * Injectable read-only model store contract. The default implementation
@@ -31,6 +31,32 @@ export interface PiSdkModelStore {
   listModels(): Promise<readonly ModelInfo[]>;
   getDefaultModel(): Promise<ModelRef | null>;
   resolveModel(selector: ModelSelector): Promise<ModelInfo>;
+}
+
+/** One models.dev model row, reduced to the fields Pix can consume. */
+export interface ModelsDevModelEntry {
+  /** models.dev provider key (e.g. "openai", "openrouter"). */
+  provider: string;
+  /** Model id as addressed at that provider. */
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  input?: readonly ("text" | "image")[];
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: ModelMetadataFields["cost"];
+}
+
+export type ModelsDevCatalog = readonly ModelsDevModelEntry[];
+
+export interface ModelsDevCatalogStore {
+  /**
+   * Current catalog snapshot. Fresh cache → served as-is. Expired cache →
+   * stale entries served immediately while a single-flight background refresh
+   * runs (failure keeps the old cache). No cache → one bounded foreground
+   * fetch; on failure the store answers empty — it never throws.
+   */
+  get(): Promise<ModelsDevCatalog>;
 }
 
 /** Options for the default SDK-backed store (ignored when a store is injected). */
