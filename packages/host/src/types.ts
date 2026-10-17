@@ -405,6 +405,10 @@ export interface CatalogSettingsMutationSeam {
   readMemoryConfig(): Promise<unknown>;
   /** Structured memory-provider CAS write (lore requires a connection). */
   writeMemoryProvider(input: unknown): Promise<unknown>;
+  /** Structured picker model-visibility read (settings.json `enabledModels`). */
+  readModelVisibilityConfig(): Promise<unknown>;
+  /** Structured picker model-visibility CAS write (intent-based). */
+  writeModelVisibilityConfig(input: unknown): Promise<unknown>;
 }
 
 /**

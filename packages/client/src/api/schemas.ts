@@ -115,6 +115,8 @@ export const ModelsResponseSchema = z.strictObject({
 export type ModelsResponse = z.infer<typeof ModelsResponseSchema>;
 export { ModelsConfigResponseSchema };
 export type ModelsConfigResponse = z.infer<typeof ModelsConfigResponseSchema>;
+export { ModelVisibilityResponseSchema } from "@fffattiger/pix-protocol";
+export type { ModelVisibilityResponse, ModelVisibilityMutation } from "@fffattiger/pix-protocol";
 export { SettingsConfigResponseSchema } from "@fffattiger/pix-protocol";
 export type { SettingsConfigResponse } from "@fffattiger/pix-protocol";
 export { ModelDiscoveryResponseSchema };

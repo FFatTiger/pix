@@ -400,6 +400,173 @@ describe("model default validation + enabled scope (global settings)", () => {
   });
 });
 
+describe("catalog cache invalidation (config fingerprint)", () => {
+  async function seedRoot(): Promise<{ root: string; agentDir: string }> {
+    const root = await mkdtemp(join(tmpdir(), "pix-model-invalidate-"));
+    const agentDir = join(root, "agent");
+    await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(agentDir, "models.json"), JSON.stringify({
+      providers: {
+        [CUSTOM_PROVIDER_ID]: {
+          baseUrl: "https://pix-custom.example.com/v1",
+          api: "openai-completions",
+          apiKey: LITERAL_KEY,
+          models: CUSTOM_MODELS,
+        },
+      },
+    }), "utf8");
+    return { root, agentDir };
+  }
+
+  /** Same-content rewrite keeps mtime granularity honest in the fingerprint. */
+  const writeModels = async (agentDir: string, models: unknown[]) => {
+    await writeFile(join(agentDir, "models.json"), JSON.stringify({
+      providers: {
+        [CUSTOM_PROVIDER_ID]: {
+          baseUrl: "https://pix-custom.example.com/v1",
+          api: "openai-completions",
+          apiKey: LITERAL_KEY,
+          models,
+        },
+      },
+    }), "utf8");
+  };
+
+  it("rebuilds the catalog when models.json changes on disk", async () => {
+    const { root, agentDir } = await seedRoot();
+    try {
+      await withEnv({}, async () => {
+        let builds = 0;
+        const store = createPiSdkModelStore({ agentDir, observeRebuild: () => { builds += 1; } });
+        const before = await store.listModels();
+        assert.ok(before.some((model) => model.id === "custom-mini"));
+        assert.equal(builds, 1);
+
+        // Unchanged file: concurrent reads share the cached build (one build).
+        await Promise.all([store.listModels(), store.listModels(), store.getDefaultModel()]);
+        assert.equal(builds, 1);
+
+        // Remove a model from models.json: the next read must see it gone.
+        await writeModels(agentDir, [{ id: "custom-max", contextWindow: 131072, reasoning: true }]);
+        const afterRemoval = await store.listModels();
+        assert.ok(!afterRemoval.some((model) => model.id === "custom-mini"));
+        assert.ok(afterRemoval.some((model) => model.id === "custom-max"));
+        assert.equal(builds, 2);
+
+        // Add a new provider: it surfaces without a restart.
+        await writeFile(join(agentDir, "models.json"), JSON.stringify({
+          providers: {
+            [CUSTOM_PROVIDER_ID]: {
+              baseUrl: "https://pix-custom.example.com/v1",
+              api: "openai-completions",
+              apiKey: LITERAL_KEY,
+              models: CUSTOM_MODELS,
+            },
+            "pix-new": {
+              baseUrl: "https://pix-new.example.com/v1",
+              api: "openai-completions",
+              apiKey: LITERAL_KEY,
+              models: [{ id: "new-solo" }],
+            },
+          },
+        }), "utf8");
+        const afterAddition = await store.listModels();
+        assert.ok(afterAddition.some((model) => model.provider === "pix-new" && model.id === "new-solo"));
+        assert.equal(builds, 3);
+
+        // Deleting models.json → honest empty catalog, again without restart.
+        await (await import("node:fs/promises")).unlink(join(agentDir, "models.json"));
+        assert.deepEqual(await store.listModels(), []);
+        assert.equal(await store.getDefaultModel(), null);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds when settings.json enabledModels/defaultModel change on disk", async () => {
+    const { root, agentDir } = await seedRoot();
+    try {
+      await withEnv({}, async () => {
+        const settingsPath = join(agentDir, "settings.json");
+        const store = createPiSdkModelStore({ agentDir });
+        assert.ok((await store.listModels()).some((model) => model.id === "custom-mini"));
+
+        // Enable only custom-max: the picker scope narrows without a restart.
+        await writeFile(settingsPath, JSON.stringify({ enabledModels: [`${CUSTOM_PROVIDER_ID}/custom-max`] }), "utf8");
+        assert.deepEqual(
+          (await store.listModels()).map((model) => model.id),
+          ["custom-max"],
+        );
+
+        // Default model change is picked up too.
+        await writeFile(settingsPath, JSON.stringify({
+          defaultProvider: CUSTOM_PROVIDER_ID,
+          defaultModel: "custom-max",
+        }), "utf8");
+        assert.deepEqual(await store.getDefaultModel(), { provider: CUSTOM_PROVIDER_ID, id: "custom-max" });
+
+        // Removing settings.json returns to the all-visible scope.
+        await (await import("node:fs/promises")).unlink(settingsPath);
+        assert.equal((await store.listModels()).length, CUSTOM_MODELS.length);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a failed build (malformed settings.json) retries honestly on the next read", async () => {
+    const { root, agentDir } = await seedRoot();
+    try {
+      await withEnv({}, async () => {
+        const settingsPath = join(agentDir, "settings.json");
+        await writeFile(settingsPath, "{ not json", "utf8");
+        const store = createPiSdkModelStore({ agentDir });
+        await assert.rejects(
+          () => store.listModels(),
+          (error: unknown) => (error as { code?: string }).code === "invalid_input",
+        );
+        // Still broken → still failing (never a cached rejection OR fake success).
+        await assert.rejects(() => store.listModels());
+        // Repaired → next read succeeds without recreating the store.
+        await writeFile(settingsPath, JSON.stringify({ enabledModels: [`${CUSTOM_PROVIDER_ID}/custom-max`] }), "utf8");
+        assert.deepEqual((await store.listModels()).map((model) => model.id), ["custom-max"]);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("injected runtime/settings keep their semantics across fingerprint changes", async () => {
+    const { root, agentDir } = await seedRoot();
+    try {
+      await withEnv({}, async () => {
+        const runtime = await ModelRuntime.create({
+          allowModelNetwork: false,
+          modelsPath: join(agentDir, "models.json"),
+        });
+        const settings = SettingsManager.inMemory();
+        settings.setEnabledModels([`${CUSTOM_PROVIDER_ID}/custom-max`]);
+        let builds = 0;
+        const store = createPiSdkModelStore({
+          agentDir,
+          modelRuntime: runtime,
+          settingsManager: settings,
+          observeRebuild: () => { builds += 1; },
+        });
+        assert.deepEqual((await store.listModels()).map((model) => model.id), ["custom-max"]);
+        // models.json change rebuilds the DISK-based provider filter only; the
+        // injected runtime/settings instances stay in charge of their halves.
+        await writeModels(agentDir, [{ id: "custom-max", reasoning: true }]);
+        assert.deepEqual((await store.listModels()).map((model) => model.id), ["custom-max"]);
+        assert.ok(builds >= 2);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("models.json absence / malformation fails honestly", () => {
   it("no models.json => honest empty catalog (no builtin fallback)", async () => {
     const root = await mkdtemp(join(tmpdir(), "pix-model-nofile-"));

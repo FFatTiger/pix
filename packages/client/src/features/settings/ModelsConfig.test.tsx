@@ -16,7 +16,7 @@ const snapshot = {
     api: "openai-responses",
     apiKeyConfigured: true,
     modelsDefined: true,
-    models: [{ sourceIndex: 0, id: "deepseek-v4-flash", reasoning: true }],
+    models: [{ sourceIndex: 0, id: "deepseek-v4-flash", reasoning: true, visibleInPicker: true }],
   }],
   availableProviders: [
     { id: "anthropic", name: "Anthropic", methods: ["oauth", "apiKey"], modelCount: 4 },
@@ -29,19 +29,40 @@ function json(value: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" }, ...init });
 }
 
-function mount(fetchImpl: ReturnType<typeof vi.fn>) {
+function mount(
+  fetchImpl: ReturnType<typeof vi.fn>,
+  capabilities: ("models" | "models.configure" | "settings.configure")[] = ["models", "models.configure"],
+) {
   vi.stubGlobal("fetch", fetchImpl);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <HttpClientProvider>
-        <CapabilityProvider host={{ mode: "local", capabilities: ["models", "models.configure"] }}>
+        <CapabilityProvider host={{ mode: "local", capabilities }}>
           <I18nProvider><ModelsConfig /></I18nProvider>
         </CapabilityProvider>
       </HttpClientProvider>
     </QueryClientProvider>,
   );
 }
+
+const twoModelSnapshot = {
+  ...snapshot,
+  providers: [{
+    ...snapshot.providers[0],
+    models: [
+      { sourceIndex: 0, id: "deepseek-v4-flash", reasoning: true, visibleInPicker: true },
+      { sourceIndex: 1, id: "deepseek-v4.1", visibleInPicker: false },
+    ],
+  }],
+};
+
+const visibilitySnapshot = {
+  revision: "d".repeat(64),
+  patterns: null,
+  visible: [{ provider: "acme-deepseek", id: "deepseek-v4-flash" }],
+  defaultModel: { provider: "acme-deepseek", id: "deepseek-v4-flash" },
+};
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -274,5 +295,156 @@ describe("ModelsConfig", () => {
       providers: [{ sourceId: "acme-deepseek", id: "renamed", apiKey: { mode: "preserve" } }],
     });
     expect(JSON.stringify(putBody)).not.toContain("sk-");
+  });
+
+  it("renders no visibility switches without the settings.configure capability", async () => {
+    const fetchMock = vi.fn(async () => json(snapshot));
+    mount(fetchMock, ["models", "models.configure"]);
+    await screen.findAllByText("acme-deepseek");
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  it("commits a visibility toggle through the settings seam without touching models.json", async () => {
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const url = String(input);
+      calls.push({ method, url, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
+      if (url === "/v1/settings/model-visibility" && method === "PUT") {
+        return json({ ...visibilitySnapshot, patterns: ["acme-deepseek/other"], visible: [{ provider: "acme-deepseek", id: "other" }] });
+      }
+      if (url === "/v1/settings/model-visibility") return json(visibilitySnapshot);
+      return json(twoModelSnapshot);
+    });
+    mount(fetchMock, ["models", "models.configure", "settings.configure"]);
+    await screen.findAllByText("acme-deepseek");
+
+    // The hidden second model renders faded; its switch is the only toggle
+    // that can move (deepseek-v4-flash is the last visible model and locks).
+    const hiddenRow = screen.getByText("deepseek-v4.1").closest("li")!;
+    expect(hiddenRow.style.opacity).toBe("0.55");
+    expect(screen.getByRole("switch", { name: "Show deepseek-v4-flash in the model picker" }).hasAttribute("disabled")).toBe(true);
+
+    // Toggling alone must surface and enable the save bar (its own dirty signal).
+    fireEvent.click(screen.getByRole("switch", { name: "Show deepseek-v4.1 in the model picker" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.url === "/v1/settings/model-visibility")).toBe(true));
+    // No models.json write happened, and the visibility PUT carries the intent
+    // plus the freshly fetched settings revision.
+    expect(calls.some((call) => call.method === "PUT" && call.url === "/v1/models/config")).toBe(false);
+    const put = calls.find((call) => call.method === "PUT" && call.url === "/v1/settings/model-visibility");
+    expect(put?.body).toEqual({
+      expectedRevision: visibilitySnapshot.revision,
+      changes: [{ provider: "acme-deepseek", id: "deepseek-v4.1", visible: true }],
+    });
+    // The PUT body never carried models.json fields or draft-only keys.
+    expect(JSON.stringify(put?.body)).not.toContain("visibleInPicker");
+  });
+
+  it("locks the switch of the last visible model and hints when the default model is hidden", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/v1/settings/model-visibility") return json(visibilitySnapshot);
+      return json(snapshot);
+    });
+    mount(fetchMock, ["models", "models.configure", "settings.configure"]);
+    await screen.findAllByText("acme-deepseek");
+
+    // The only model is the last visible one: switch stays on and disabled.
+    const toggle = screen.getByRole("switch", { name: "Show deepseek-v4-flash in the model picker" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(toggle.hasAttribute("disabled")).toBe(true);
+
+    // Add a second model: the first unlocks; hiding the DEFAULT model surfaces
+    // the fixed hint (server-side default points at deepseek-v4-flash).
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+    const id = screen.getByText("ID *").parentElement!.querySelector("input")!;
+    fireEvent.change(id, { target: { value: "second-model" } });
+    fireEvent.click(screen.getByRole("button", { name: "Back to acme-deepseek" }));
+    const first = screen.getByRole("switch", { name: "Show deepseek-v4-flash in the model picker" });
+    expect(first.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(first);
+    expect(await screen.findByText("The default model is hidden. New sessions fall back to the first visible model.")).toBeTruthy();
+    // The second model is now the last visible one and locks.
+    expect(screen.getByRole("switch", { name: "Show second-model in the model picker" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("saves models first, then visibility with the fresh settings revision", async () => {
+    const order: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/v1/settings/model-visibility") {
+        order.push(`visibility:${method}`);
+        if (method === "PUT") {
+          return json({ ...visibilitySnapshot, revision: "e".repeat(64), patterns: ["acme-deepseek/other"], visible: [{ provider: "acme-deepseek", id: "other" }] });
+        }
+        return json(visibilitySnapshot);
+      }
+      if (url === "/v1/models/config" && method === "PUT") {
+        order.push("models:PUT");
+        return json({
+          ...snapshot,
+          revision: "b".repeat(64),
+          providers: [{
+            ...snapshot.providers[0],
+            models: [
+              { sourceIndex: 0, id: "deepseek-v4-flash", reasoning: true, visibleInPicker: true },
+              { sourceIndex: 1, id: "other", visibleInPicker: true },
+            ],
+          }],
+        });
+      }
+      return json(snapshot);
+    });
+    mount(fetchMock, ["models", "models.configure", "settings.configure"]);
+    await screen.findAllByText("acme-deepseek");
+
+    // Add a model (models.json dirty) AND hide the existing one (settings.json
+    // dirty): one Save commits both in order.
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+    const id = screen.getByText("ID *").parentElement!.querySelector("input")!;
+    fireEvent.change(id, { target: { value: "other" } });
+    fireEvent.click(screen.getByRole("button", { name: "Back to acme-deepseek" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Show deepseek-v4-flash in the model picker" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // models.json commits first; the visibility CAS revision is fetched fresh
+    // (after the models write may have rewritten settings.json) and the
+    // visibility intents go last. Extra read refreshes between the writes are
+    // fine — no second models write may happen.
+    await waitFor(() => expect(order[order.length - 1]).toBe("visibility:PUT"));
+    expect(order.filter((call) => call !== "visibility:GET")).toEqual(["models:PUT", "visibility:PUT"]);
+  });
+
+  it("re-applies pending toggles when only the visibility half of a save fails", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/v1/settings/model-visibility") {
+        if (method === "PUT") return json({ code: "CONFLICT", message: "raw" }, { status: 409 });
+        return json(visibilitySnapshot);
+      }
+      if (url === "/v1/models/config" && method === "PUT") {
+        return json({ ...snapshot, revision: "b".repeat(64) });
+      }
+      return json(snapshot);
+    });
+    mount(fetchMock, ["models", "models.configure", "settings.configure"]);
+    await screen.findAllByText("acme-deepseek");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+    const id = screen.getByText("ID *").parentElement!.querySelector("input")!;
+    fireEvent.change(id, { target: { value: "other" } });
+    fireEvent.click(screen.getByRole("button", { name: "Back to acme-deepseek" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Show deepseek-v4-flash in the model picker" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Honest conflict copy; the models half committed, the toggle is still
+    // pending (switch stays off, Save stays enabled for a retry).
+    expect(await screen.findByText(/Model configuration changed elsewhere/)).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Show deepseek-v4-flash in the model picker" }).getAttribute("aria-checked")).toBe("false"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
   });
 });

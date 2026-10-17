@@ -147,7 +147,9 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
         mutationFn: (input: Parameters<typeof models.saveConfig>[0]) => models.saveConfig(input),
         onSuccess: (data: Awaited<ReturnType<typeof models.saveConfig>>) => {
           queryClient.setQueryData(queryKeys.models.config(), data);
-          return invalidate(queryClient, queryKeys.models.list(), queryKeys.auth.all);
+          // models.json writes run enabledModels hygiene server-side, so the
+          // visibility snapshot (and the picker list) may have changed too.
+          return invalidate(queryClient, queryKeys.models.list(), queryKeys.models.visibility(), queryKeys.auth.all);
         },
       }),
       discover: () => ({
@@ -157,6 +159,14 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
       metadata: () => ({
         mutationKey: ["pix", "models", "metadata"] as const,
         mutationFn: (input: Parameters<typeof models.metadata>[0]) => models.metadata(input),
+      }),
+      saveVisibility: () => ({
+        mutationKey: ["pix", "models", "save-visibility"] as const,
+        mutationFn: (input: Parameters<typeof models.saveVisibility>[0]) => models.saveVisibility(input),
+        onSuccess: (data: Awaited<ReturnType<typeof models.saveVisibility>>) => {
+          queryClient.setQueryData(queryKeys.models.visibility(), data);
+          return invalidate(queryClient, queryKeys.models.list(), queryKeys.models.config());
+        },
       }),
     },
     workspace,

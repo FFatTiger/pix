@@ -43,6 +43,8 @@ import type {
   SettingsConfigStorePort,
   MemoryProviderMutation,
   MemorySettingsSnapshot,
+  ModelVisibilityMutation,
+  ModelVisibilitySnapshot,
   SubagentSettingsMutation,
   SubagentSettingsSnapshot,
   ThemeCatalogPort,
@@ -151,6 +153,16 @@ const _settingsExact: IsExact<
   | "writeCompactionConfig"
   | "readMemoryConfig"
   | "writeMemoryProvider"
+  | "readModelVisibilityConfig"
+  | "writeModelVisibilityConfig"
+> = true;
+const _modelVisibilityReadExact: IsExact<
+  SettingsConfigStorePort["readModelVisibilityConfig"],
+  () => Promise<ModelVisibilitySnapshot>
+> = true;
+const _modelVisibilityWriteExact: IsExact<
+  SettingsConfigStorePort["writeModelVisibilityConfig"],
+  (input: ModelVisibilityMutation) => Promise<ModelVisibilitySnapshot>
 > = true;
 const _subagentReadExact: IsExact<
   SettingsConfigStorePort["readSubagentConfig"],

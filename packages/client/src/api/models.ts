@@ -1,9 +1,10 @@
 import type { HttpClient } from "./http-client";
 import { urls } from "./urls";
-import type { ModelDiscoveryInput, ModelMetadataRequest, ModelsConfigMutation } from "@fffattiger/pix-protocol";
+import type { ModelDiscoveryInput, ModelMetadataRequest, ModelVisibilityMutation, ModelsConfigMutation } from "@fffattiger/pix-protocol";
 import {
   ModelDiscoveryResponseSchema,
   ModelMetadataResponseSchema,
+  ModelVisibilityResponseSchema,
   ModelsConfigResponseSchema,
   ModelsResponseSchema,
 } from "./schemas";
@@ -36,6 +37,18 @@ export function createModelsApi(http: HttpClient) {
       http.post(urls.models.metadata(), input, {
         schema: ModelMetadataResponseSchema,
         timeoutMs: 15_000,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    /** Picker visibility snapshot (settings.json `enabledModels` scope). */
+    visibility: (signal?: AbortSignal) =>
+      http.get(urls.settings.modelVisibility(), {
+        schema: ModelVisibilityResponseSchema,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    /** Apply per-model picker-visibility intents (CAS on settings.json). */
+    saveVisibility: (input: ModelVisibilityMutation, signal?: AbortSignal) =>
+      http.put(urls.settings.modelVisibility(), input, {
+        schema: ModelVisibilityResponseSchema,
         ...(signal === undefined ? {} : { signal }),
       }),
   };

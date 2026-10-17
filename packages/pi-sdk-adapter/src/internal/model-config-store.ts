@@ -27,6 +27,11 @@ import {
   modelsDevEntryToFields,
   type ModelsDevCatalogStore,
 } from "./models-dev-catalog.js";
+import {
+  assertSettingsReadableForHygiene,
+  readPickerVisibility,
+  syncEnabledModelsWithModelsConfig,
+} from "./model-visibility.js";
 
 const MODELS_MAX_BYTES = 1024 * 1024;
 const secureState = createPosixSecureStateBackend();
@@ -175,7 +180,7 @@ async function listAvailableProviders(): Promise<readonly AvailableModelProvider
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function readSource(agentDir: string): Promise<{ text: string; raw: RawModelsJson; revision: string }> {
+async function readSource(agentDir: string): Promise<{ text: string; raw: RawModelsJson; revision: string; runtime: ModelRuntime | null }> {
   const modelsPath = join(agentDir, "models.json");
   let result;
   try {
@@ -189,8 +194,8 @@ async function readSource(agentDir: string): Promise<{ text: string; raw: RawMod
   const missing = "missing" in result;
   const text = "content" in result ? result.content : "";
   const raw = parseRawModelsJson(text, missing);
-  if (!missing) await createOfflineRuntime(modelsPath);
-  return { text, raw, revision: hash(text) };
+  const runtime = missing ? null : await createOfflineRuntime(modelsPath);
+  return { text, raw, revision: hash(text), runtime };
 }
 
 function assertMutation(input: ModelsConfigMutation): void {
@@ -506,9 +511,22 @@ function withMutationQueue<T>(key: string, run: () => Promise<T>): Promise<T> {
 
 async function snapshot(agentDir: string): Promise<ModelsConfigSnapshot> {
   const source = await readSource(agentDir);
+  // Picker visibility comes from settings.json `enabledModels`, resolved
+  // with the SAME runtime that validated models.json (identical catalog
+  // shape to the read-only model store's matching semantics).
+  const visibility = await readPickerVisibility(agentDir, source.runtime ?? undefined);
   return {
     revision: source.revision,
-    providers: Object.entries(source.raw.providers).map(([id, provider]) => projectProvider(id, provider)),
+    providers: Object.entries(source.raw.providers).map(([id, provider]) => {
+      const projected = projectProvider(id, provider);
+      return {
+        ...projected,
+        models: projected.models.map((model) => ({
+          ...model,
+          visibleInPicker: visibility.allVisible || visibility.visibleKeys.has(`${id}\0${model.id}`),
+        })),
+      };
+    }),
     availableProviders: await listAvailableProviders(),
   };
 }
@@ -561,10 +579,18 @@ export function createPiSdkModelConfigStore(options: PiSdkModelConfigStoreOption
         if (current.revision !== input.expectedRevision) {
           throw runtimeError("conflict", "model configuration changed");
         }
+        // Fail BEFORE touching models.json when settings.json is too broken
+        // to run the enabledModels hygiene below — never a half-maintained
+        // whitelist with a silent success on top.
+        await assertSettingsReadableForHygiene(agentDir);
         const merged = mergeConfig(current.raw, input);
         const serialized = `${JSON.stringify(merged, null, 2)}\n`;
         await validateSerialized(serialized);
         await secureState.writeStateDocument(modelsPath, serialized, { maxBytes: MODELS_MAX_BYTES });
+        // models.json changed: keep the settings.json enabledModels whitelist
+        // consistent (drop dead exact rows, append newly configured models,
+        // keep glob patterns). Lock order is models → settings everywhere.
+        await syncEnabledModelsWithModelsConfig(agentDir);
       } catch (error) {
         if (error && typeof error === "object" && "code" in error) throw error;
         throw runtimeError("unavailable", "model configuration could not be saved");

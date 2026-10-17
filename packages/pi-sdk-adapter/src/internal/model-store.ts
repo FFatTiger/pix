@@ -23,7 +23,7 @@
 //  - No fetch, no provider calls, no discovery/refresh/test/config writes.
 //  - Returns canonical runtime-core ModelInfo/ModelRef only; never an SDK
 //    Model object, cost/sampling/auth fields, or credential material.
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, ModelRuntime, resolveModelScopeWithDiagnostics, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
@@ -49,6 +49,12 @@ export interface PiSdkModelStoreOptions {
   modelRuntime?: ModelRuntime;
   /** Inject a SettingsManager (tests). */
   settingsManager?: SettingsManager;
+  /**
+   * Test/composition hook: invoked once for every real cache rebuild
+   * (initial build included). Lets tests assert that unchanged files reuse
+   * the cached runtime instead of rebuilding.
+   */
+  observeRebuild?: () => void;
 }
 
 /** Project a backend SDK Model onto the canonical backend-neutral ModelInfo. */
@@ -124,12 +130,26 @@ function assertGlobalModelSettings(manager: SettingsManager): void {
  * runtime is created lazily (on first read) with allowModelNetwork:false and
  * in-memory stores, so no network/provider/refresh work and ZERO file writes
  * happen at construction or during reads.
+ *
+ * The runtime, the settings manager and the models.json provider filter are
+ * cached per config fingerprint (stat of `<agentDir>/models.json` +
+ * `<agentDir>/settings.json`: mtimeMs + size + ino; a missing file is its own
+ * state). Every read re-stats both files and rebuilds the caches once when the
+ * fingerprint changed — settings-page saves, manual edits and Pi TUI changes
+ * are visible without restarting the Host. No fs.watch, no timers. Rebuilds
+ * are serialized; concurrent reads with the same fingerprint trigger at most
+ * one build (single-flight). Injected `modelRuntime`/`settingsManager` options
+ * keep their existing semantics: the injected instances are reused across
+ * fingerprints and never rebuilt, while the disk-based provider filter still
+ * re-reads models.json on fingerprint changes.
  */
 export function createPiSdkModelStore(options: PiSdkModelStoreOptions = {}): PiSdkModelStore {
   const agentDir = options.agentDir ?? getAgentDir();
   let cachedRuntime: ModelRuntime | undefined;
   let cachedSettings: SettingsManager | undefined;
   let cachedAllowed: Promise<ReadonlySet<string>> | undefined;
+  let builtFor: string | undefined;
+  let buildChain: Promise<void> = Promise.resolve();
 
   const runtime = async (): Promise<ModelRuntime> => {
     const instance = options.modelRuntime ?? cachedRuntime ?? await ModelRuntime.create({
@@ -211,13 +231,72 @@ export function createPiSdkModelStore(options: PiSdkModelStoreOptions = {}): PiS
     return cachedAllowed;
   };
 
+  // -- config-fingerprint cache invalidation ---------------------------------
+
+  /** stat identity of one config file; a missing file is its own state. */
+  interface FileStamp {
+    present: boolean;
+    mtimeMs: number;
+    size: number;
+    ino: number;
+  }
+
+  const MISSING_STAMP: FileStamp = { present: false, mtimeMs: 0, size: 0, ino: 0 };
+
+  const stampOf = (path: string): FileStamp => {
+    try {
+      const stats = statSync(path);
+      return { present: true, mtimeMs: stats.mtimeMs, size: stats.size, ino: stats.ino };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return MISSING_STAMP;
+      throw error;
+    }
+  };
+
+  const currentFingerprint = (): string => JSON.stringify([
+    stampOf(join(agentDir, "models.json")),
+    stampOf(join(agentDir, "settings.json")),
+  ]);
+
+  /**
+   * Rebuild all caches when the config fingerprint changed. Builds are
+   * serialized through {@link buildChain}; a build whose fingerprint was
+   * already covered by an earlier build is a no-op, so concurrent readers
+   * with the same fingerprint share one build. A failed build leaves the
+   * fingerprint unset, so the next read retries honestly instead of serving
+   * a rejected promise forever.
+   */
+  const ensureFresh = (): Promise<void> => {
+    const target = currentFingerprint();
+    if (builtFor === target) return Promise.resolve();
+    const build = buildChain.then(async () => {
+      if (builtFor === target) return;
+      options.observeRebuild?.();
+      cachedAllowed = undefined;
+      cachedRuntime = undefined;
+      cachedSettings = undefined;
+      // A failed read (malformed models.json/settings.json) throws before the
+      // fingerprint is recorded — the caches stay empty and the next read
+      // rebuilds from scratch.
+      cachedAllowed = readConfiguredProviderIds(agentDir);
+      await cachedAllowed;
+      await runtime();
+      settings();
+      builtFor = target;
+    });
+    buildChain = build.then(() => undefined, () => undefined);
+    return build;
+  };
+
   return {
     async listModels(): Promise<readonly ModelInfo[]> {
+      await ensureFresh();
       const allowed = await allowedProviders();
       const instance = await runtime();
       return (await enabledModels(settings(), instance, allowed)).map(toModelInfo);
     },
     async getDefaultModel(): Promise<ModelRef | null> {
+      await ensureFresh();
       const allowed = await allowedProviders();
       const instance = await runtime();
       const manager = settings();
@@ -241,6 +320,7 @@ export function createPiSdkModelStore(options: PiSdkModelStoreOptions = {}): PiS
       return first ? { provider: first.provider, id: first.id } : null;
     },
     async resolveModel(selector: ModelSelector): Promise<ModelInfo> {
+      await ensureFresh();
       // Unrestricted lookup helper (validation of concrete selectors, e.g.
       // a session pinned to a builtin model); catalog SCOPING lives in
       // listModels/getDefaultModel above.

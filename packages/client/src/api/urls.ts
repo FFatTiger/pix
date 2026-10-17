@@ -190,6 +190,8 @@ export const urls = {
     memoryLore: () => resource("settings/memory/lore"),
     /** POST — Lore health probe (GET <base>/api/health). */
     memoryLoreTest: () => resource("settings/memory/lore-test"),
+    /** Picker model visibility (settings.json `enabledModels`). */
+    modelVisibility: () => resource("settings/model-visibility"),
     /** Global MCP servers (<agentDir>/mcp.json) + cached probe results. */
     mcp: () => resource("settings/mcp"),
     /** Create/replace one MCP server (form editor payload). */

@@ -89,6 +89,42 @@ export interface SubagentSettingsMutation {
   settings: SubagentSettings;
 }
 
+// ---------------------------------------------------------------------------
+// Picker model visibility (settings.json `enabledModels`)
+// ---------------------------------------------------------------------------
+
+/**
+ * One picker-visibility intent against an exact models.json-configured model.
+ * The adapter computes the resulting `enabledModels` entries server-side
+ * (exact `provider/id` appends/removals, glob expansion), never the client.
+ */
+export interface ModelVisibilityChange {
+  provider: string;
+  id: string;
+  visible: boolean;
+}
+
+/** Resolved picker-visibility snapshot for the configured model catalog. */
+export interface ModelVisibilitySnapshot {
+  /** SHA-256 of the exact settings.json bytes; empty-file digest when absent. */
+  revision: string;
+  /**
+   * Persisted `enabledModels` patterns as written; null when the key is
+   * absent or an empty array (no whitelist — every configured model shows).
+   */
+  patterns: readonly string[] | null;
+  /** Configured models currently visible in the picker (exact identities). */
+  visible: readonly { provider: string; id: string }[];
+  /** Raw `defaultProvider`/`defaultModel` pair from settings.json; null when unset. */
+  defaultModel: { provider: string; id: string } | null;
+}
+
+/** CAS write applying per-model visibility intents to `enabledModels`. */
+export interface ModelVisibilityMutation {
+  expectedRevision: string;
+  changes: readonly ModelVisibilityChange[];
+}
+
 /** Validate the strict editable DTO, preserving role identity and trimming models. */
 export function normalizeSubagentSettings(value: unknown): SubagentSettings | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
@@ -144,6 +180,10 @@ export interface SettingsConfigStorePort {
   readMemoryConfig(): Promise<MemorySettingsSnapshot>;
   /** Structured CAS write of the memory provider (lore requires a connection). */
   writeMemoryProvider(input: MemoryProviderMutation): Promise<MemorySettingsSnapshot>;
+  /** Structured read of the picker model-visibility scope (`enabledModels`). */
+  readModelVisibilityConfig(): Promise<ModelVisibilitySnapshot>;
+  /** Structured CAS write of per-model picker visibility intents. */
+  writeModelVisibilityConfig(input: ModelVisibilityMutation): Promise<ModelVisibilitySnapshot>;
 }
 
 // ---------------------------------------------------------------------------

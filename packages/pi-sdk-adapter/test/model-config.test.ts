@@ -395,3 +395,168 @@ describe("model discovery pagination and models.dev enrichment", () => {
     }
   });
 });
+
+describe("models config snapshot picker visibility + enabledModels hygiene", () => {
+  async function visibilityFixture() {
+    const { agentDir } = await fixture();
+    await (await import("node:fs/promises")).chmod(agentDir, 0o700);
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({
+      defaultProvider: "custom-old",
+      defaultModel: "m1",
+      enabledModels: ["custom-old/m1"],
+    }, null, 2));
+    return agentDir;
+  }
+
+  it("readConfig marks models visible per the settings.json enabledModels scope", async () => {
+    const agentDir = await visibilityFixture();
+    try {
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const before = await store.readConfig();
+      const models = before.providers[0]?.models ?? [];
+      assert.equal(models.length, 1);
+      assert.equal(models[0]?.id, "m1");
+      assert.equal(models[0]?.visibleInPicker, true);
+
+      // Narrow the scope: a different model becomes the only visible one.
+      // (The literal key stays: Pi's scope resolver matches AVAILABLE models,
+      // so a provider without any key material would match nothing.)
+      await writeFile(join(agentDir, "models.json"), JSON.stringify({
+        providers: {
+          "custom-old": {
+            baseUrl: "http://127.0.0.1:8080/v1",
+            api: "openai-completions",
+            apiKey: "sk-test-not-a-secret",
+            models: [{ id: "m1" }, { id: "m2" }],
+          },
+        },
+      }, null, 2), { mode: 0o600 });
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({
+        enabledModels: ["custom-old/m2"],
+      }, null, 2));
+      const after = await store.readConfig();
+      const flags = new Map((after.providers[0]?.models ?? []).map((model) => [model.id, model.visibleInPicker]));
+      assert.equal(flags.get("m1"), false);
+      assert.equal(flags.get("m2"), true);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("no settings.json => every model visible without materializing a whitelist", async () => {
+    const agentDir = await visibilityFixture();
+    try {
+      await rm(join(agentDir, "settings.json"));
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const snapshot = await store.readConfig();
+      assert.ok(snapshot.providers[0]?.models.every((model) => model.visibleInPicker === true));
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writeConfig appends newly added models to the whitelist and drops dead exact rows", async () => {
+    const agentDir = await visibilityFixture();
+    try {
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const before = await store.readConfig();
+      const provider = before.providers[0]!;
+      // Replace m1 with a brand-new model m9 (m1's exact row must be dropped,
+      // m9 must be appended so new models default visible).
+      const result = await store.writeConfig({
+        expectedRevision: before.revision,
+        providers: [{
+          sourceId: provider.sourceId,
+          id: provider.id,
+          ...(provider.baseUrl === undefined ? {} : { baseUrl: provider.baseUrl }),
+          ...(provider.api === undefined ? {} : { api: provider.api }),
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: [{ sourceIndex: null, id: "m9" }],
+        }],
+      });
+      assert.equal(result.providers[0]?.models[0]?.visibleInPicker, true);
+      const settings = JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
+      assert.deepEqual(settings.enabledModels, ["custom-old/m9"]);
+      // The untouched sibling fields round-trip.
+      assert.equal(settings.defaultProvider, "custom-old");
+      assert.equal(settings.defaultModel, "m1");
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writeConfig with no whitelist never creates one; glob patterns survive writes", async () => {
+    const agentDir = await visibilityFixture();
+    try {
+      await rm(join(agentDir, "settings.json"));
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const before = await store.readConfig();
+      const provider = before.providers[0]!;
+      await store.writeConfig({
+        expectedRevision: before.revision,
+        providers: [{
+          sourceId: provider.sourceId,
+          id: provider.id,
+          ...(provider.baseUrl === undefined ? {} : { baseUrl: provider.baseUrl }),
+          ...(provider.api === undefined ? {} : { api: provider.api }),
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: [...provider.models, { sourceIndex: null, id: "m2" }],
+        }],
+      });
+      await assert.rejects(() => readFile(join(agentDir, "settings.json"), "utf8"));
+
+      // With a glob whitelist the pattern entry survives a models write.
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({
+        enabledModels: ["custom-old/*"],
+      }, null, 2));
+      const second = await store.readConfig();
+      const secondProvider = second.providers[0]!;
+      await store.writeConfig({
+        expectedRevision: second.revision,
+        providers: [{
+          sourceId: secondProvider.sourceId,
+          id: secondProvider.id,
+          ...(secondProvider.baseUrl === undefined ? {} : { baseUrl: secondProvider.baseUrl }),
+          ...(secondProvider.api === undefined ? {} : { api: secondProvider.api }),
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: [...secondProvider.models, { sourceIndex: null, id: "m3" }],
+        }],
+      });
+      const settings = JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
+      assert.deepEqual(settings.enabledModels, ["custom-old/*"]);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a malformed settings.json fails the models write BEFORE models.json is touched", async () => {
+    const { agentDir } = await fixture();
+    try {
+      await (await import("node:fs/promises")).chmod(agentDir, 0o700);
+      await writeFile(join(agentDir, "settings.json"), "{ broken", "utf8");
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      // A broken settings.json also fails the READ (visibility projection):
+      // fail-closed, never a fake all-visible snapshot.
+      await assert.rejects(
+        () => store.readConfig(),
+        (error: unknown) => (error as { code?: string }).code === "invalid_input",
+      );
+      const modelsBefore = await readFile(join(agentDir, "models.json"), "utf8");
+      const { createHash } = await import("node:crypto");
+      const revision = createHash("sha256").update(modelsBefore).digest("hex");
+      await assert.rejects(
+        store.writeConfig({
+          expectedRevision: revision,
+          providers: [],
+        }),
+        (error: unknown) => (error as { code?: string }).code === "invalid_input",
+      );
+      assert.equal(await readFile(join(agentDir, "models.json"), "utf8"), modelsBefore);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+});

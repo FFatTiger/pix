@@ -53,6 +53,8 @@ export const queryKeys = {
     lists: ["pix", "models", "list"] as const,
     list: () => ["pix", "models", "list"] as const,
     config: () => ["pix", "models", "config"] as const,
+    /** Picker visibility (settings.json `enabledModels` + resolved set). */
+    visibility: () => ["pix", "models", "visibility"] as const,
   },
   settingsConfig: {
     /** Editable global settings.json raw text. */
@@ -185,6 +187,15 @@ export function createQueryOptions(http: HttpClient) {
         queryOptions({
           queryKey: queryKeys.models.config(),
           queryFn: ({ signal }) => models.config(signal),
+          staleTime: 0,
+          retry: false,
+        }),
+      // Picker visibility snapshot (settings.json `enabledModels` + default
+      // model): staleTime 0 so a save always re-fetches a fresh CAS revision.
+      visibility: () =>
+        queryOptions({
+          queryKey: queryKeys.models.visibility(),
+          queryFn: ({ signal }) => models.visibility(signal),
           staleTime: 0,
           retry: false,
         }),

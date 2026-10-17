@@ -24,6 +24,7 @@ import {
 } from "@fffattiger/pix-runtime-core";
 import { stripJsonComments } from "./models-json.js";
 import { detectLoreConnection } from "./lore-config-store.js";
+import { readModelVisibilitySnapshot, writeModelVisibility } from "./model-visibility.js";
 
 const SETTINGS_MAX_BYTES = 256 * 1024;
 const secureState = createPosixSecureStateBackend();
@@ -570,6 +571,12 @@ export function createPiSdkSettingsConfigStore(options: PiSdkSettingsConfigOptio
       const source = await readSource(await canonicalAgentDir());
       return { revision: source.revision, ...projectMemorySettings(source, loreEnv) };
     },
+    // Picker model visibility (settings.json `enabledModels`): the write
+    // computes entries server-side against models.json via the shared
+    // model-visibility module (same settings lock file, own mutation queue),
+    // so pattern/glob semantics can never fork between read and write.
+    readModelVisibilityConfig: async () => readModelVisibilitySnapshot(await canonicalAgentDir()),
+    writeModelVisibilityConfig: (input) => canonicalAgentDir().then((dir) => writeModelVisibility(dir, input)),
     writeMemoryProvider: (input: MemoryProviderMutation) => withMutationQueue(configuredAgentDir, async () => {
       if (!input || !/^[0-9a-f]{64}$/.test(input.expectedRevision ?? "")) {
         throw runtimeError("invalid_input", "memory configuration input is invalid");

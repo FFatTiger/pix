@@ -136,6 +136,8 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     writeSubagentConfig: (input) => settingsConfig.writeSubagentConfig(input as never),
     readMemoryConfig: () => settingsConfig.readMemoryConfig(),
     writeMemoryProvider: (input) => settingsConfig.writeMemoryProvider(input as never),
+    readModelVisibilityConfig: () => settingsConfig.readModelVisibilityConfig(),
+    writeModelVisibilityConfig: (input) => settingsConfig.writeModelVisibilityConfig(input as never),
   };
 
   // Lore connection seam (~/.lore/config.json + health probe). Independent

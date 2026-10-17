@@ -69,6 +69,12 @@ function fakeSettingsMutation(impl = {}) {
     writeSubagentConfig: async (input) => impl.writeSubagentConfig ? impl.writeSubagentConfig(input) : { revision: "6".repeat(64), settings: input.settings },
     readToolsConfig: async () => impl.readToolsConfig ? impl.readToolsConfig() : toolsSnapshot,
     writeToolsConfig: async (input) => impl.writeToolsConfig ? impl.writeToolsConfig(input) : { revision: "6".repeat(64), selection: { mode: "custom", toolNames: input.toolNames ?? [] } },
+    readModelVisibilityConfig: async () => impl.readModelVisibilityConfig
+      ? impl.readModelVisibilityConfig()
+      : { revision: "5".repeat(64), patterns: null, visible: [{ provider: "p", id: "m1" }], defaultModel: null },
+    writeModelVisibilityConfig: async (input) => impl.writeModelVisibilityConfig
+      ? impl.writeModelVisibilityConfig(input)
+      : { revision: "6".repeat(64), patterns: ["p/m1"], visible: [{ provider: "p", id: "m1" }], defaultModel: null },
     readCompactionConfig: async () => impl.readCompactionConfig ? impl.readCompactionConfig() : { revision: "5".repeat(64), settings: COMPACTION_SETTINGS },
     writeCompactionConfig: async (input) => impl.writeCompactionConfig ? impl.writeCompactionConfig(input) : { revision: "6".repeat(64), settings: input.settings },
     readMemoryConfig: async () => impl.readMemoryConfig ? impl.readMemoryConfig() : { revision: "5".repeat(64), provider: "local", providerExplicit: false, lore: MEMORY_LORE_NONE },
@@ -345,7 +351,7 @@ test("GET/PUT /v1/models/config are global, strict, credential-blind, and capabi
       api: "openai-completions",
       apiKeyConfigured: true,
       modelsDefined: true,
-      models: [{ sourceIndex: 0, id: "m1", reasoning: true }],
+      models: [{ sourceIndex: 0, id: "m1", reasoning: true, visibleInPicker: true }],
       apiKey: "sk-MUST-NOT-LEAK",
     }],
     availableProviders: [{ id: "anthropic", name: "Anthropic", methods: ["oauth", "apiKey"], modelCount: 4 }],
@@ -1779,4 +1785,101 @@ test("lore-test is rate limited: the 13th probe in a window is a 429", async () 
     },
   });
   assert.equal((await postLoreTest(fresh, { baseUrl: "https://api.loremem.com", apiToken: "lm_t" })).status, 200);
+});
+
+// ---------------------------------------------------------------------------
+// Picker model visibility (settings.json `enabledModels`)
+// ---------------------------------------------------------------------------
+
+const putVisibility = (app, body) => app.request("http://localhost/v1/settings/model-visibility", {
+  method: "PUT", headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(body),
+});
+
+test("model visibility routes use strict projection, the settings seam, and no-store", async () => {
+  const roots = await rootsFor(temp("pix-cat-model-vis-"));
+  const snapshot = {
+    revision: "5".repeat(64),
+    patterns: ["acme/*", "other/m2:high"],
+    visible: [{ provider: "acme", id: "m1" }, { provider: "other", id: "m2" }],
+    defaultModel: { provider: "acme", id: "m1" },
+  };
+  let written;
+  const app = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({
+      readModelVisibilityConfig: async () => snapshot,
+      writeModelVisibilityConfig: async (input) => { written = input; return { ...snapshot, revision: "6".repeat(64) }; },
+    }),
+  });
+  const get = await call(app, "/v1/settings/model-visibility");
+  assert.equal(get.status, 200);
+  assert.equal(get.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await get.json(), snapshot);
+
+  const put = await putVisibility(app, {
+    expectedRevision: "5".repeat(64),
+    changes: [{ provider: "acme", id: "m1", visible: false }],
+  });
+  assert.equal(put.status, 200);
+  assert.deepEqual(written, {
+    expectedRevision: "5".repeat(64),
+    changes: [{ provider: "acme", id: "m1", visible: false }],
+  });
+  assert.deepEqual((await put.json()).revision, "6".repeat(64));
+
+  // Unmounted seam ⇒ 404.
+  const bare = appWithCatalogs({ roots });
+  assert.equal((await call(bare, "/v1/settings/model-visibility")).status, 404);
+  assert.equal((await putVisibility(bare, { expectedRevision: "5".repeat(64), changes: [] })).status, 404);
+});
+
+test("model visibility rejects queries and malformed bodies before seam calls; seam codes map honestly", async () => {
+  const roots = await rootsFor(temp("pix-cat-model-vis-invalid-"));
+  let calls = 0;
+  const forbidden = async () => { calls++; throw new Error("must not call"); };
+  const app = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({ readModelVisibilityConfig: forbidden, writeModelVisibilityConfig: forbidden }) });
+
+  assert.equal((await call(app, "/v1/settings/model-visibility?cwd=/")).status, 400);
+  const badBodies = [
+    { expectedRevision: "5".repeat(64) },
+    { expectedRevision: "5".repeat(64), changes: {} },
+    { expectedRevision: "5".repeat(64), changes: [{ provider: "p", id: "m1" }] },
+    { expectedRevision: "5".repeat(64), changes: [{ provider: "p", id: "m1", visible: 1 }] },
+    { expectedRevision: "5".repeat(64), changes: [{ provider: " p", id: "m1", visible: true, extra: 1 }] },
+    { expectedRevision: "nothex", changes: [] },
+    { expectedRevision: "5".repeat(64), changes: [], extra: 1 },
+  ];
+  for (const bad of badBodies) {
+    const res = await putVisibility(app, bad);
+    assert.equal(res.status, 400, JSON.stringify(bad));
+    assert.equal((await res.json()).code, "INVALID_MODEL_VISIBILITY");
+  }
+  assert.equal(calls, 0);
+
+  // Seam error mapping: conflict → 409, invalid input → 400, other → 503 fixed.
+  const conflictApp = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({
+      writeModelVisibilityConfig: async () => { const e = new Error("stale"); e.code = "conflict"; throw e; },
+    }),
+  });
+  const conflict = await putVisibility(conflictApp, { expectedRevision: "5".repeat(64), changes: [] });
+  assert.equal(conflict.status, 409);
+  const invalidApp = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({
+      writeModelVisibilityConfig: async () => { const e = new Error("last"); e.code = "invalid_input"; throw e; },
+    }),
+  });
+  const invalid = await putVisibility(invalidApp, { expectedRevision: "5".repeat(64), changes: [] });
+  assert.equal(invalid.status, 400);
+  const rawApp = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({
+      readModelVisibilityConfig: async () => { throw new Error("raw path leak /root/secret"); },
+    }),
+  });
+  const raw = await call(rawApp, "/v1/settings/model-visibility");
+  assert.equal(raw.status, 503);
+  assert.equal((await raw.json()).message, CATALOG_UNAVAILABLE_MESSAGE);
 });

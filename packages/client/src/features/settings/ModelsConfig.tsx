@@ -15,8 +15,9 @@ import type {
 } from "@fffattiger/pix-protocol";
 import { HttpError } from "@/api/http-client";
 import { createMutationOptions } from "@/api/mutations";
-import { createQueryOptions } from "@/api/query-keys";
+import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
+import { Switch } from "@/components/ui/switch";
 import { ProviderIcon } from "@/components/chat/ProviderIcon";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
@@ -47,9 +48,24 @@ type Selection =
   | { type: "provider"; providerKey: string }
   | { type: "model"; providerKey: string; modelKey: string };
 
-interface DraftModel extends Omit<EditableModelConfig, "id"> {
+/**
+ * One picker-visibility intent computed at save time: the CURRENT draft
+ * identity (provider/id) plus the desired state. Derived from the final
+ * draft, so provider renames are naturally handled.
+ */
+interface VisibilityIntent {
+  provider: string;
+  id: string;
+  visible: boolean;
+}
+
+interface DraftModel extends Omit<EditableModelConfig, "id" | "visibleInPicker"> {
   key: string;
   id: string;
+  /** Server truth for THIS row's identity when the page loaded (new rows: visible). */
+  visibleInPicker: boolean;
+  /** Current desired picker visibility (the switch state). */
+  pickerVisible: boolean;
 }
 
 interface DraftProvider extends Omit<EditableProviderConfig, "id" | "models"> {
@@ -67,6 +83,8 @@ function draftFromSnapshot(snapshot: ModelsConfigResponse): DraftProvider[] {
     models: provider.models.map((model, modelIndex) => ({
       ...model,
       key: `${provider.sourceId ?? "new"}:${model.sourceIndex ?? `new-${modelIndex}`}`,
+      visibleInPicker: model.visibleInPicker ?? true,
+      pickerVisible: model.visibleInPicker ?? true,
     })),
     apiKeyValue: "",
     apiKeyMutation: provider.apiKeyConfigured ? "preserve" : "remove",
@@ -85,12 +103,29 @@ function mutationFromDraft(revision: string, providers: DraftProvider[]): Models
         ? { mode: "replace", value: provider.apiKeyValue }
         : { mode: provider.apiKeyMutation },
       modelsDefined: provider.modelsDefined,
-      models: provider.models.map(({ key: _key, ...model }) => ({
+      models: provider.models.map(({ key: _key, visibleInPicker: _visible, pickerVisible: _desired, ...model }) => ({
         ...model,
         id: model.id,
       })),
     })),
   };
+}
+
+/**
+ * Picker-visibility intents for save: one per row whose desired state differs
+ * from the server truth recorded for its identity. A provider rename re-bases
+ * every row's `visibleInPicker` to "visible" (the new identity starts visible
+ * via the server-side whitelist hygiene), so this diff is rename-safe.
+ */
+function visibilityIntentsFrom(providers: readonly DraftProvider[]): VisibilityIntent[] {
+  const intents: VisibilityIntent[] = [];
+  for (const provider of providers) {
+    for (const model of provider.models) {
+      if (model.pickerVisible === model.visibleInPicker) continue;
+      intents.push({ provider: provider.id, id: model.id, visible: model.pickerVisible });
+    }
+  }
+  return intents;
 }
 
 function describeModelsConfigError(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
@@ -456,12 +491,19 @@ function DiscoveryResults({
 
 /**
  * Provider detail page: identity/endpoint fields plus the model sub-list.
+ * Each row carries a "show in picker" switch (settings.json `enabledModels`;
+ * requires the settings.configure capability); hidden rows render faded and
+ * the row that is the last visible model cannot be turned off.
  * "拉取模型列表" fetches the provider's own /models endpoint through the typed
  * discovery mutation and expands the inline selection area below the list.
  */
 function ProviderDetail({
   provider,
   revision,
+  defaultModel,
+  canToggleVisibility,
+  lastVisibleKeys,
+  onToggleModelVisible,
   onChange,
   onDelete,
   onAddModel,
@@ -470,6 +512,12 @@ function ProviderDetail({
 }: {
   provider: DraftProvider;
   revision: string;
+  /** Raw settings.json default model; drives the hidden-default hint. */
+  defaultModel: { provider: string; id: string } | null;
+  canToggleVisibility: boolean;
+  /** Draft rows that are the single remaining visible model (lock their switch). */
+  lastVisibleKeys: ReadonlySet<string>;
+  onToggleModelVisible: (providerKey: string, modelKey: string, visible: boolean) => void;
   onChange: (patch: Partial<DraftProvider>) => void;
   onDelete: () => void;
   onAddModel: () => void;
@@ -582,10 +630,14 @@ function ProviderDetail({
         ) : (
           <ul className="models-model-list">
             {provider.models.map((model) => (
-              <li key={model.key}>
+              <li
+                key={model.key}
+                style={{ display: "flex", alignItems: "center", gap: 6, ...(model.pickerVisible ? {} : { opacity: 0.55 }) }}
+              >
                 <button
                   type="button"
                   className="models-model-row"
+                  style={{ flex: 1, minWidth: 0 }}
                   onClick={() => onOpenModel(model.key)}
                 >
                   <code className="models-model-row-id">{model.id || t("desktop.modelsNewModel")}</code>
@@ -596,10 +648,22 @@ function ProviderDetail({
                     {model.input?.includes("image") ? <SettingsBadge>{t("desktop.modelsImageBadge")}</SettingsBadge> : null}
                   </span>
                 </button>
+                {canToggleVisibility ? (
+                  <Switch
+                    checked={model.pickerVisible}
+                    onChange={(visible) => onToggleModelVisible(provider.key, model.key, visible)}
+                    disabled={model.pickerVisible && lastVisibleKeys.has(model.key)}
+                    label={t("desktop.modelsShowInPicker", { model: model.name || model.id || t("desktop.modelsNewModel") })}
+                  />
+                ) : null}
               </li>
             ))}
           </ul>
         )}
+        {canToggleVisibility && defaultModel && provider.id === defaultModel.provider
+          && provider.models.some((model) => model.id === defaultModel.id && !model.pickerVisible) ? (
+          <p className="workspace-hint" role="status">{t("desktop.modelsDefaultHidden")}</p>
+        ) : null}
         {discovery.isError ? (
           <p className="workspace-hint workspace-hint--error" role="alert">{describeModelsConfigError(discovery.error, t)}</p>
         ) : null}
@@ -629,19 +693,71 @@ function ProviderDetail({
 function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
   const http = useHttpClient();
   const queryClient = useQueryClient();
+  const { can } = useCapabilities();
   const { t } = useI18n();
   const [revision, setRevision] = useState(snapshot.revision);
   const [providers, setProviders] = useState<DraftProvider[]>(() => draftFromSnapshot(snapshot));
   const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(() => {
     const first = draftFromSnapshot(snapshot)[0];
     return first ? { type: "provider", providerKey: first.key } : null;
   });
   const [pickerOpen, setPickerOpen] = useState(false);
   const save = useMutation(createMutationOptions(http, queryClient).models.saveConfig());
+  const saveVisibility = useMutation(createMutationOptions(http, queryClient).models.saveVisibility());
+  // Picker visibility lives in settings.json (`enabledModels`): its default
+  // model drives the hidden-default hint, and its revision is fetched fresh
+  // at save time. Requires the settings.configure capability — without it the
+  // switches simply don't render (capability-driven degradation).
+  const canToggleVisibility = can("settings.configure");
+  const visibilityQuery = useQuery({
+    ...createQueryOptions(http).models.visibility(),
+    enabled: canToggleVisibility,
+  });
+
+  // Desired picker visibility diverging from the server truth recorded for
+  // each row's identity is its own dirty signal — it rides the same save bar
+  // as the models.json draft but is committed to a second document.
+  const visibilityDirty = useMemo(
+    () => providers.some((provider) => provider.models.some((model) => model.pickerVisible !== model.visibleInPicker)),
+    [providers],
+  );
+  const anyDirty = dirty || visibilityDirty;
+  const lastVisibleKeys = useMemo(() => {
+    const visible = providers.flatMap((provider) => provider.models.filter((model) => model.pickerVisible));
+    return visible.length === 1 ? new Set([visible[0]!.key]) : new Set<string>();
+  }, [providers]);
+
+  // Picker toggles the user asked for but that are not committed yet. They
+  // survive every snapshot re-base (a models save rewrites settings.json and
+  // refreshes the draft; only a successful visibility commit or an explicit
+  // discard clears them), so a failed visibility half never silently drops
+  // the user's pending switches.
+  const [pendingToggles, setPendingToggles] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const pendingTogglesRef = useRef(pendingToggles);
+  const setPending = (next: ReadonlyMap<string, boolean>) => {
+    pendingTogglesRef.current = next;
+    setPendingToggles(next);
+  };
+
+  /** Apply uncommitted toggle desires onto a fresh draft (by model identity). */
+  const withDesiredToggles = useCallback((drafts: DraftProvider[]): DraftProvider[] => {
+    const pending = pendingTogglesRef.current;
+    if (pending.size === 0) return drafts;
+    return drafts.map((provider) => ({
+      ...provider,
+      models: provider.models.map((model) => {
+        const desired = pending.get(`${provider.id}\0${model.id}`);
+        return desired === undefined ? model : { ...model, pickerVisible: desired };
+      }),
+    }));
+  }, []);
 
   const reset = useCallback((next: ModelsConfigResponse) => {
-    const drafts = draftFromSnapshot(next);
+    const drafts = withDesiredToggles(draftFromSnapshot(next));
     setRevision(next.revision);
     setProviders(drafts);
     setDirty(false);
@@ -652,13 +768,16 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
       const survivor = drafts.find((draft) => draft.key === current.providerKey);
       return survivor ? { type: "provider", providerKey: survivor.key } : drafts[0] ? { type: "provider", providerKey: drafts[0].key } : null;
     });
-  }, []);
+  }, [withDesiredToggles]);
 
   useEffect(() => reset(snapshot), [reset, snapshot]);
 
   useSettingsDraft("providers", {
-    isDirty: () => dirty,
-    discard: () => reset(snapshot),
+    isDirty: () => dirty || visibilityDirty,
+    discard: () => {
+      setPending(new Map());
+      reset(snapshot);
+    },
   });
 
   const selectedProvider = selection
@@ -670,7 +789,18 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
 
   const updateProvider = (key: string, patch: Partial<DraftProvider>) => {
     setDirty(true);
-    setProviders((current) => current.map((provider) => provider.key === key ? { ...provider, ...patch } : provider));
+    setProviders((current) => current.map((provider) => {
+      if (provider.key !== key) return provider;
+      const renamed = patch.id !== undefined && patch.id !== provider.id;
+      return {
+        ...provider,
+        ...patch,
+        // A renamed provider is a NEW identity: its models start visible in
+        // the picker (the server-side whitelist hygiene appends them), so the
+        // per-row server truth re-bases while the user's desired toggles stay.
+        ...(renamed ? { models: provider.models.map((model) => ({ ...model, visibleInPicker: true })) } : {}),
+      };
+    }));
   };
   const removeProvider = (key: string) => {
     setDirty(true);
@@ -718,7 +848,7 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
     setSelection({ type: "provider", providerKey: provider.key });
   };
   const addModel = (providerKey: string) => {
-    const model: DraftModel = { key: `new:${crypto.randomUUID()}`, sourceIndex: null, id: "" };
+    const model: DraftModel = { key: `new:${crypto.randomUUID()}`, sourceIndex: null, id: "", visibleInPicker: true, pickerVisible: true };
     setDirty(true);
     setProviders((current) => current.map((provider) => provider.key === providerKey
       ? { ...provider, modelsDefined: true, models: [...provider.models, model] }
@@ -736,6 +866,8 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
           key: `new:${crypto.randomUUID()}`,
           sourceIndex: null,
           id: model.id,
+          visibleInPicker: true,
+          pickerVisible: true,
           ...(model.name === undefined ? {} : { name: model.name }),
           ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
           ...(model.input === undefined ? {} : { input: [...model.input] }),
@@ -758,6 +890,13 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
       ? { ...provider, models: provider.models.filter((model) => model.key !== modelKey) }
       : provider));
     setSelection({ type: "provider", providerKey });
+  };
+  const toggleModelVisibility = (providerKey: string, modelKey: string, visible: boolean) => {
+    // Visibility has its own dirty derivation (pickerVisible vs visibleInPicker),
+    // so it must NOT flip the models.json draft dirty flag.
+    setProviders((current) => current.map((provider) => provider.key === providerKey
+      ? { ...provider, models: provider.models.map((model) => model.key === modelKey ? { ...model, pickerVisible: visible } : model) }
+      : provider));
   };
 
   const validationError = useMemo(() => {
@@ -782,7 +921,55 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
 
   const configuredIds = useMemo(() => new Set(providers.map((provider) => provider.id)), [providers]);
 
-  const errorText = validationError ?? (save.isError ? describeModelsConfigError(save.error, t) : null);
+  // Two documents, two revision fences, one save bar:
+  //  1. models.json draft (if dirty) → PUT /v1/models/config. The server also
+  //     keeps the settings.json enabledModels whitelist consistent with the
+  //     new catalog during this write (add new exact rows, drop dead ones).
+  //  2. picker-visibility intents (if any) → fresh GET /v1/settings/
+  //     model-visibility for the settings.json CAS revision (step 1 may have
+  //     rewritten it), then PUT the intents. The server computes the actual
+  //     whitelist entries; a conflict or validation failure surfaces as an
+  //     honest error and the pending toggles are re-applied onto the refreshed
+  //     draft so a second Save click retries just this step.
+  const doSave = async () => {
+    if (validationError || saving) return;
+    // Snapshot the user's toggle desires now; they stay pending until the
+    // visibility commit succeeds (or the draft is discarded).
+    const pending = visibilityIntentsFrom(providers);
+    setPending(new Map(pending.map((intent) => [`${intent.provider}\0${intent.id}`, intent.visible])));
+    setSaving(true);
+    setSaveError(null);
+    try {
+      let baseDrafts = providers;
+      if (dirty) {
+        const next = await save.mutateAsync(mutationFromDraft(revision, providers));
+        reset(next);
+        // Intents are derived from the post-save identities WITH the pending
+        // desires re-applied, so a provider rename naturally carries them.
+        baseDrafts = withDesiredToggles(draftFromSnapshot(next));
+      }
+      const intents = visibilityIntentsFrom(baseDrafts);
+      if (intents.length > 0) {
+        // Fresh settings.json CAS revision: a models save (hygiene) may have
+        // rewritten settings.json after the page loaded.
+        const visibility = await queryClient.fetchQuery(createQueryOptions(http).models.visibility());
+        await saveVisibility.mutateAsync({ expectedRevision: visibility.revision, changes: intents });
+      }
+      setPending(new Map());
+      setSavedFlash(true);
+    } catch (error) {
+      setSaveError(describeModelsConfigError(error, t));
+      // The models half may have committed while the visibility half failed:
+      // the pending toggles stay registered, so every re-base (including the
+      // one triggered by this refetch) re-applies them onto the fresh draft
+      // and the save bar stays dirty for an honest retry.
+      await queryClient.invalidateQueries({ queryKey: queryKeys.models.visibility() });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const errorText = validationError ?? saveError;
 
   return (
     <div className="models-config-shell">
@@ -824,6 +1011,10 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
             <ProviderDetail
               provider={selectedProvider}
               revision={revision}
+              defaultModel={visibilityQuery.data?.defaultModel ?? null}
+              canToggleVisibility={canToggleVisibility}
+              lastVisibleKeys={lastVisibleKeys}
+              onToggleModelVisible={toggleModelVisibility}
               onChange={(patch) => updateProvider(selectedProvider.key, patch)}
               onDelete={() => removeProvider(selectedProvider.key)}
               onAddModel={() => addModel(selectedProvider.key)}
@@ -836,14 +1027,14 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
         </main>
       </div>
       <SettingsSaveBar
-        dirty={dirty}
-        busy={save.isPending}
-        saving={save.isPending}
+        dirty={anyDirty}
+        busy={saving || save.isPending || saveVisibility.isPending}
+        saving={saving || save.isPending || saveVisibility.isPending}
         error={errorText}
-        saved={save.isSuccess && !dirty && !errorText}
-        saveDisabled={!dirty || save.isPending || Boolean(validationError)}
-        onSave={() => save.mutate(mutationFromDraft(revision, providers), { onSuccess: reset })}
-        onDiscard={() => reset(snapshot)}
+        saved={savedFlash && !anyDirty && !errorText}
+        saveDisabled={!anyDirty || saving || Boolean(validationError)}
+        onSave={() => { void doSave(); }}
+        onDiscard={() => { setPending(new Map()); reset(snapshot); }}
       />
       {pickerOpen ? <ProviderPicker providers={snapshot.availableProviders} configuredIds={configuredIds} onAddCustom={addCustom} onAddBuiltin={addBuiltin} onClose={() => setPickerOpen(false)} /> : null}
     </div>
