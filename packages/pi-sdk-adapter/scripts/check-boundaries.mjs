@@ -19,6 +19,7 @@ const publicSourceDirs = new Set([
   "themes",
   "settings",
   "builtins",
+  "mcp",
 ]);
 const sdkImport = /@earendil-works\/pi-/;
 const sdkNames = /\b(?:AgentSession|SessionManager|ModelRuntime|DefaultResourceLoader|ProjectTrustStore|AuthStorage)\b/;

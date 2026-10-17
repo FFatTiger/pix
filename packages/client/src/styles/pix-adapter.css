@@ -2075,6 +2075,15 @@ html.dark .catalog-meta-item--error {
 .models-provider-add-icon { width: 27px; height: 27px; flex: none; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--control-radius); color: var(--text-dim); }
 /* Global settings.json raw-text editor. */
 .settings-json-editor { width: 100%; min-height: 340px; resize: vertical; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-panel); color: var(--text); font: 12px/1.6 var(--font-mono); tab-size: 2; outline: none; }
+
+/* MCP settings page (reuses the models-config two-column shell). */
+.mcp-pair-rows { display: flex; flex-direction: column; gap: 6px; }
+.mcp-pair-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.mcp-detail-header { display: inline-flex; align-items: center; gap: 10px; }
+.mcp-detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.mcp-shell-command { margin: 10px 0 0; padding: 8px 10px; overflow-x: auto; }
+.mcp-page-hints { flex: none; margin: 0; padding: 8px var(--settings-pad-x) 10px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 11px; }
+.settings-json-editor.mcp-args-editor { min-height: 84px; }
 .settings-json-editor:focus { border-color: var(--border-hover); }
 
 /* ── Settings redesign shared primitives ───────────────────────────── */

@@ -21,6 +21,7 @@ import { isAbsolute } from "node:path";
 import { createPiSdkModelCatalog, createPiSdkModelsConfig } from "@fffattiger/pix-pi-sdk-adapter/models";
 import { createPiSdkSettingsConfig } from "@fffattiger/pix-pi-sdk-adapter/settings";
 import { createPiSdkLoreConnectionConfig } from "@fffattiger/pix-pi-sdk-adapter/memory";
+import { createPiSdkMcpSettingsConfig } from "@fffattiger/pix-pi-sdk-adapter/mcp";
 import { createPiSdkBuiltInCapabilityConfig } from "@fffattiger/pix-pi-sdk-adapter/builtins";
 import { createPiSdkCredentialCatalog } from "@fffattiger/pix-pi-sdk-adapter/credentials";
 import { createPiSdkGlobalResourceCatalog, createPiSdkResourceCatalog } from "@fffattiger/pix-pi-sdk-adapter/resources";
@@ -46,6 +47,7 @@ export const CATALOG_CAPABILITY_TOKENS: readonly HostCapability[] = [
   "models",
   "models.configure",
   "settings.configure",
+  "mcp.configure",
   "builtins.configure",
   "auth.providers",
   "skills",
@@ -143,6 +145,20 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     testLoreConnection: (input: unknown) => loreConnection.testLoreConnection(input as never),
   };
 
+  // MCP settings seam (<agentDir>/mcp.json — Pi's own global MCP document +
+  // connection probes). Independent from settings.json; mounting it is what
+  // mounts the /v1/settings/mcp… routes and advertises `mcp.configure`.
+  const mcpSettingsPort = createPiSdkMcpSettingsConfig({ agentDir });
+  const mcpSettings = {
+    readSettings: () => mcpSettingsPort.readSettings(),
+    upsertServer: (input: unknown) => mcpSettingsPort.upsertServer(input as never),
+    setEnabled: (name: string, input: unknown) => mcpSettingsPort.setEnabled(name, input as never),
+    removeServer: (name: string) => mcpSettingsPort.removeServer(name),
+    importPreview: (input: unknown) => mcpSettingsPort.importPreview(input as never),
+    importServers: (input: unknown) => mcpSettingsPort.importServers(input as never),
+    testServer: (name: string, input: unknown) => mcpSettingsPort.testServer(name, input as never),
+  };
+
   const builtinsConfig = createPiSdkBuiltInCapabilityConfig({ agentDir });
   const builtinsMutation: CatalogBuiltInsMutationSeam = {
     readConfig: () => builtinsConfig.readConfig(),
@@ -207,5 +223,5 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     },
   };
 
-  return { roots, models, modelsMutation, settingsMutation, memoryLore, builtinsMutation, credentials, resources, trust, trustMutation, themes };
+  return { roots, models, modelsMutation, settingsMutation, memoryLore, mcpSettings, builtinsMutation, credentials, resources, trust, trustMutation, themes };
 }

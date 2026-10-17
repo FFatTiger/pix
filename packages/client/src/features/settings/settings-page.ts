@@ -11,6 +11,7 @@ export type SettingsPageId =
   | "providers"
   | "capabilities"
   | "memory"
+  | "mcp"
   | "subagents"
   | "tools"
   | "compaction"

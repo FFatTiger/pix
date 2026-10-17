@@ -15,7 +15,7 @@ import type { MentionValidators } from "@/lib/mention-tokens";
 import { CompactionSummary } from "./CompactionSummary";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { TurnFileRow, WrittenFile } from "@/lib/turn-written-files";
-import { isEditToolName } from "@/lib/tool-names";
+import { displayMcpToolName, isEditToolName, parseMcpToolName } from "@/lib/tool-names";
 import { AssistantNoticeCard } from "./AssistantNoticeCard";
 import { assistantUserMessageKind, stripAssistantMarker } from "@/lib/assistant-message";
 import { splitAttachedMarkerLines } from "@fffattiger/pix-protocol";
@@ -1110,6 +1110,10 @@ export const ToolCallBlock = memo(function ToolCallBlock({ block, result, durati
   const [expanded, setExpanded] = useState(false);
   const inputStr = useMemo(() => JSON.stringify(block.input, null, 2), [block.input]);
   const isEditTool = isEditToolName(block.toolName);
+  // MCP tools show their display name (underscores/hyphens → spaces) and the
+  // server badge instead of the raw `mcp__<server>__<tool>` id.
+  const mcp = useMemo(() => parseMcpToolName(block.toolName), [block.toolName]);
+  const shownToolName = mcp !== null ? displayMcpToolName(mcp.tool) : block.toolName;
   const resultDiff = result && !result.isError ? getResultDiff(result) : null;
 
   // Result display
@@ -1133,7 +1137,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({ block, result, durati
         aria-expanded={expanded}
       >
         <span className="tool-call-name">
-          {block.toolName}
+          {shownToolName}
         </span>
         <span className="tool-call-preview">
           {getToolPreview(block)}
@@ -1143,6 +1147,9 @@ export const ToolCallBlock = memo(function ToolCallBlock({ block, result, durati
         )}
         {displayBlock?.status === "unfinished" && <span className="tool-call-preview">{t("desktop.nestedToolCallUnfinished")}</span>}
         {displayBlock?.sharedBatch?.result.isError && <span className="tool-call-preview">{t("desktop.codemodeBatchFailed")}</span>}
+        {mcp !== null ? (
+          <span className="codemode-tool-badge" data-mcp-server={mcp.server}>{mcp.server}</span>
+        ) : null}
         {displayBlock?.nested && <span className="codemode-tool-badge">{t("desktop.codemodeLabel")}</span>}
         <span className={`tool-call-caret ${expanded ? "is-expanded" : ""}`} aria-hidden="true">
           <CaretRightIcon size={12} />

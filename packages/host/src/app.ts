@@ -28,6 +28,7 @@ import { registerWorktreeRoutes } from "./routes/worktrees.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerSessionSettingsRoutes } from "./routes/settings.js";
 import { registerCatalogRoutes } from "./routes/catalogs.js";
+import { registerMcpSettingsRoutes } from "./routes/mcp-settings.js";
 import { registerPreferencesRoutes } from "./routes/preferences.js";
 import { registerDiagnosticsRoutes } from "./routes/diagnostics.js";
 import { registerAboutRoutes } from "./routes/about.js";
@@ -148,6 +149,8 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
   }
   if (deps.catalogs) {
     registerCatalogRoutes(app, deps.catalogs);
+    // MCP settings surface (mcp.json authority + probes); no-op without the seam.
+    registerMcpSettingsRoutes(app, deps.catalogs);
     // D3B-R6: read-only theme catalog routes; no-op without the themes seam.
     registerThemeRoutes(app, deps.catalogs);
   }

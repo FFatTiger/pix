@@ -26,6 +26,11 @@ import { z } from "zod";
  * ONLY while the Host mounts GET/PUT `/v1/settings/built-ins`. Independent of
  * the read-only `plugins` inventory and of generic Pi `settings.json`.
  * `plugins.manage` stays rejected.
+ *
+ * MCP settings token: `mcp.configure` — advertised ONLY while the Host mounts
+ * the `/v1/settings/mcp…` routes over the adapter mcp.json seam (the document
+ * is host-local and sessiond-independent, so the token survives in the
+ * degraded projection too). Discovery, never authorization.
  */
 export const HostCapabilitySchema = z.enum([
   "agent",
@@ -44,6 +49,7 @@ export const HostCapabilitySchema = z.enum([
   "models",
   "models.configure",
   "settings.configure",
+  "mcp.configure",
   "builtins.configure",
   "auth.providers",
   "skills",

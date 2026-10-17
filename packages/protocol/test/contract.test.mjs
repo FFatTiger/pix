@@ -122,6 +122,7 @@ describe("capabilities", () => {
       "models",
       "models.configure",
       "settings.configure",
+      "mcp.configure",
       "builtins.configure",
       "auth.providers",
       "skills",

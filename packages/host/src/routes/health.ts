@@ -36,6 +36,7 @@ export function catalogCapabilitiesFromDeps(
   if (catalogs.models) tokens.push("models");
   if (catalogs.modelsMutation) tokens.push("models.configure");
   if (catalogs.settingsMutation) tokens.push("settings.configure");
+  if (catalogs.mcpSettings) tokens.push("mcp.configure");
   if (catalogs.builtinsMutation) tokens.push("builtins.configure");
   if (catalogs.credentials) tokens.push("auth.providers");
   if (catalogs.resources) {

@@ -3,6 +3,8 @@ import {
   CompactionSettingsResponseSchema,
   LoreConnectionResponseSchema,
   LoreTestResponseSchema,
+  McpImportPreviewResponseSchema,
+  McpSettingsResponseSchema,
   MemorySettingsResponseSchema,
   SubagentSettingsResponseSchema,
   ToolSettingsResponseSchema,
@@ -11,6 +13,10 @@ import {
   type CompactionSettingsMutation,
   type LoreConnectionMutation,
   type LoreTestRequest,
+  type McpEnabledMutationWire,
+  type McpImportRequestWire,
+  type McpProbeRequestWire,
+  type McpServerWriteWire,
   type MemoryProviderMutation,
   type SubagentSettingsMutation,
   type ToolSettingsMutation,
@@ -169,6 +175,55 @@ export function createConfigurationApi(http: HttpClient) {
       test: (input: LoreTestRequest, signal?: AbortSignal) =>
         http.post(urls.settings.memoryLoreTest(), input, {
           schema: LoreTestResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+    },
+    mcp: {
+      /** Global MCP servers + cached probe results (secrets never ride this). */
+      get: (signal?: AbortSignal) =>
+        http.get(urls.settings.mcp(), {
+          schema: McpSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      /** Create/replace one server. */
+      upsert: (input: McpServerWriteWire, signal?: AbortSignal) =>
+        http.post(urls.settings.mcpServers(), input, {
+          schema: McpSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      /** Edit one server (PUT — the body name must equal the path name). */
+      update: (name: string, input: McpServerWriteWire, signal?: AbortSignal) =>
+        http.put(urls.settings.mcpServer(name), input, {
+          schema: McpSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      /** Enable/disable toggle. */
+      setEnabled: (name: string, input: McpEnabledMutationWire, signal?: AbortSignal) =>
+        http.patch(urls.settings.mcpServer(name), input, {
+          schema: McpSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      remove: (name: string, signal?: AbortSignal) =>
+        http.delete(urls.settings.mcpServer(name), undefined, {
+          schema: McpSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      /** Probe one server; `refresh: true` bypasses the 30s server cache. */
+      test: (name: string, input: McpProbeRequestWire, signal?: AbortSignal) =>
+        http.post(urls.settings.mcpServerTest(name), input, {
+          schema: McpSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      /** Validate pasted JSON and report what an import would do (no write). */
+      importPreview: (input: McpImportRequestWire, signal?: AbortSignal) =>
+        http.post(urls.settings.mcpImportPreview(), input, {
+          schema: McpImportPreviewResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      /** Import pasted JSON (all-or-nothing on the server). */
+      import: (input: McpImportRequestWire, signal?: AbortSignal) =>
+        http.post(urls.settings.mcpImport(), input, {
+          schema: McpSettingsResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
     },

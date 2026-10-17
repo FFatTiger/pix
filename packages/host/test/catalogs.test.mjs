@@ -104,6 +104,19 @@ function fakeBuiltInsMutation(impl = {}) {
   };
 }
 
+function fakeMcpSettings(impl = {}) {
+  const snapshot = { servers: [] };
+  return {
+    readSettings: async () => (impl.readSettings ? impl.readSettings() : snapshot),
+    upsertServer: async () => snapshot,
+    setEnabled: async () => snapshot,
+    removeServer: async () => snapshot,
+    importPreview: async () => ({ entries: [] }),
+    importServers: async () => snapshot,
+    testServer: async () => snapshot,
+  };
+}
+
 function fakeCredentials(impl = {}) {
   return {
     listProviders: async () =>
@@ -890,6 +903,7 @@ test("catalog caps stay advertised when sessiond is down", async () => {
     trustMutation: { setTrusted: async () => ({ cwd: "x", level: "trusted" }) },
     settingsMutation: fakeSettingsMutation(),
     builtinsMutation: fakeBuiltInsMutation(),
+    mcpSettings: fakeMcpSettings(),
   };
   const { sessiond, capabilities } = await resolveCapabilities({
     catalogs,

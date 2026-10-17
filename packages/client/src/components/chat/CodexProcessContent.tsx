@@ -30,7 +30,7 @@ import {
   type StepTone,
 } from "@/lib/step-categorizer";
 import type { StepIconName } from "@/lib/step-visuals";
-import { assistantToolDetailText, assistantToolLabel } from "@/lib/tool-names";
+import { assistantToolDetailText, assistantToolLabel, displayMcpToolName, mcpToolArgSummary, parseMcpToolName } from "@/lib/tool-names";
 import { AssistantActionCard, isAssistantActionTool } from "./AssistantActionCard";
 import { countPatchStats } from "@/lib/turn-written-files";
 
@@ -185,8 +185,34 @@ function isCommandInvocation(block: ToolBlock): boolean {
 
 function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation {
   const tone = toolTone(block);
+  // MCP tools are recognized BEFORE any tone heuristic: `mcp__github__search_issues`
+  // would otherwise classify as a generic search row and lose its server
+  // identity. They always present as the generic tool row (toolbox icon +
+  // generic verb template) with the tool name in display form, the first
+  // string argument as the detail, and the server name as the row badge.
+  const mcp = parseMcpToolName(block.toolName);
+  const displayName = mcp !== null ? displayMcpToolName(mcp.tool) : block.toolName;
+  if (mcp !== null) {
+    const arg = mcpToolArgSummary(block.input);
+    const name = displayMcpToolName(mcp.tool);
+    return {
+      action: t("desktop.codexProcessGroupUsedTool", { tool: name }),
+      completedAction: t("desktop.codexProcessCompletedUsedTool", { tool: name }),
+      detail:
+        block.status === "running"
+          ? (arg !== ""
+            ? t("desktop.codexProcessToolUsingWithArg", { tool: name, arg })
+            : t("desktop.codexProcessToolUsing", { tool: name }))
+          : (arg !== ""
+            ? t("desktop.codexProcessToolUsedWithArg", { tool: name, arg })
+            : t("desktop.codexProcessToolUsed", { tool: name })),
+      iconName: "toolbox",
+      tone: undefined,
+      target: arg !== "" ? arg : undefined,
+    };
+  }
   if (block.status === "unfinished") {
-    return { action: t("desktop.nestedToolCallUnfinished"), detail: t("desktop.nestedToolUnfinished", { tool: block.toolName }), iconName: "toolbox", tone };
+    return { action: t("desktop.nestedToolCallUnfinished"), detail: t("desktop.nestedToolUnfinished", { tool: displayName }), iconName: "toolbox", tone };
   }
 
   // A command's non-zero exit is not enough to infer failure: probes such as
@@ -195,7 +221,7 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
   if (block.status === "error" && (block.nested || tone !== "command_execution")) {
     return {
       action: t("desktop.codexProcessGroupFailed"),
-      detail: t("desktop.codexProcessToolFailed", { tool: block.toolName }),
+      detail: t("desktop.codexProcessToolFailed", { tool: displayName }),
       iconName: "warning",
       tone,
     };
@@ -410,11 +436,11 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
   }
 
   return {
-    action: t("desktop.codexProcessGroupUsedTool", { tool: displayToolName(block.toolName) }),
-    completedAction: t("desktop.codexProcessCompletedUsedTool", { tool: displayToolName(block.toolName) }),
+    action: t("desktop.codexProcessGroupUsedTool", { tool: displayToolName(displayName) }),
+    completedAction: t("desktop.codexProcessCompletedUsedTool", { tool: displayToolName(displayName) }),
     detail: t(
       block.status === "running" ? "desktop.codexProcessToolUsing" : "desktop.codexProcessToolUsed",
-      { tool: displayToolName(block.toolName) },
+      { tool: displayToolName(displayName) },
     ),
     iconName: "toolbox",
     tone,
@@ -583,6 +609,7 @@ function CodexToolDetails({ block }: { block: ToolBlock }) {
 function CodexToolRow({ block }: { block: ToolBlock }) {
   const { t } = useI18n();
   const presentation = classifyPresentation(block, t);
+  const mcpServer = parseMcpToolName(block.toolName)?.server ?? null;
   // Tools never auto-expand: a newly appeared tool stays collapsed until the
   // user opens it, matching Codex's quiet default.
   const [expanded, setExpanded] = useState(false);
@@ -614,7 +641,11 @@ function CodexToolRow({ block }: { block: ToolBlock }) {
           <span className="codex-tool-duration">{formatToolDurationMs(t, block.durationMs)}</span>
         )}
         {block.sharedBatch?.result.isError && <span className="codex-tool-duration">{t("desktop.codemodeBatchFailed")}</span>}
-        {block.nested && <span className="codemode-tool-badge">{t("desktop.codemodeLabel")}</span>}
+        {mcpServer !== null ? (
+          <span className="codemode-tool-badge" data-mcp-server={mcpServer}>{mcpServer}</span>
+        ) : block.nested ? (
+          <span className="codemode-tool-badge">{t("desktop.codemodeLabel")}</span>
+        ) : null}
         {hasDetails && (
           <CaretRightIcon className={`codex-tool-caret${expanded ? " is-expanded" : ""}`} size={13} aria-hidden="true" />
         )}

@@ -294,13 +294,14 @@ describe("table-driven mutation invalidation", () => {
     // Models exposes only the global models.json mutations; skills/plugins/auth
     // remain read-only. Trust and mounted settings keep their narrow mutations
     // (sessionIdleTimeout + the settings writers: built-ins, subagents,
-    // raw text, and the structured global tool selection).
+    // raw text, the structured global tool selection, the Lore connection,
+    // and the MCP surface: upsert/edit/toggle/remove/probe/import).
     expect(Object.keys(options.models)).toEqual(["saveConfig", "discover"]);
     expect(options).not.toHaveProperty("skills");
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");
     expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
-    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveSubagents", "saveCompaction", "saveMemory", "saveLoreConnection", "testLoreConnection", "saveConfigFile", "saveTools"]);
+    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveSubagents", "saveCompaction", "saveMemory", "saveLoreConnection", "mcpUpsert", "mcpUpdate", "mcpSetEnabled", "mcpRemove", "mcpTest", "mcpImportPreview", "mcpImport", "testLoreConnection", "saveConfigFile", "saveTools"]);
   });
 
   it("raw settings save invalidates tools, catalogs, models, and auth", async () => {

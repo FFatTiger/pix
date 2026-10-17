@@ -23,6 +23,7 @@ export * from "./messages.js";
 export * from "./model.js";
 export * from "./model-config.js";
 export * from "./settings-config.js";
+export * from "./mcp-settings.js";
 export * from "./capability-registry.js";
 export * from "./built-in-capabilities.js";
 export * from "./runtime-projections.js";

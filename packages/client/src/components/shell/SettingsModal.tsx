@@ -10,6 +10,7 @@ import {
   Keyboard,
   Monitor,
   Plug,
+  PlugsConnected,
   ShieldCheck,
   SlidersHorizontal,
   Stack,
@@ -26,6 +27,7 @@ import { AppearanceConfig } from "@/features/settings/AppearanceConfig";
 import { CapabilitiesConfig } from "@/features/settings/CapabilitiesConfig";
 import { InputConfig } from "@/features/settings/InputConfig";
 import { MemoryConfig } from "@/features/settings/MemoryConfig";
+import { McpConfig } from "@/features/settings/McpConfig";
 import { ModelsSettingsTab } from "@/features/settings/ModelsConfig";
 import { PluginsConfig } from "@/features/settings/PluginsConfig";
 import { SessionConfig } from "@/features/settings/SessionConfig";
@@ -158,6 +160,7 @@ export function SettingsModal({
       pages: [
         { id: "skills", labelKey: "desktop.settingsPage.skills", descKey: "desktop.settingsPage.skillsDesc", Icon: Stack, render: () => <SkillsConfig /> },
         { id: "plugins", labelKey: "desktop.settingsPage.plugins", descKey: "desktop.settingsPage.pluginsDesc", Icon: Plug, render: () => <PluginsConfig /> },
+        { id: "mcp", labelKey: "desktop.settingsPage.mcp", descKey: "desktop.settingsPage.mcpDesc", Icon: PlugsConnected, render: () => <McpConfig /> },
       ],
     },
     {

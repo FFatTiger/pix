@@ -594,6 +594,27 @@ packages/
   「记忆」节按提供者生成（local=memory_read/memory_write 文案，Lore=Lore 文案，
   off=无该节），逐回合解析。场景行为见 [memory.md](./memory.md)。
 
+### MCP 设置（设置 → 扩展 → MCP）
+
+- 权威文档是 Pi 自己的全局 `<agentDir>/mcp.json`（SDK 1.3 `builtin:mcp` 会话启动时
+  读取；`pi mcp add/list` 同源）。pix 只编辑/探测同一份文件，不另存副本：
+  runtime-core `src/mcp-settings.ts` canonical 模型 → protocol `src/mcp-settings.ts`
+  镜像 DTO（cross-package 合同测试钉住；`mcp.configure` Host 令牌随 seam 挂载）→
+  adapter `internal/mcp-settings-store.ts`（唯一 pi-mcp 使用点：读时缺文件=空列表、
+  坏 JSON fail-closed、无效条目带原因列出；写时只改目标条目、保留其余键与未知字段、
+  同目录 tmp+rename 原子写、既有权限沿用/新建 0600、写串行化；探测
+  McpClient+Stdio/StreamableHttp 15s、`!command` 10s、结果缓存 30s 按条目指纹失效、
+  stdio 关闭杀进程组）→ host `routes/mcp-settings.ts` → 客户端「MCP」页。
+- 敏感值：env/header 只有整值 `${VAR}` / `!command` 引用回传；字面量一律
+  `{redacted:true}`，编辑用 preserve/remove/replace 按键表达（同 models.json apiKey 模式）。
+- 项目 `.pi/mcp.json` 仍然生效但不在页面展示/编辑；改动新会话生效（第一版不 reload
+  运行中会话）；OAuth 网页登录第二版，需要登录时提示终端 `pi mcp login <名称>`。
+- 聊天工具行：`mcp__<server>__<tool>` 在任何 tone 分类之前由
+  `lib/tool-names.ts#parseMcpToolName` 识别，三条渲染路径（Codex 紧凑行 /
+  ProcessGroup 时间线与分步 / MessageView inline）统一展示通用工具行 + 工具名
+  （下划线/连字符换空格）+ 首个字符串参数摘要（120 字截断）+ 行尾
+  `codemode-tool-badge` 样式的服务器名徽标。
+
 ### 助手会话能力（第 3 轮：看 / 找 / 管）
 
 - 七个新工具进第 1 轮的同一助手扩展（白名单守卫经 ASSISTANT_TOOL_NAMES 覆盖全部 9 个）。

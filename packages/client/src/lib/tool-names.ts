@@ -7,6 +7,51 @@
  */
 
 /**
+ * Parsed `mcp__<server>__<tool>` identity (Pi SDK 1.3 naming).
+ *
+ * The server segment is the first `__`-delimited part after the `mcp`
+ * prefix; EVERYTHING after the next `__` is the tool name (the SDK replaces
+ * illegal characters with `_` and appends a hash suffix on collisions —
+ * both display as-is). Parsed BEFORE any tone classification: a tool like
+ * `mcp__github__search_issues` must never classify as a generic search/read
+ * row, and the row shows the server name as its trailing badge instead of
+ * the raw prefixed name.
+ */
+export interface McpToolIdentity {
+  server: string;
+  tool: string;
+}
+
+const MCP_TOOL_NAME_RE = /^mcp__([A-Za-z0-9_-]+?)__(.+)$/;
+
+export function parseMcpToolName(toolName: string): McpToolIdentity | null {
+  const match = MCP_TOOL_NAME_RE.exec(toolName);
+  if (!match) return null;
+  return { server: match[1]!, tool: match[2]! };
+}
+
+/** Display form of an MCP tool name: underscores/hyphens become spaces. */
+export function displayMcpToolName(tool: string): string {
+  const normalized = tool.trim().replace(/[_-]+/g, " ");
+  return normalized || tool;
+}
+
+/**
+ * First non-empty string argument of an MCP call, clamped like the other
+ * tool-row detail previews (whitespace-collapsed, `max` chars with `...`).
+ */
+export function mcpToolArgSummary(input: Record<string, unknown> | undefined, max = 120): string {
+  if (!input) return "";
+  for (const value of Object.values(input)) {
+    if (typeof value !== "string") continue;
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (normalized === "") continue;
+    return normalized.length > max ? `${normalized.slice(0, max - 3)}...` : normalized;
+  }
+  return "";
+}
+
+/**
  * Human process-line identity for the assistant/memory tools (both display
  * modes — codex + timeline — resolve the label through this one table).
  * Returns null for every other tool (callers fall back to their generic

@@ -180,6 +180,16 @@ export const urls = {
     memoryLore: () => resource("settings/memory/lore"),
     /** POST — Lore health probe (GET <base>/api/health). */
     memoryLoreTest: () => resource("settings/memory/lore-test"),
+    /** Global MCP servers (<agentDir>/mcp.json) + cached probe results. */
+    mcp: () => resource("settings/mcp"),
+    /** Create/replace one MCP server (form editor payload). */
+    mcpServers: () => resource("settings/mcp/servers"),
+    /** Edit / enable-toggle / delete / probe one MCP server. */
+    mcpServer: (name: string) => resource(`settings/mcp/servers/${encodedSegment(name)}`),
+    mcpServerTest: (name: string) => resource(`settings/mcp/servers/${encodedSegment(name)}/test`),
+    /** Paste-import preview (no write) and confirmed import. */
+    mcpImportPreview: () => resource("settings/mcp/import-preview"),
+    mcpImport: () => resource("settings/mcp/import"),
   },
   runtime: { ws: () => resource("runtime") },
   diagnostics: {

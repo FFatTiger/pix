@@ -56,6 +56,7 @@ export type HostCapability =
   | "models"
   | "models.configure"
   | "settings.configure"
+  | "mcp.configure"
   | "builtins.configure"
   | "auth.providers"
   | "skills"
@@ -81,6 +82,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "models",
   "models.configure",
   "settings.configure",
+  "mcp.configure",
   "builtins.configure",
   "auth.providers",
   "skills",
@@ -108,6 +110,7 @@ export const CATALOG_CAPABILITIES: readonly HostCapability[] = [
   "models",
   "models.configure",
   "settings.configure",
+  "mcp.configure",
   "builtins.configure",
   "auth.providers",
   "skills",
@@ -408,6 +411,22 @@ export interface CatalogMemoryLoreSeam {
   testLoreConnection(input: unknown): Promise<unknown>;
 }
 
+/**
+ * MCP settings seam (`<agentDir>/mcp.json`, global scope): the adapter's
+ * single authority for Pi's own MCP server document + connection probes.
+ * Secret rule: env/header literal values never cross this seam. Mounting it
+ * mounts the `/v1/settings/mcp…` routes and advertises `mcp.configure`.
+ */
+export interface CatalogMcpSettingsSeam {
+  readSettings(): Promise<unknown>;
+  upsertServer(input: unknown): Promise<unknown>;
+  setEnabled(name: string, input: unknown): Promise<unknown>;
+  removeServer(name: string): Promise<unknown>;
+  importPreview(input: unknown): Promise<unknown>;
+  importServers(input: unknown): Promise<unknown>;
+  testServer(name: string, input: unknown): Promise<unknown>;
+}
+
 /** Pix built-in desired-enablement seam (`pix-builtins.json`, agent-dir scope). */
 export interface CatalogBuiltInsMutationSeam {
   readConfig(): Promise<unknown>;
@@ -498,6 +517,7 @@ export interface CatalogDeps {
   modelsMutation?: CatalogModelsMutationSeam;
   settingsMutation?: CatalogSettingsMutationSeam;
   memoryLore?: CatalogMemoryLoreSeam;
+  mcpSettings?: CatalogMcpSettingsSeam;
   builtinsMutation?: CatalogBuiltInsMutationSeam;
   credentials?: CatalogCredentialsSeam;
   resources?: CatalogResourcesSeam;

@@ -20,7 +20,7 @@ import {
   basenameResourcePath,
 } from "@/lib/step-categorizer";
 import type { StepIconName } from "@/lib/step-visuals";
-import { assistantToolDetailText, assistantToolLabel } from "@/lib/tool-names";
+import { assistantToolDetailText, assistantToolLabel, displayMcpToolName, mcpToolArgSummary, parseMcpToolName } from "@/lib/tool-names";
 import { ChatTeardropDotsIcon } from "@phosphor-icons/react/ChatTeardropDots";
 import { BookOpenIcon } from "@phosphor-icons/react/BookOpen";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
@@ -76,10 +76,27 @@ type BuildLabelFn = (key: string, params?: Record<string, string>) => string;
 function enrichedToolLabel(
   block: Extract<ProcessContentBlock, { type: "toolCall" }>,
   ts: BuildLabelFn,
-): { displayLabel: string; iconName: StepIconName; target?: string | undefined; tone?: StepTone | undefined; typeLabel?: string | undefined } {
+): { displayLabel: string; iconName: StepIconName; target?: string | undefined; tone?: StepTone | undefined; typeLabel?: string | undefined; mcpServer?: string | undefined } {
   const fallback = toolFallbackLabel(block);
   const isError = block.status === "error" || Boolean(block.sharedBatch?.result.isError);
   if (block.status === "unfinished") return { displayLabel: `${fallback} · ${ts("desktop.nestedToolCallUnfinished")}`, iconName: "toolbox" };
+
+  // MCP tools resolve BEFORE any tone heuristic (a name like
+  // mcp__postgres__query must never read as a generic search/read step).
+  // Generic tool row: display name + first string argument, server name as
+  // the badge, no tone (MCP steps never merge into file groups).
+  const mcp = parseMcpToolName(block.toolName);
+  if (mcp !== null) {
+    const name = displayMcpToolName(mcp.tool);
+    const arg = mcpToolArgSummary(block.input);
+    return {
+      displayLabel: arg !== "" ? `${name} ${arg}` : name,
+      iconName: isError ? "warning" : "toolbox",
+      tone: undefined,
+      mcpServer: mcp.server,
+    };
+  }
+
   if (block.nested && block.nested.call.arguments === undefined && !isError) return { displayLabel: fallback, iconName: "toolbox" };
 
   // Assistant / memory tools carry their own human identity (查找了会话 /
@@ -1100,6 +1117,9 @@ export function ProcessGroup({
                               {step.label}
                             </span>
                           )}
+                          {step.kind === "tool" && toolInfo?.mcpServer !== undefined ? (
+                            <span className="codemode-tool-badge">{toolInfo.mcpServer}</span>
+                          ) : null}
                           {step.kind === "tool" && step.block.durationMs !== undefined && (
                             <span className="shrink-0 text-[11px] tabular-nums text-text-dim">{formatToolDurationMs(t, step.block.durationMs)}</span>
                           )}
@@ -1181,6 +1201,9 @@ export function ProcessGroup({
                           {step.label}
                         </span>
                       )}
+                      {step.kind === "tool" && toolInfo?.mcpServer !== undefined ? (
+                        <span className="codemode-tool-badge">{toolInfo.mcpServer}</span>
+                      ) : null}
                     </button>
                   );
                 })}

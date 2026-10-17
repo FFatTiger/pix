@@ -205,6 +205,57 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           configuration.memoryLore.save(input),
         onSuccess: () => invalidate(queryClient, queryKeys.settingsConfig.memory()),
       }),
+      /** MCP settings: every write/probe returns the fresh full snapshot. */
+      mcpUpsert: () => ({
+        mutationKey: ["pix", "settings", "mcp-upsert"] as const,
+        mutationFn: (input: Parameters<typeof configuration.mcp.upsert>[0]) =>
+          configuration.mcp.upsert(input),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.mcp.get>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.mcp(), data);
+        },
+      }),
+      mcpUpdate: () => ({
+        mutationKey: ["pix", "settings", "mcp-update"] as const,
+        mutationFn: (input: { name: string; write: Parameters<typeof configuration.mcp.update>[1] }) =>
+          configuration.mcp.update(input.name, input.write),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.mcp.get>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.mcp(), data);
+        },
+      }),
+      mcpSetEnabled: () => ({
+        mutationKey: ["pix", "settings", "mcp-set-enabled"] as const,
+        mutationFn: (input: { name: string; enabled: boolean }) =>
+          configuration.mcp.setEnabled(input.name, { enabled: input.enabled }),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.mcp.get>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.mcp(), data);
+        },
+      }),
+      mcpRemove: () => ({
+        mutationKey: ["pix", "settings", "mcp-remove"] as const,
+        mutationFn: (name: string) => configuration.mcp.remove(name),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.mcp.get>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.mcp(), data);
+        },
+      }),
+      mcpTest: () => ({
+        mutationKey: ["pix", "settings", "mcp-test"] as const,
+        mutationFn: (input: { name: string; refresh: boolean }) =>
+          configuration.mcp.test(input.name, { refresh: input.refresh }),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.mcp.get>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.mcp(), data);
+        },
+      }),
+      mcpImportPreview: () => ({
+        mutationKey: ["pix", "settings", "mcp-import-preview"] as const,
+        mutationFn: (input: { json: string }) => configuration.mcp.importPreview(input),
+      }),
+      mcpImport: () => ({
+        mutationKey: ["pix", "settings", "mcp-import"] as const,
+        mutationFn: (input: { json: string }) => configuration.mcp.import(input),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.mcp.get>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.mcp(), data);
+        },
+      }),
       /** Probe the Lore server health endpoint; a failed probe is a result. */
       testLoreConnection: () => ({
         mutationKey: ["pix", "settings", "test-lore-connection"] as const,

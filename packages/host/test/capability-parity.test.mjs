@@ -113,6 +113,15 @@ function makeParityApp({ withMutationSeams = false, withCatalogs = false, withAs
         async readSubagentConfig() { throw new Error("capability probes must not read settings"); },
         async writeSubagentConfig() { throw new Error("capability probes must not write settings"); },
       },
+      mcpSettings: {
+        async readSettings() { throw new Error("capability probes must not read mcp settings"); },
+        async upsertServer() { throw new Error("capability probes must not write mcp settings"); },
+        async setEnabled() { throw new Error("capability probes must not write mcp settings"); },
+        async removeServer() { throw new Error("capability probes must not write mcp settings"); },
+        async importPreview() { throw new Error("capability probes must not read mcp settings"); },
+        async importServers() { throw new Error("capability probes must not write mcp settings"); },
+        async testServer() { throw new Error("capability probes must not probe mcp servers"); },
+      },
       builtinsMutation: {},
       credentials: {},
       resources: {
@@ -166,7 +175,7 @@ test("missing-seam parity: no mutation/catalog seams ⇒ HTTP and WS BOTH strip 
   const wsList = ws;
   assert.deepEqual(wsList, httpList, "WS handshake must mirror HTTP capabilities");
   assert.deepEqual(httpList, ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write"]);
-  for (const forbidden of ["session.delete", "session.write", "session.settings", "models", "models.configure", "settings.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust", "assistant"]) {
+  for (const forbidden of ["session.delete", "session.write", "session.settings", "models", "models.configure", "settings.configure", "mcp.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust", "assistant"]) {
     assert.ok(!httpList.includes(forbidden), `HTTP must not advertise unmounted token ${forbidden}`);
     assert.ok(!wsList.includes(forbidden), `WS must not advertise unmounted token ${forbidden}`);
   }

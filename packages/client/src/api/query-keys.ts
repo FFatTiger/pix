@@ -64,6 +64,8 @@ export const queryKeys = {
     compaction: () => ["pix", "settings", "compaction"] as const,
     /** Memory provider + Lore connection facts. */
     memory: () => ["pix", "settings", "memory"] as const,
+    /** MCP servers + cached probe results. */
+    mcp: () => ["pix", "settings", "mcp"] as const,
   },
 
   files: {
@@ -219,6 +221,16 @@ export function createQueryOptions(http: HttpClient) {
           queryFn: ({ signal }) => configuration.memory.get(signal),
           staleTime: 0,
           retry: false,
+        }),
+      mcp: () =>
+        queryOptions({
+          queryKey: queryKeys.settingsConfig.mcp(),
+          queryFn: ({ signal }) => configuration.mcp.get(signal),
+          // Editable config with cached probe results: reconnect refetches
+          // must not clobber an in-progress editor draft.
+          staleTime: 0,
+          retry: false,
+          refetchOnReconnect: false,
         }),
       tools: () =>
         queryOptions({
