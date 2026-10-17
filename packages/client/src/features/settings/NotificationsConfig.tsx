@@ -69,7 +69,7 @@ export function NotificationsConfig() {
     () => readPushBrowserEnv({
       navigator: typeof navigator === "undefined" ? undefined : navigator,
       Notification: typeof Notification === "undefined" ? undefined : Notification,
-      matchMedia: typeof matchMedia === "function" ? matchMedia : undefined,
+      matchMedia: typeof matchMedia === "function" ? matchMedia.bind(window) : undefined,
       window: typeof window === "undefined" ? undefined : window,
     }),
     [],

@@ -423,7 +423,7 @@ describe("ProcessGroup — expanded lifecycle", () => {
 
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     const label = view.container.querySelector<HTMLElement>(".codex-tool-group-label")!;
-    expect(label.textContent).toBe("编辑了文件读取文件运行了命令");
+    expect(label.textContent).toBe("编辑了文件，读取文件，运行了命令");
     expect(label.querySelectorAll("span")).toHaveLength(0);
   });
 
@@ -446,7 +446,7 @@ describe("ProcessGroup — expanded lifecycle", () => {
 
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     expect(view.container.querySelector(".codex-tool-group-label")?.textContent)
-      .toBe("已读取文件运行了命令");
+      .toBe("已读取文件，运行了命令");
   });
 
   it("writes one grammatical Chinese sentence for named tools and mixed states", () => {
@@ -469,7 +469,7 @@ describe("ProcessGroup — expanded lifecycle", () => {
 
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     const label = view.container.querySelector<HTMLElement>(".codex-tool-group-label")!;
-    expect(label.textContent).toBe("调用了 Agent搜索了内容读取文件");
+    expect(label.textContent).toBe("调用了 Agent，搜索了内容，读取文件");
     expect(label.textContent).not.toContain("调用了工具");
 
     view.rerender(
@@ -563,7 +563,7 @@ describe("ProcessGroup — expanded lifecycle", () => {
     );
 
     const label = view.container.querySelector<HTMLElement>(".codex-tool-group-label")!;
-    expect(label.textContent).toBe("编辑了文件删除了文件，正在运行命令");
+    expect(label.textContent).toBe("编辑了文件，删除了文件，正在运行命令");
     expect(label.textContent).not.toContain("搜索");
     expect(label.textContent).not.toContain("读取");
   });
@@ -680,7 +680,7 @@ describe("ProcessGroup — expanded lifecycle", () => {
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     const group = view.container.querySelector<HTMLElement>(".codex-tool-group")!;
     expect(group.dataset.imageCount).toBeUndefined();
-    expect(group.querySelector(".codex-tool-group-label")?.textContent).toBe("已查看图像读取文件");
+    expect(group.querySelector(".codex-tool-group-label")?.textContent).toBe("已查看图像，读取文件");
     expect(group.querySelector("img")).toBeNull();
     fireEvent.click(group.querySelector<HTMLButtonElement>(".codex-tool-group-trigger")!);
     expect(group.querySelectorAll(".codex-tool-row")).toHaveLength(2);

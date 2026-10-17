@@ -41,6 +41,8 @@ export const zhCNLocale = {
     "desktop.settingsPage.skillsDesc": "已安装的技能及其命令。",
     "desktop.settingsPage.plugins": "插件",
     "desktop.settingsPage.pluginsDesc": "已安装的插件包。",
+    "desktop.settingsPage.mcp": "MCP",
+    "desktop.settingsPage.mcpDesc": "通过 Model Context Protocol 接入的外部工具服务器，保存在 agent 目录，改动对新开的会话生效。",
     "desktop.settingsPage.access": "访问密钥",
     "desktop.settingsPage.accessDesc": "浏览器打开 pix 时需要输入的密钥；修改后当前浏览器保持登录，其他浏览器会被强制退出。",
     "desktop.settingsPage.advanced": "高级",

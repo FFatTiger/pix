@@ -525,9 +525,11 @@ function summarizeGroupActions(
     return [...actions.slice(0, MAX_GROUP_ACTIONS), ...(blocks.some((block) => block.sharedBatch?.result.isError) ? [t("desktop.codemodeBatchFailed")] : []), ...(blocks.some((block) => block.status === "unfinished") ? [t("desktop.nestedToolCallUnfinished")] : [])].join(" · ");
   }
 
-  // Codex's Chinese labels concatenate actions without punctuation. Deduplicate
-  // in source order, cap the summary at three semantic parts, and reserve room
-  // for current running work plus a genuine non-command tool failure.
+  // Codex's Chinese labels join actions with a Chinese comma — a run-on
+  // concatenation turns garbled once bare tool names appear
+  // ("搜索了内容调用了 list allowed directories"). Deduplicate in source order,
+  // cap the summary at three semantic parts, and reserve room for current
+  // running work plus a genuine non-command tool failure.
   const completedAll = uniqueActions(blocks, presentations, "success");
   const runningAll = uniqueActions(blocks, presentations, "running");
   const hasFailure = blocks.some(isPresentationFailure);
@@ -535,8 +537,8 @@ function summarizeGroupActions(
   const actionBudget = MAX_GROUP_ACTIONS - (hasFailure ? 1 : 0);
   const runningActions = runningAll.slice(0, actionBudget);
   const completedActions = completedAll.slice(0, Math.max(0, actionBudget - runningActions.length));
-  const completedText = completedActions.join("");
-  const runningText = runningActions.join("");
+  const completedText = completedActions.join("，");
+  const runningText = runningActions.join("，");
   const completed = completedText;
   const running = runningText
     ? t("desktop.codexProcessRunningActions", { actions: runningText })

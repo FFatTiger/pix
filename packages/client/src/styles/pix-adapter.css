@@ -2076,10 +2076,13 @@ html.dark .catalog-meta-item--error {
 /* Inline model-discovery selection area (expanded under the model sub-list). */
 .models-discovery { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; max-width: 620px; }
 .models-discovery-toolbar { display: flex; align-items: center; gap: 8px; }
-.models-discovery-search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; height: var(--control-height); padding: 0 var(--control-pad-x); border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--field-bg); color: var(--text-dim); }
-.models-discovery-search:focus-within { border-color: var(--border-hover); }
-.models-discovery-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12px; }
-.models-discovery-list { display: flex; flex-direction: column; gap: 2px; max-height: 264px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--control-radius); padding: 4px; }
+.models-discovery-search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; height: var(--control-height); padding: 0 var(--control-pad-x); border: 0; border-radius: var(--control-radius); background: var(--field-bg); color: var(--text-dim); }
+.models-discovery-search:focus-within { background: var(--surface-content); box-shadow: var(--field-ring); }
+/* Same guard selectors as the generic .settings-dialog input rule in
+ * globals.css (plus one class) so the inner input stays transparent —
+ * otherwise it paints its own field block inside the field shell. */
+.settings-dialog .models-discovery-search input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12px; }
+.models-discovery-list { display: flex; flex-direction: column; gap: 2px; max-height: 264px; overflow-y: auto; padding: 2px 0; }
 .models-discovery-row { display: flex; align-items: flex-start; gap: 9px; padding: 5px 8px; border-radius: var(--control-radius); cursor: pointer; }
 .models-discovery-row:hover { background: var(--bg-hover); }
 .models-discovery-row input[type="checkbox"] { width: 14px; height: 14px; margin-top: 2px; flex: none; accent-color: var(--accent); }
@@ -2095,6 +2098,15 @@ html.dark .catalog-meta-item--error {
 .settings-json-editor { width: 100%; min-height: 340px; resize: vertical; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-panel); color: var(--text); font: 12px/1.6 var(--font-mono); tab-size: 2; outline: none; }
 
 /* MCP settings page (reuses the models-config two-column shell). */
+/* MCP tool cards: name first (mono, models-list rhythm), description as
+ * secondary dim text clamped to two lines. Standalone classes — reusing
+ * .models-model-row squeezed the name to zero width next to the long
+ * description (flex basis 0 vs content-basis sibling). */
+.mcp-tool-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-width: 620px; }
+.mcp-tool-row { display: flex; flex-direction: column; gap: 3px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-card); }
+.mcp-tool-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--font-mono); color: var(--text); }
+.mcp-tool-row-desc { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; font-size: 11px; line-height: 1.5; color: var(--text-dim); }
+.mcp-tool-list-more { display: flex; }
 .mcp-pair-rows { display: flex; flex-direction: column; gap: 6px; }
 .mcp-pair-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; align-items: center; }
 .mcp-detail-header { display: inline-flex; align-items: center; gap: 10px; }

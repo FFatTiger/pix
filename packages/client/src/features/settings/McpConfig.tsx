@@ -11,7 +11,7 @@ import type {
 } from "@fffattiger/pix-protocol";
 import { HttpError } from "@/api/http-client";
 import { createMutationOptions } from "@/api/mutations";
-import { createQueryOptions } from "@/api/query-keys";
+import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import { Switch } from "@/components/ui/switch";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
@@ -37,6 +37,12 @@ function statusText(state: ProbeState, toolCount: number, t: ReturnType<typeof u
   if (state === "connected") {
     return toolCount > 0 ? t("desktop.mcpStatusConnectedTools", { count: String(toolCount) }) : t("desktop.mcpStatusConnected");
   }
+  return shortStatusText(state, t);
+}
+
+/** List-row form: state word only (tool counts stay in the detail header). */
+function shortStatusText(state: ProbeState, t: ReturnType<typeof useI18n>["t"]): string {
+  if (state === "connected") return t("desktop.mcpStatusConnected");
   if (state === "needs_auth") return t("desktop.mcpStatusNeedsAuth");
   if (state === "failed") return t("desktop.mcpStatusFailed");
   if (state === "disabled") return t("desktop.mcpStatusDisabled");
@@ -322,7 +328,7 @@ function ServerForm({
 // Paste-import (JSON)
 // ---------------------------------------------------------------------------
 
-function PasteImport({ existingNames, onImported }: { existingNames: readonly string[]; onImported: () => void }) {
+function PasteImport({ existingNames, onImported }: { existingNames: readonly string[]; onImported: (name: string) => void }) {
   const { t } = useI18n();
   const http = useHttpClient();
   const queryClient = useQueryClient();
@@ -402,7 +408,19 @@ function PasteImport({ existingNames, onImported }: { existingNames: readonly st
           variant="primary"
           disabled={busy || entries.length === 0 || hasInvalid}
           onClick={() =>
-            importMutation.mutate({ json: raw }, { onSuccess: () => { setRaw(""); setPreview(null); onImported(); } })
+            importMutation.mutate(
+              { json: raw },
+              {
+                onSuccess: () => {
+                  setRaw("");
+                  setPreview(null);
+                  // Land on the last valid entry (servers append in mcp.json
+                  // order, so this is the one the user just pasted in).
+                  const lastValid = [...entries].reverse().find((entry) => entry.valid);
+                  onImported(lastValid?.name ?? "");
+                },
+              },
+            )
           }
         >
           {t("desktop.mcpImport")}
@@ -417,7 +435,7 @@ function PasteImport({ existingNames, onImported }: { existingNames: readonly st
 // Add server (form | paste)
 // ---------------------------------------------------------------------------
 
-function AddServer({ existing, onDone }: { existing: readonly McpServerSnapshotWire[]; onDone: () => void }) {
+function AddServer({ existing, onDone }: { existing: readonly McpServerSnapshotWire[]; onDone: (name: string) => void }) {
   const { t } = useI18n();
   const http = useHttpClient();
   const queryClient = useQueryClient();
@@ -429,14 +447,14 @@ function AddServer({ existing, onDone }: { existing: readonly McpServerSnapshotW
   const submit = () => {
     setError(null);
     upsert.mutate(writeFromDraft(draft, null), {
-      onSuccess: onDone,
+      onSuccess: () => onDone(writeFromDraft(draft, null).name),
       onError: (failure) => setError(describeMcpError(failure, t)),
     });
   };
 
   return (
     <div className="models-detail-page">
-      <button type="button" className="models-back-link" onClick={onDone}>
+      <button type="button" className="models-back-link" onClick={() => onDone("")}>
         <ArrowLeft size={13} aria-hidden="true" />
         {t("desktop.mcpServersHeading")}
       </button>
@@ -647,23 +665,21 @@ function ServerDetail({ server, onBack }: { server: McpServerSnapshotWire; onBac
           ) : null}
 
           {tools.length > 0 ? (
-            <SettingsSection
-              title={t("desktop.mcpToolsSection")}
-              action={
-                hiddenTools > 0 || toolsOpen ? (
-                  <SettingsButton size="sm" onClick={() => setToolsOpen((open) => !open)}>
-                    {toolsOpen ? t("desktop.mcpFewerTools") : t("desktop.mcpMoreTools", { count: String(hiddenTools) })}
-                  </SettingsButton>
-                ) : undefined
-              }
-            >
-              <ul className="models-model-list">
+            <SettingsSection title={t("desktop.mcpToolsSection")}>
+              <ul className="mcp-tool-list">
                 {visibleTools.map((tool) => (
-                  <li key={tool.name} className="models-model-row" style={{ cursor: "default" }}>
-                    <code className="models-model-row-id">{tool.name}</code>
-                    <span className="catalog-meta-item">{tool.description}</span>
+                  <li key={tool.name} className="mcp-tool-row">
+                    <code className="mcp-tool-row-name">{tool.name}</code>
+                    <span className="mcp-tool-row-desc">{tool.description}</span>
                   </li>
                 ))}
+                {hiddenTools > 0 || toolsOpen ? (
+                  <li className="mcp-tool-list-more">
+                    <SettingsButton size="sm" onClick={() => setToolsOpen((open) => !open)}>
+                      {toolsOpen ? t("desktop.mcpFewerTools") : t("desktop.mcpMoreTools", { count: String(hiddenTools) })}
+                    </SettingsButton>
+                  </li>
+                ) : null}
               </ul>
             </SettingsSection>
           ) : null}
@@ -703,6 +719,16 @@ function McpEditor({ snapshot }: { snapshot: McpSettingsResponse }) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string | "add" | null>(snapshot.servers[0]?.name ?? null);
   const test = useMutation(createMutationOptions(http, queryClient).settings.mcpTest());
+  // Probe in-flight tracking is keyed by server name in component state: the
+  // shared mutation's `variables`/`isPending` only reflect the latest call, so
+  // an earlier probe settling would clear another row's 检测中 mid-flight.
+  const [probingNames, setProbingNames] = useState<ReadonlySet<string>>(() => new Set());
+  const probeServer = (name: string, refresh: boolean) => {
+    setProbingNames((current) => { const next = new Set(current); next.add(name); return next; });
+    test.mutate({ name, refresh }, {
+      onSettled: () => setProbingNames((current) => { const next = new Set(current); next.delete(name); return next; }),
+    });
+  };
 
   // First-load probe pass: every enabled, valid, untested server is probed
   // once through the cache-respecting test endpoint (never a silent poll —
@@ -715,7 +741,7 @@ function McpEditor({ snapshot }: { snapshot: McpSettingsResponse }) {
       const key = `${server.name}:${JSON.stringify(server.env ?? {})}:${server.url ?? ""}:${server.command ?? ""}`;
       if (probed.current.has(key)) continue;
       probed.current.add(key);
-      test.mutate({ name: server.name, refresh: false });
+      probeServer(server.name, false);
     }
   }, [snapshot]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -727,6 +753,15 @@ function McpEditor({ snapshot }: { snapshot: McpSettingsResponse }) {
     return server.status.state;
   };
 
+  // After a save/import the query cache already holds the fresh snapshot
+  // (mutations setQueryData on success) — read it from the cache instead of
+  // the stale `snapshot` prop so the just-written server gets selected.
+  const selectAfterAdd = (name: string) => {
+    const fresh = queryClient.getQueryData<McpSettingsResponse>(queryKeys.settingsConfig.mcp());
+    const list = fresh?.servers ?? servers;
+    setSelected(list.some((server) => server.name === name) ? name : list[list.length - 1]?.name ?? null);
+  };
+
   return (
     <div className="models-config-shell">
       <div className="models-config-body">
@@ -735,7 +770,7 @@ function McpEditor({ snapshot }: { snapshot: McpSettingsResponse }) {
           <div className="models-provider-list-scroll">
             {servers.map((server) => {
               const shown = stateFor(server);
-              const probing = test.isPending && test.variables?.name === server.name;
+              const probing = probingNames.has(server.name);
               return (
                 <button
                   key={server.name}
@@ -749,13 +784,15 @@ function McpEditor({ snapshot }: { snapshot: McpSettingsResponse }) {
                     style={{ width: 6, height: 6, borderRadius: 99, flex: "none", background: statusDotColor(shown) }}
                   />
                   <span className="models-provider-item-label">{server.name}</span>
-                  <span className="models-provider-item-count">
-                    {probing ? t("desktop.mcpStatusProbing") : statusText(shown, server.status.tools.length, t)}
+                  <span
+                    className="models-provider-item-count"
+                    title={statusText(shown, server.status.tools.length, t)}
+                  >
+                    {probing ? t("desktop.mcpStatusProbing") : shortStatusText(shown, t)}
                   </span>
                 </button>
               );
             })}
-            {servers.length === 0 ? <p className="workspace-hint">{t("desktop.mcpEmptyList")}</p> : null}
           </div>
           <div className="models-provider-list-footer">
             <SettingsButton style={{ width: "100%" }} onClick={() => setSelected("add")}>
@@ -766,7 +803,7 @@ function McpEditor({ snapshot }: { snapshot: McpSettingsResponse }) {
         </aside>
         <main className="models-detail">
           {selected === "add" ? (
-            <AddServer existing={servers} onDone={() => setSelected(snapshot.servers[snapshot.servers.length - 1]?.name ?? null)} />
+            <AddServer existing={servers} onDone={selectAfterAdd} />
           ) : current ? (
             <ServerDetail key={current.name} server={current} onBack={() => setSelected(null)} />
           ) : (

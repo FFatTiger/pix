@@ -208,10 +208,15 @@ export function createConfigurationApi(http: HttpClient) {
           schema: McpSettingsResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
-      /** Probe one server; `refresh: true` bypasses the 30s server cache. */
+      /** Probe one server; `refresh: true` bypasses the 30s server cache.
+       * The server-side probe allows up to 2× 15s (connect + listTools), so
+       * this call needs a longer bound than the default 15s HTTP timeout —
+       * otherwise the response is aborted client-side and the probe result
+       * is silently lost. */
       test: (name: string, input: McpProbeRequestWire, signal?: AbortSignal) =>
         http.post(urls.settings.mcpServerTest(name), input, {
           schema: McpSettingsResponseSchema,
+          timeoutMs: 35_000,
           ...(signal === undefined ? {} : { signal }),
         }),
       /** Validate pasted JSON and report what an import would do (no write). */

@@ -126,7 +126,12 @@ describe("McpConfig", () => {
   it("lists servers with status text and shows the selected server detail", async () => {
     mount(mcpFetch());
     expect(await screen.findByRole("button", { name: /github/ })).toBeTruthy();
-    expect(screen.getAllByText("Connected (1 tools)").length).toBeGreaterThan(0);
+    // Full status (with tool count) lives in the detail header only; the list
+    // row carries the state dot + the short state word.
+    expect(screen.getByText("Connected (1 tools)")).toBeTruthy();
+    const row = screen.getByRole("button", { name: /github/ });
+    expect(row.textContent).toContain("Connected");
+    expect(row.textContent).not.toContain("(1 tools)");
     expect(screen.getByRole("button", { name: /sentry/ })).toBeTruthy();
     // The detail pane shows the URL and the redacted header hint.
     expect(screen.getByDisplayValue("https://example.com/mcp")).toBeTruthy();
@@ -246,5 +251,134 @@ describe("McpConfig", () => {
     });
     mount(fetchImpl);
     expect(await screen.findByText("mcp.json could not be parsed; fix the file in a terminal.")).toBeTruthy();
+  });
+
+  it("backfills every field when editing and an unchanged save PUTs the same entry back", async () => {
+    const base = snapshot({
+      servers: [
+        {
+          name: "fs",
+          valid: true,
+          invalidReason: null,
+          kind: "stdio",
+          enabled: true,
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+          env: { TOKEN: { redacted: true } },
+          cwd: "/tmp",
+          url: null,
+          headers: null,
+          timeout: 60,
+          description: "local files",
+          status: CONNECTED,
+        },
+        ...snapshot().servers.slice(1),
+      ],
+    });
+    const fetchImpl = mcpFetch({ get: base });
+    mount(fetchImpl);
+    await screen.findByRole("button", { name: /fs/ });
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    // Every field is populated from the snapshot before anything is typed.
+    expect((screen.getByPlaceholderText("npx") as HTMLInputElement).value).toBe("npx");
+    expect((document.querySelector("textarea.mcp-args-editor") as HTMLTextAreaElement).value).toBe("-y\n@modelcontextprotocol/server-filesystem\n/tmp");
+    expect((screen.getByPlaceholderText("~/Documents") as HTMLInputElement).value).toBe("/tmp");
+    expect((screen.getByPlaceholderText("60") as HTMLInputElement).value).toBe("60");
+    expect((screen.getByPlaceholderText("Description") as HTMLInputElement).value).toBe("local files");
+    // The redacted secret shows the keep placeholder instead of clearing it.
+    expect(screen.getByPlaceholderText("Saved — type a new value to replace")).toBeTruthy();
+    // Saving without touching anything PUTs the identical entry: command,
+    // args, cwd, timeout, description and a preserve for the stored secret —
+    // mcp.json on disk stays byte-identical.
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      const put = fetchImpl.mock.calls.find(([path, init]) => String(path).endsWith("/servers/fs") && init?.method === "PUT");
+      expect(put).toBeTruthy();
+      expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({
+        name: "fs",
+        kind: "stdio",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        env: { TOKEN: { mode: "preserve" } },
+        cwd: "/tmp",
+        timeout: 60,
+        description: "local files",
+      });
+    });
+  });
+
+  it("selects and shows the just-saved server after the add form succeeds", async () => {
+    const fresh = snapshot({
+      servers: [
+        ...snapshot().servers,
+        {
+          name: "filesystem",
+          valid: true,
+          invalidReason: null,
+          kind: "stdio",
+          enabled: true,
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem"],
+          env: null,
+          cwd: null,
+          url: null,
+          headers: null,
+          timeout: null,
+          description: null,
+          status: UNKNOWN,
+        },
+      ],
+    });
+    const fetchImpl = mcpFetch({ mutate: fresh });
+    mount(fetchImpl);
+    await screen.findByRole("button", { name: /github/ });
+    fireEvent.click(screen.getByRole("button", { name: /Add server/ }));
+    fireEvent.change(screen.getByPlaceholderText("github"), { target: { value: "filesystem" } });
+    fireEvent.change(screen.getByPlaceholderText("npx"), { target: { value: "npx" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    // The new server is selected and its detail is rendered (not the
+    // "select a server" empty state).
+    const heading = await screen.findByRole("heading", { name: "filesystem" });
+    expect(heading).toBeTruthy();
+    expect(screen.queryByText("Select a server")).toBeNull();
+    // The freshly added, untested server is auto-probed.
+    await waitFor(() => {
+      const probe = fetchImpl.mock.calls.find(([path]) => String(path).endsWith("/servers/filesystem/test"));
+      expect(probe).toBeTruthy();
+    });
+  });
+
+  it("tracks probing per server name: one row shows Testing without flipping other rows", async () => {
+    // Deferred probe: the row must show Testing exactly while the call is in
+    // flight, independent of any other mutation's pending state.
+    let resolveTest: ((value: Response) => void) | undefined;
+    const get = snapshot({ servers: [snapshot().servers[0]!, snapshot().servers[1]!] });
+    const probeResult = snapshot({
+      servers: [
+        snapshot().servers[0]!,
+        { ...snapshot().servers[1]!, status: CONNECTED },
+      ],
+    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/servers/sentry/test")) {
+        return new Promise<Response>((resolve) => { resolveTest = resolve; });
+      }
+      if (path.includes("/v1/settings/mcp")) return json(get);
+      return json({});
+    });
+    mount(fetchImpl);
+    await screen.findByRole("button", { name: /github/ });
+    // The auto-probe for the untested sentry server is in flight: its row
+    // shows Testing, the connected row keeps its own state word.
+    await waitFor(() => {
+      const sentryRow = screen.getByRole("button", { name: /sentry/ });
+      expect(sentryRow.textContent).toContain("Testing");
+    });
+    expect(screen.getByRole("button", { name: /github/ }).textContent).toContain("Connected");
+    resolveTest?.(json(probeResult));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /sentry/ }).textContent).toContain("Connected");
+    });
   });
 });
