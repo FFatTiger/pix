@@ -4,6 +4,7 @@ import { ArrowLeft, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
 import type {
   AvailableModelProvider,
   AuthProviderInfo,
+  DiscoveredModelConfig,
   EditableModelConfig,
   EditableProviderConfig,
   ModelConfigApi,
@@ -140,6 +141,29 @@ function numberValue(value: number | undefined): string {
   return value === undefined ? "" : String(value);
 }
 
+/** 128000 → "128K", 2000000 → "2M" (compact token counts). */
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${millions % 1 === 0 ? millions : millions.toFixed(1)}M`;
+  }
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return String(value);
+}
+
+/** One-line faded parameter summary; null when no parameter is known. */
+function modelParamsSummary(
+  model: Pick<EditableModelConfig, "reasoning" | "input" | "contextWindow" | "maxTokens">,
+  t: ReturnType<typeof useI18n>["t"],
+): string | null {
+  const parts: string[] = [];
+  if (model.contextWindow !== undefined) parts.push(t("desktop.modelsParamContext", { size: formatTokenCount(model.contextWindow) }));
+  if (model.maxTokens !== undefined) parts.push(t("desktop.modelsParamOutput", { size: formatTokenCount(model.maxTokens) }));
+  if (model.input?.includes("image")) parts.push(t("desktop.modelsParamImage"));
+  if (model.reasoning) parts.push(t("desktop.modelsParamReasoning"));
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 /**
  * Editable model detail (shown inside the provider detail pane). One flat
  * card of fields plus the limits/cost block; removal is a two-step danger
@@ -147,18 +171,44 @@ function numberValue(value: number | undefined): string {
  */
 function ModelDetail({
   model,
+  providerApi,
   providerLabel,
   onBack,
   onChange,
   onDelete,
 }: {
   model: DraftModel;
+  providerApi: ModelConfigApi;
   providerLabel: string;
   onBack: () => void;
   onChange: (patch: Partial<DraftModel>) => void;
   onDelete: () => void;
 }) {
+  const http = useHttpClient();
+  const queryClient = useQueryClient();
   const { t } = useI18n();
+  const [fillMissing, setFillMissing] = useState(false);
+  const modelId = model.id.trim();
+  // "Fill from models.dev": one bounded lookup for THIS id. A miss is a
+  // normal outcome (fixed hint), not an error; the patch lands in the draft
+  // only, so the save bar can still discard it.
+  const fill = useMutation({
+    ...createMutationOptions(http, queryClient).models.metadata(),
+    onMutate: () => { setFillMissing(false); },
+    onSuccess: (data) => {
+      const fields = modelId ? data.metadata[modelId] ?? null : null;
+      setFillMissing(fields === null);
+      if (fields === null) return;
+      onChange({
+        ...(fields.reasoning === undefined ? {} : { reasoning: fields.reasoning }),
+        ...(fields.input === undefined ? {} : { input: [...fields.input] }),
+        ...(fields.contextWindow === undefined ? {} : { contextWindow: fields.contextWindow }),
+        ...(fields.maxTokens === undefined ? {} : { maxTokens: fields.maxTokens }),
+        ...(fields.cost === undefined ? {} : { cost: { ...fields.cost } }),
+        ...(model.name === undefined && fields.name !== undefined ? { name: fields.name } : {}),
+      });
+    },
+  });
   const updateCost = (key: "input" | "output" | "cacheRead" | "cacheWrite", value: string) => {
     const parsed = value === "" ? undefined : Number(value);
     const cost = { ...(model.cost ?? {}), [key]: Number.isFinite(parsed) ? parsed : undefined };
@@ -202,7 +252,19 @@ function ModelDetail({
         </div>
       </SettingsSection>
 
-      <SettingsSection title={t("desktop.modelsLimitsAndCost")} description={t("desktop.modelsLimitsDescription")}>
+      <SettingsSection
+        title={t("desktop.modelsLimitsAndCost")}
+        description={t("desktop.modelsLimitsDescription")}
+        action={(
+          <SettingsButton
+            size="sm"
+            disabled={!modelId || fill.isPending}
+            onClick={() => fill.mutate({ ids: [modelId], api: providerApi })}
+          >
+            {fill.isPending ? t("desktop.modelsFillFilling") : t("desktop.modelsFillFromCatalog")}
+          </SettingsButton>
+        )}
+      >
         <div className="models-form-grid">
           <SettingsField label={t("desktop.modelsContextWindow")}>
             <SettingsNumInput value={numberValue(model.contextWindow)} min={1} onChange={(value) => onChange({ contextWindow: value ? Number(value) : undefined })} />
@@ -220,6 +282,12 @@ function ModelDetail({
               </SettingsField>
             ))}
           </div>
+          {fill.isError ? (
+            <p className="workspace-hint workspace-hint--error" role="alert">{describeModelsConfigError(fill.error, t)}</p>
+          ) : null}
+          {fillMissing && !fill.isPending ? (
+            <p className="models-field-hint" role="status">{t("desktop.modelsFillNotFound")}</p>
+          ) : null}
         </div>
       </SettingsSection>
     </div>
@@ -303,6 +371,257 @@ function ProviderPicker({
           {!showCustom && subscriptions.length === 0 && apiKey.length === 0 ? <p className="workspace-hint">{t("desktop.modelsNoProvidersMatch")}</p> : null}
         </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * Expanded discovery results: an inline selection area (not a modal) with a
+ * search box, select-all, one row per discovered model (id, dim name, dim
+ * parameter summary or the fixed no-parameters copy) and a footer that adds
+ * the checked rows — with their models.dev parameters — to the DRAFT.
+ */
+function DiscoveryResults({
+  models,
+  existingIds,
+  selected,
+  onToggle,
+  onSetSelected,
+  onAdd,
+  onCancel,
+}: {
+  models: readonly DiscoveredModelConfig[];
+  existingIds: ReadonlySet<string>;
+  selected: ReadonlySet<string>;
+  onToggle: (id: string) => void;
+  onSetSelected: (ids: ReadonlySet<string>) => void;
+  onAdd: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const [search, setSearch] = useState("");
+  const normalized = search.trim().toLocaleLowerCase();
+  const rows = models.filter((model) => !normalized
+    || model.id.toLocaleLowerCase().includes(normalized)
+    || (model.name ?? "").toLocaleLowerCase().includes(normalized));
+  const selectable = rows.filter((model) => !existingIds.has(model.id));
+  const allSelected = selectable.length > 0 && selectable.every((model) => selected.has(model.id));
+  return (
+    <div className="models-discovery">
+      <div className="models-discovery-toolbar">
+        <div className="models-discovery-search">
+          <MagnifyingGlass size={13} aria-hidden="true" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("desktop.modelsDiscoverySearch")} />
+        </div>
+        <SettingsButton
+          size="sm"
+          disabled={selectable.length === 0}
+          onClick={() => onSetSelected(allSelected ? new Set() : new Set(selectable.map((model) => model.id)))}
+        >
+          {allSelected ? t("desktop.modelsDiscoveryClear") : t("desktop.modelsDiscoverySelectAll")}
+        </SettingsButton>
+      </div>
+      <div className="models-discovery-list" role="list">
+        {rows.map((model) => {
+          const added = existingIds.has(model.id);
+          const checked = added || selected.has(model.id);
+          const params = modelParamsSummary(model, t);
+          return (
+            <label key={model.id} className={added ? "models-discovery-row models-discovery-row--added" : "models-discovery-row"}>
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={added}
+                onChange={() => onToggle(model.id)}
+              />
+              <span className="models-discovery-row-main">
+                <span className="models-discovery-row-id">{model.id}</span>
+                {model.name && model.name !== model.id ? <span className="models-discovery-row-name">{model.name}</span> : null}
+                <span className="models-discovery-row-params">{params ?? t("desktop.modelsDiscoveryNoParams")}</span>
+              </span>
+              {added ? <span className="models-discovery-added-tag">{t("desktop.modelsDiscoveryAdded")}</span> : null}
+            </label>
+          );
+        })}
+      </div>
+      <div className="models-discovery-footer">
+        <SettingsButton size="sm" onClick={onCancel}>{t("desktop.modelsDiscoveryCancel")}</SettingsButton>
+        <SettingsButton size="sm" variant="primary" disabled={selected.size === 0} onClick={onAdd}>
+          {selected.size > 0 ? t("desktop.modelsDiscoveryAddSelectedCount", { count: selected.size }) : t("desktop.modelsDiscoveryAddSelected")}
+        </SettingsButton>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Provider detail page: identity/endpoint fields plus the model sub-list.
+ * "拉取模型列表" fetches the provider's own /models endpoint through the typed
+ * discovery mutation and expands the inline selection area below the list.
+ */
+function ProviderDetail({
+  provider,
+  revision,
+  onChange,
+  onDelete,
+  onAddModel,
+  onOpenModel,
+  onAddDiscoveredModels,
+}: {
+  provider: DraftProvider;
+  revision: string;
+  onChange: (patch: Partial<DraftProvider>) => void;
+  onDelete: () => void;
+  onAddModel: () => void;
+  onOpenModel: (modelKey: string) => void;
+  onAddDiscoveredModels: (models: readonly DiscoveredModelConfig[]) => void;
+}) {
+  const http = useHttpClient();
+  const queryClient = useQueryClient();
+  const { t } = useI18n();
+  const discovery = useMutation(createMutationOptions(http, queryClient).models.discover());
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const existing = useMemo(() => new Set(provider.models.map((model) => model.id)), [provider.models]);
+
+  // Endpoint identity drives discovery safety (persisted keys are only
+  // replayed to the exact source endpoint), so any change collapses the
+  // results and clears the selection.
+  useEffect(() => {
+    discovery.reset();
+    setSelected(new Set());
+  }, [provider.key, provider.id, provider.baseUrl, provider.api, provider.apiKeyValue]);
+
+  const canDiscover = Boolean(provider.baseUrl?.trim());
+  const toggle = (id: string) => setSelected((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+
+  return (
+    <div className="models-detail-page">
+      <SettingsSection
+        title={provider.id || t("desktop.modelsProvider")}
+        description={t("desktop.modelsProviderDescription")}
+        action={<SettingsDangerButton label={t("desktop.delete")} onConfirm={onDelete} />}
+      >
+        <div className="models-settings-fields">
+          <SettingsField label={t("desktop.modelsProviderName")}>
+            <SettingsInput value={provider.id} onChange={(id) => onChange({ id })} placeholder="provider-name" mono />
+          </SettingsField>
+          <SettingsField label={t("desktop.modelsApi")}>
+            <SettingsSelect
+              value={provider.api ?? "openai-completions"}
+              onChange={(api) => onChange({ api: api as ModelConfigApi })}
+              options={provider.api && !API_OPTIONS.includes(provider.api as (typeof API_OPTIONS)[number])
+                ? [provider.api, ...API_OPTIONS]
+                : API_OPTIONS}
+            />
+          </SettingsField>
+          <SettingsField label={t("desktop.modelsBaseUrl")}>
+            <SettingsInput
+              value={provider.baseUrl ?? ""}
+              onChange={(baseUrl) => onChange({ baseUrl: baseUrl || undefined })}
+              placeholder="https://api.example.com/v1"
+              mono
+            />
+          </SettingsField>
+          <SettingsField label={t("desktop.modelsApiKey")}>
+            <SecretInput provider={provider} onChange={onChange} />
+            <div className="models-secret-meta">
+              <span className="models-field-hint">{t("desktop.modelsApiKeyHelp")}</span>
+              {provider.apiKeyConfigured ? (
+                provider.apiKeyMutation === "remove" ? (
+                  <SettingsButton
+                    size="sm"
+                    onClick={() => onChange({ apiKeyMutation: "preserve" })}
+                  >
+                    {t("desktop.modelsKeepStoredKey")}
+                  </SettingsButton>
+                ) : (
+                  <SettingsDangerButton
+                    label={t("desktop.modelsRemoveStoredKey")}
+                    onConfirm={() => onChange({ apiKeyValue: "", apiKeyMutation: "remove" })}
+                  />
+                )
+              ) : null}
+            </div>
+          </SettingsField>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t("desktop.modelsSection")}
+        description={t("desktop.modelsSectionDescription")}
+        action={(
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <SettingsButton
+              size="sm"
+              disabled={!canDiscover || discovery.isPending}
+              {...(canDiscover ? {} : { title: t("desktop.modelsDiscoverNeedsBaseUrl") })}
+              onClick={() => discovery.mutate({
+                expectedRevision: revision,
+                sourceId: provider.sourceId,
+                providerId: provider.id,
+                baseUrl: provider.baseUrl!.trim(),
+                api: provider.api ?? "openai-completions",
+                ...(provider.apiKeyMutation === "replace" && provider.apiKeyValue
+                  ? { apiKey: provider.apiKeyValue }
+                  : {}),
+              })}
+            >
+              {discovery.isPending ? t("desktop.modelsDiscovering") : t("desktop.modelsDiscover")}
+            </SettingsButton>
+            <SettingsButton size="sm" onClick={onAddModel}><Plus size={12} />{t("desktop.modelsAddModel")}</SettingsButton>
+          </div>
+        )}
+      >
+        {provider.models.length === 0 ? (
+          <p className="workspace-hint">{t("desktop.modelsNone")}</p>
+        ) : (
+          <ul className="models-model-list">
+            {provider.models.map((model) => (
+              <li key={model.key}>
+                <button
+                  type="button"
+                  className="models-model-row"
+                  onClick={() => onOpenModel(model.key)}
+                >
+                  <code className="models-model-row-id">{model.id || t("desktop.modelsNewModel")}</code>
+                  <span className="models-model-row-badges">
+                    {model.reasoning ? (
+                      <SettingsBadge title={t("desktop.modelsReasoningBadgeTitle")}>{t("desktop.modelsReasoningBadge")}</SettingsBadge>
+                    ) : null}
+                    {model.input?.includes("image") ? <SettingsBadge>{t("desktop.modelsImageBadge")}</SettingsBadge> : null}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {discovery.isError ? (
+          <p className="workspace-hint workspace-hint--error" role="alert">{describeModelsConfigError(discovery.error, t)}</p>
+        ) : null}
+        {discovery.data ? (
+          <DiscoveryResults
+            models={discovery.data.models}
+            existingIds={existing}
+            selected={selected}
+            onToggle={toggle}
+            onSetSelected={setSelected}
+            onAdd={() => {
+              onAddDiscoveredModels(discovery.data!.models.filter((model) => selected.has(model.id)));
+              setSelected(new Set());
+              discovery.reset();
+            }}
+            onCancel={() => {
+              setSelected(new Set());
+              discovery.reset();
+            }}
+          />
+        ) : null}
+      </SettingsSection>
     </div>
   );
 }
@@ -406,6 +725,27 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
       : provider));
     setSelection({ type: "model", providerKey, modelKey: model.key });
   };
+  const addDiscoveredModels = (providerKey: string, discovered: readonly DiscoveredModelConfig[]) => {
+    setDirty(true);
+    setProviders((current) => current.map((provider) => {
+      if (provider.key !== providerKey) return provider;
+      const ids = new Set(provider.models.map((model) => model.id));
+      const additions = discovered
+        .filter((model) => !ids.has(model.id))
+        .map((model): DraftModel => ({
+          key: `new:${crypto.randomUUID()}`,
+          sourceIndex: null,
+          id: model.id,
+          ...(model.name === undefined ? {} : { name: model.name }),
+          ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+          ...(model.input === undefined ? {} : { input: [...model.input] }),
+          ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+          ...(model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens }),
+          ...(model.cost === undefined ? {} : { cost: { ...model.cost } }),
+        }));
+      return additions.length ? { ...provider, modelsDefined: true, models: [...provider.models, ...additions] } : provider;
+    }));
+  };
   const updateModel = (providerKey: string, modelKey: string, patch: Partial<DraftModel>) => {
     setDirty(true);
     setProviders((current) => current.map((provider) => provider.key === providerKey
@@ -474,93 +814,22 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
           {selectedProvider && selection?.type === "model" && selectedModel ? (
             <ModelDetail
               model={selectedModel}
+              providerApi={selectedProvider.api ?? "openai-completions"}
               providerLabel={selectedProvider.id || t("desktop.modelsProvider")}
               onBack={() => setSelection({ type: "provider", providerKey: selectedProvider.key })}
               onChange={(patch) => updateModel(selectedProvider.key, selectedModel.key, patch)}
               onDelete={() => removeModel(selectedProvider.key, selectedModel.key)}
             />
           ) : selectedProvider && selection?.type === "provider" ? (
-            <div className="models-detail-page">
-              <SettingsSection
-                title={selectedProvider.id || t("desktop.modelsProvider")}
-                description={t("desktop.modelsProviderDescription")}
-                action={<SettingsDangerButton label={t("desktop.delete")} onConfirm={() => removeProvider(selectedProvider.key)} />}
-              >
-                <div className="models-settings-fields">
-                  <SettingsField label={t("desktop.modelsProviderName")}>
-                    <SettingsInput value={selectedProvider.id} onChange={(id) => updateProvider(selectedProvider.key, { id })} placeholder="provider-name" mono />
-                  </SettingsField>
-                  <SettingsField label={t("desktop.modelsApi")}>
-                    <SettingsSelect
-                      value={selectedProvider.api ?? "openai-completions"}
-                      onChange={(api) => updateProvider(selectedProvider.key, { api: api as ModelConfigApi })}
-                      options={selectedProvider.api && !API_OPTIONS.includes(selectedProvider.api as (typeof API_OPTIONS)[number])
-                        ? [selectedProvider.api, ...API_OPTIONS]
-                        : API_OPTIONS}
-                    />
-                  </SettingsField>
-                  <SettingsField label={t("desktop.modelsBaseUrl")}>
-                    <SettingsInput
-                      value={selectedProvider.baseUrl ?? ""}
-                      onChange={(baseUrl) => updateProvider(selectedProvider.key, { baseUrl: baseUrl || undefined })}
-                      placeholder="https://api.example.com/v1"
-                      mono
-                    />
-                  </SettingsField>
-                  <SettingsField label={t("desktop.modelsApiKey")}>
-                    <SecretInput provider={selectedProvider} onChange={(patch) => updateProvider(selectedProvider.key, patch)} />
-                    <div className="models-secret-meta">
-                      <span className="models-field-hint">{t("desktop.modelsApiKeyHelp")}</span>
-                      {selectedProvider.apiKeyConfigured ? (
-                        selectedProvider.apiKeyMutation === "remove" ? (
-                          <SettingsButton
-                            size="sm"
-                            onClick={() => updateProvider(selectedProvider.key, { apiKeyMutation: "preserve" })}
-                          >
-                            {t("desktop.modelsKeepStoredKey")}
-                          </SettingsButton>
-                        ) : (
-                          <SettingsDangerButton
-                            label={t("desktop.modelsRemoveStoredKey")}
-                            onConfirm={() => updateProvider(selectedProvider.key, { apiKeyValue: "", apiKeyMutation: "remove" })}
-                          />
-                        )
-                      ) : null}
-                    </div>
-                  </SettingsField>
-                </div>
-              </SettingsSection>
-
-              <SettingsSection
-                title={t("desktop.modelsSection")}
-                description={t("desktop.modelsSectionDescription")}
-                action={<SettingsButton size="sm" onClick={() => addModel(selectedProvider.key)}><Plus size={12} />{t("desktop.modelsAddModel")}</SettingsButton>}
-              >
-                {selectedProvider.models.length === 0 ? (
-                  <p className="workspace-hint">{t("desktop.modelsNone")}</p>
-                ) : (
-                  <ul className="models-model-list">
-                    {selectedProvider.models.map((model) => (
-                      <li key={model.key}>
-                        <button
-                          type="button"
-                          className="models-model-row"
-                          onClick={() => setSelection({ type: "model", providerKey: selectedProvider.key, modelKey: model.key })}
-                        >
-                          <code className="models-model-row-id">{model.id || t("desktop.modelsNewModel")}</code>
-                          <span className="models-model-row-badges">
-                            {model.reasoning ? (
-                              <SettingsBadge title={t("desktop.modelsReasoningBadgeTitle")}>{t("desktop.modelsReasoningBadge")}</SettingsBadge>
-                            ) : null}
-                            {model.input?.includes("image") ? <SettingsBadge>{t("desktop.modelsImageBadge")}</SettingsBadge> : null}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </SettingsSection>
-            </div>
+            <ProviderDetail
+              provider={selectedProvider}
+              revision={revision}
+              onChange={(patch) => updateProvider(selectedProvider.key, patch)}
+              onDelete={() => removeProvider(selectedProvider.key)}
+              onAddModel={() => addModel(selectedProvider.key)}
+              onOpenModel={(modelKey) => setSelection({ type: "model", providerKey: selectedProvider.key, modelKey })}
+              onAddDiscoveredModels={(models) => addDiscoveredModels(selectedProvider.key, models)}
+            />
           ) : (
             <div className="models-empty-detail">{t("desktop.modelsSelectProviderOrModel")}</div>
           )}

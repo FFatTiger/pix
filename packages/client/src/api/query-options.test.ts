@@ -295,7 +295,7 @@ describe("table-driven mutation invalidation", () => {
     // remain read-only. Trust and mounted settings keep their narrow mutations
     // (sessionIdleTimeout + the settings writers: built-ins, subagents,
     // raw text, and the structured global tool selection).
-    expect(Object.keys(options.models)).toEqual(["saveConfig", "discover"]);
+    expect(Object.keys(options.models)).toEqual(["saveConfig", "discover", "metadata"]);
     expect(options).not.toHaveProperty("skills");
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");

@@ -376,6 +376,8 @@ export interface CatalogModelsMutationSeam {
   readConfig(): Promise<unknown>;
   writeConfig(input: unknown): Promise<unknown>;
   discoverModels(input: unknown): Promise<unknown>;
+  /** models.dev parameter lookup for existing model ids. */
+  resolveModelMetadata(input: unknown): Promise<unknown>;
 }
 
 /** Raw-text global settings.json editor seam (agent-dir scope). */

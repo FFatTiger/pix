@@ -697,13 +697,59 @@ function parseModelsConfigModel(raw: unknown): Record<string, unknown> {
   return out;
 }
 
-function projectDiscoveredModels(raw: unknown): { models: Record<string, string>[] } {
+/** Strict projection of one models.dev parameter block (all fields optional). */
+function projectModelMetadataFields(raw: unknown): Record<string, unknown> | null {
+  if (raw === null || raw === undefined) return null;
+  if (!isPlainObject(raw)) throw catalogUnavailable();
+  const out: Record<string, unknown> = {};
+  const name = optionalNonEmptyString(raw, "name");
+  if (name !== undefined) out.name = name;
+  const reasoning = readField(raw, "reasoning");
+  if (reasoning !== undefined) {
+    if (typeof reasoning !== "boolean") throw catalogUnavailable();
+    out.reasoning = reasoning;
+  }
+  const input = readField(raw, "input");
+  if (input !== undefined) {
+    if (!Array.isArray(input) || input.some((value) => value !== "text" && value !== "image")) throw catalogUnavailable();
+    out.input = [...input];
+  }
+  for (const key of ["contextWindow", "maxTokens"] as const) {
+    const value = optionalPositiveInt(raw, key);
+    if (value !== undefined) out[key] = value;
+  }
+  const cost = readField(raw, "cost");
+  if (cost !== undefined) {
+    if (!isPlainObject(cost)) throw catalogUnavailable();
+    const projected: Record<string, number> = {};
+    for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+      const value = readField(cost, key);
+      if (value !== undefined) {
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw catalogUnavailable();
+        projected[key] = value;
+      }
+    }
+    out.cost = projected;
+  }
+  return out;
+}
+
+function projectDiscoveredModels(raw: unknown): { models: Record<string, unknown>[] } {
   return {
     models: projectArray(raw, (value) => {
       if (!isPlainObject(value)) throw catalogUnavailable();
-      const out: Record<string, string> = { id: requireNonEmptyString(readField(value, "id")) };
+      const out: Record<string, unknown> = {
+        id: requireNonEmptyString(readField(value, "id")),
+        metadataSource: readField(value, "metadataSource") === "models.dev" ? "models.dev" : null,
+      };
       const name = optionalNonEmptyString(value, "name");
       if (name !== undefined) out.name = name;
+      const fields = projectModelMetadataFields(value);
+      if (fields !== null) {
+        for (const key of ["reasoning", "input", "contextWindow", "maxTokens", "cost"] as const) {
+          if (key in fields) out[key] = fields[key];
+        }
+      }
       return out;
     }),
   };
@@ -725,6 +771,39 @@ function parseModelDiscoveryInput(body: Record<string, unknown>): Record<string,
     baseUrl: body.baseUrl,
     api: body.api,
     ...(body.apiKey === undefined ? {} : { apiKey: body.apiKey }),
+  };
+}
+
+/** Bounded models.dev lookup body: exactly `{ ids: string[1..100], api }`. */
+const MODELS_METADATA_BODY_LIMIT = 64 * 1024;
+
+function invalidModelMetadataBody(): never {
+  throw new HttpError(400, "INVALID_MODEL_METADATA", "Invalid model metadata body");
+}
+
+function parseModelMetadataInput(body: Record<string, unknown>): Record<string, unknown> {
+  if (!exactKeys(body, ["ids", "api"])) invalidModelMetadataBody();
+  if (typeof body.api !== "string" || !body.api.length) invalidModelMetadataBody();
+  if (!Array.isArray(body.ids) || body.ids.length === 0 || body.ids.length > 100) invalidModelMetadataBody();
+  for (const id of body.ids) {
+    if (typeof id !== "string" || !id.trim() || id.length > 500) invalidModelMetadataBody();
+  }
+  return { ids: [...body.ids], api: body.api };
+}
+
+/** Strict projection of the seam's per-id entries onto a JSON record. */
+function projectModelMetadataResponse(raw: unknown): { metadata: Record<string, unknown> } {
+  return {
+    metadata: projectArray(raw, (entry) => {
+      if (!isPlainObject(entry)) throw catalogUnavailable();
+      const id = requireNonEmptyString(readField(entry, "id"));
+      return { id, metadata: projectModelMetadataFields(readField(entry, "metadata")) };
+    }).reduce<Record<string, unknown>>((record, entry) => {
+      // Duplicate ids cannot occur (the seam dedupes), but fail closed anyway.
+      if (entry.id in record) throw catalogUnavailable();
+      record[entry.id] = entry.metadata;
+      return record;
+    }, {}),
   };
 }
 
@@ -913,6 +992,22 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
       const input = parseModelDiscoveryInput(await readJsonObject(c, MODELS_CONFIG_BODY_LIMIT));
       try {
         return c.json(projectDiscoveredModels(await deps.modelsMutation!.discoverModels(input)));
+      } catch (error) {
+        throw mapModelsConfigError(error);
+      }
+    });
+
+    // models.dev parameter lookup for model ids that already exist in a
+    // draft ("fill parameters"). Read-only against the public catalog; the
+    // `models.configure` capability token covers this seam like the others.
+    app.post("/v1/models/metadata", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      const input = parseModelMetadataInput(await readJsonObject(c, MODELS_METADATA_BODY_LIMIT));
+      try {
+        return c.json(projectModelMetadataResponse(await deps.modelsMutation!.resolveModelMetadata(input)));
       } catch (error) {
         throw mapModelsConfigError(error);
       }

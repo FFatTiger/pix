@@ -75,10 +75,25 @@ describe("ModelsConfig", () => {
     expect(screen.getAllByText("GitHub Copilot")[0]?.closest("button")?.hasAttribute("disabled")).toBe(true);
   });
 
-  it("does not import or discover models over the network; manual add persists on save", async () => {
+  it("discovers models through the typed route, marks added rows, and adds selected models with parameters to the draft", async () => {
     let putBody: unknown;
+    const discovery = {
+      models: [
+        { id: "deepseek-v4-flash", metadataSource: null },
+        {
+          id: "deepseek-v4.1",
+          name: "DeepSeek V4.1",
+          reasoning: true,
+          input: ["text", "image"],
+          contextWindow: 128000,
+          maxTokens: 16384,
+          cost: { input: 1.25, output: 10 },
+          metadataSource: "models.dev",
+        },
+      ],
+    };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).not.toBe("/v1/models/discover");
+      if (String(input) === "/v1/models/discover") return json(discovery);
       if (init?.method === "PUT") {
         putBody = JSON.parse(String(init.body));
         return json({ ...snapshot, revision: "b".repeat(64) });
@@ -87,19 +102,104 @@ describe("ModelsConfig", () => {
     });
     mount(fetchMock);
     await screen.findAllByText("acme-deepseek");
-    expect(screen.queryByRole("button", { name: /Import models/i })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
-    const id = screen.getByText("ID *").parentElement!.querySelector("input")!;
-    fireEvent.change(id, { target: { value: "manual-model" } });
-    // Model edits open the model detail; go back to the provider and save.
-    fireEvent.click(screen.getByRole("button", { name: "Back to acme-deepseek" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Fetch model list" }));
+    // Existing model rows are visible but locked as already added.
+    expect(await screen.findByText("DeepSeek V4.1")).toBeTruthy();
+    expect(screen.getByText("Added").closest("label")!.querySelector("input")!.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("128K context · out 16K · image · reasoning")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("deepseek-v4.1").closest("label")!.querySelector("input")!);
+    fireEvent.click(screen.getByRole("button", { name: "Add selected (1)" }));
+    // The addition lands in the DRAFT: the save bar enables and the PUT body
+    // carries the models.dev parameters.
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
     await waitFor(() => expect(putBody).toBeTruthy());
     expect(putBody).toMatchObject({
       expectedRevision: revision,
-      providers: [{ models: [{ id: "deepseek-v4-flash" }, { id: "manual-model" }] }],
+      providers: [{
+        models: [
+          { id: "deepseek-v4-flash" },
+          {
+            id: "deepseek-v4.1",
+            name: "DeepSeek V4.1",
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: 128000,
+            maxTokens: 16384,
+            cost: { input: 1.25, output: 10 },
+          },
+        ],
+      }],
     });
-    expect(fetchMock.mock.calls.every((call) => String(call[0]) !== "/v1/models/discover")).toBe(true);
+  });
+
+  it("disables the fetch button until an endpoint URL is set, with the reason as title", async () => {
+    const noBaseUrl = {
+      ...snapshot,
+      providers: [{ ...snapshot.providers[0], baseUrl: undefined }],
+    };
+    const fetchMock = vi.fn(async () => json(noBaseUrl));
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    const discover = screen.getByRole("button", { name: "Fetch model list" });
+    expect(discover.hasAttribute("disabled")).toBe(true);
+    expect(discover.getAttribute("title")).toBe("Set an endpoint URL first.");
+  });
+
+  it("shows discovery failures honestly instead of an empty list", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/v1/models/discover") {
+        return json({ code: "CATALOG_UNAVAILABLE", message: "raw" }, { status: 503 });
+      }
+      return json(snapshot);
+    });
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    fireEvent.click(screen.getByRole("button", { name: "Fetch model list" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Model configuration is not available.");
+    expect(screen.queryByRole("button", { name: /Add selected/ })).toBeNull();
+  });
+
+  it("fills model parameters from models.dev into the draft and reports misses honestly", async () => {
+    let metadataBody: unknown;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/v1/models/metadata") {
+        metadataBody = JSON.parse(String(init!.body));
+        return json({ metadata: { "deepseek-v4-flash": {
+          reasoning: true,
+          contextWindow: 64000,
+          maxTokens: 8192,
+          cost: { input: 0.27, output: 1.1 },
+        } } });
+      }
+      return json(snapshot);
+    });
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    fireEvent.click(screen.getByText("deepseek-v4-flash").closest("button")!);
+    fireEvent.click(await screen.findByRole("button", { name: "Fill from models.dev" }));
+
+    await waitFor(() => expect(metadataBody).toEqual({ ids: ["deepseek-v4-flash"], api: "openai-responses" }));
+    await waitFor(() => expect(screen.getByDisplayValue("64000")).toBeTruthy());
+    expect(screen.getByDisplayValue("8192")).toBeTruthy();
+    expect(screen.getByDisplayValue("0.27")).toBeTruthy();
+    // The fill only touches the draft: Save becomes enabled and can discard.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
+    expect(screen.queryByText(/No entry for this model/)).toBeNull();
+  });
+
+  it("shows the fixed miss copy when models.dev has no entry for the model", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/v1/models/metadata") return json({ metadata: { "deepseek-v4-flash": null } });
+      return json(snapshot);
+    });
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    fireEvent.click(screen.getByText("deepseek-v4-flash").closest("button")!);
+    fireEvent.click(await screen.findByRole("button", { name: "Fill from models.dev" }));
+    expect(await screen.findByText("No entry for this model on models.dev.")).toBeTruthy();
+    expect(screen.queryByDisplayValue("64000")).toBeNull();
   });
 
   it("removes a stored API key only after an inline danger confirmation, without exposing it", async () => {

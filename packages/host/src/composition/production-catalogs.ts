@@ -119,6 +119,7 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     readConfig: () => modelsConfig.readConfig(),
     writeConfig: (input) => modelsConfig.writeConfig(input as never),
     discoverModels: (input) => modelsConfig.discoverModels(input as never),
+    resolveModelMetadata: (input) => modelsConfig.resolveModelMetadata(input as never),
   };
 
   const settingsConfig = createPiSdkSettingsConfig({ agentDir });

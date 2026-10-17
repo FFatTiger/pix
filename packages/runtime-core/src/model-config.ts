@@ -82,9 +82,36 @@ export interface ModelDiscoveryInput {
   apiKey?: string;
 }
 
-export interface DiscoveredModelConfig {
-  id: string;
+/**
+ * Parameters a public catalog (models.dev) can contribute for a model id.
+ * Only fields with a positive known value are present; absence means unknown.
+ */
+export interface ModelMetadataFields {
   name?: string;
+  reasoning?: boolean;
+  input?: readonly ("text" | "image")[];
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: ModelConfigCost;
+}
+
+export interface DiscoveredModelConfig extends ModelMetadataFields {
+  id: string;
+  /** Which catalog supplied the parameters; null when nothing matched. */
+  metadataSource: "models.dev" | null;
+}
+
+export interface ModelMetadataLookupInput {
+  /** Model ids to look up (non-empty, bounded by the wire contract). */
+  ids: readonly string[];
+  /** Requester's API type; biases multi-provider candidate preference. */
+  api: ModelConfigApi;
+}
+
+export interface ModelMetadataEntry {
+  id: string;
+  /** Matched parameters, or null when no catalog entry matched. */
+  metadata: ModelMetadataFields | null;
 }
 
 /** Writable models.json authority. Reads never return credential material. */
@@ -92,4 +119,6 @@ export interface ModelConfigStorePort {
   readConfig(): Promise<ModelsConfigSnapshot>;
   writeConfig(input: ModelsConfigMutation): Promise<ModelsConfigSnapshot>;
   discoverModels(input: ModelDiscoveryInput): Promise<readonly DiscoveredModelConfig[]>;
+  /** Parameter lookup against the public models.dev catalog (never throws per id). */
+  resolveModelMetadata(input: ModelMetadataLookupInput): Promise<readonly ModelMetadataEntry[]>;
 }

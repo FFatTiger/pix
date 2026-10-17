@@ -1,7 +1,12 @@
 import type { HttpClient } from "./http-client";
 import { urls } from "./urls";
-import type { ModelDiscoveryInput, ModelsConfigMutation } from "@fffattiger/pix-protocol";
-import { ModelDiscoveryResponseSchema, ModelsConfigResponseSchema, ModelsResponseSchema } from "./schemas";
+import type { ModelDiscoveryInput, ModelMetadataRequest, ModelsConfigMutation } from "@fffattiger/pix-protocol";
+import {
+  ModelDiscoveryResponseSchema,
+  ModelMetadataResponseSchema,
+  ModelsConfigResponseSchema,
+  ModelsResponseSchema,
+} from "./schemas";
 
 /** Global model catalog plus the capability-gated models.json editor. */
 export function createModelsApi(http: HttpClient) {
@@ -25,6 +30,12 @@ export function createModelsApi(http: HttpClient) {
       http.post(urls.models.discover(), input, {
         schema: ModelDiscoveryResponseSchema,
         timeoutMs: 25_000,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    metadata: (input: ModelMetadataRequest, signal?: AbortSignal) =>
+      http.post(urls.models.metadata(), input, {
+        schema: ModelMetadataResponseSchema,
+        timeoutMs: 15_000,
         ...(signal === undefined ? {} : { signal }),
       }),
   };

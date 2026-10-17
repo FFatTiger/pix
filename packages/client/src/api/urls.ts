@@ -100,6 +100,8 @@ export const urls = {
     /** Global models.json editor; no cwd/query surface. */
     config: () => resource("models/config"),
     discover: () => resource("models/discover"),
+    /** models.dev parameter lookup for existing model ids. */
+    metadata: () => resource("models/metadata"),
   },
   attachments: {
     /** POST /v1/attachments — one file. Omit sessionId to stage under unfiled. */

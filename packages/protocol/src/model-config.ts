@@ -81,9 +81,25 @@ export const ModelDiscoveryInputSchema = z.strictObject({
 });
 export type ModelDiscoveryInput = z.infer<typeof ModelDiscoveryInputSchema>;
 
-export const DiscoveredModelConfigSchema = z.strictObject({
-  id: NonEmptyStringSchema,
+/**
+ * Parameter block a public catalog (models.dev) contributed for a model id.
+ * Mirrors runtime-core `ModelMetadataFields`; only positive known values are
+ * ever emitted by the Host, and absence of every field is legal (unknown).
+ */
+export const ModelMetadataFieldsSchema = z.strictObject({
   name: NonEmptyStringSchema.optional(),
+  reasoning: z.boolean().optional(),
+  input: z.array(z.enum(["text", "image"])).optional(),
+  contextWindow: z.number().int().positive().safe().optional(),
+  maxTokens: z.number().int().positive().safe().optional(),
+  cost: ModelConfigCostSchema.optional(),
+});
+export type ModelMetadataFields = z.infer<typeof ModelMetadataFieldsSchema>;
+
+export const DiscoveredModelConfigSchema = ModelMetadataFieldsSchema.extend({
+  id: NonEmptyStringSchema,
+  /** Catalog that supplied the parameters; null/absent when nothing matched. */
+  metadataSource: z.literal("models.dev").nullable().optional(),
 });
 export type DiscoveredModelConfig = z.infer<typeof DiscoveredModelConfigSchema>;
 
@@ -91,3 +107,18 @@ export const ModelDiscoveryResponseSchema = z.strictObject({
   models: z.array(DiscoveredModelConfigSchema),
 });
 export type ModelDiscoveryResponse = z.infer<typeof ModelDiscoveryResponseSchema>;
+
+/** Max ids per models.dev parameter lookup (bounded Host request surface). */
+export const MODEL_METADATA_MAX_IDS = 100;
+
+export const ModelMetadataRequestSchema = z.strictObject({
+  ids: z.array(NonEmptyStringSchema).min(1).max(MODEL_METADATA_MAX_IDS),
+  api: ModelConfigApiSchema,
+});
+export type ModelMetadataRequest = z.infer<typeof ModelMetadataRequestSchema>;
+
+/** Lookup result: per requested id, matched parameters or null (no match). */
+export const ModelMetadataResponseSchema = z.strictObject({
+  metadata: z.record(z.string(), ModelMetadataFieldsSchema.nullable()),
+});
+export type ModelMetadataResponse = z.infer<typeof ModelMetadataResponseSchema>;

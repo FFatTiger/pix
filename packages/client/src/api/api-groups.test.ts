@@ -75,6 +75,40 @@ describe("API domain response parsing", () => {
     await expect(createModelsApi(client({ models: [{ id: 1 }], defaultModel: null })).list()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
+  it("parses discovery and models.dev metadata payloads strictly", async () => {
+    const valid = {
+      models: [{
+        id: "gpt-4o",
+        name: "GPT-4o",
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 128000,
+        maxTokens: 16384,
+        cost: { input: 2.5, output: 10 },
+        metadataSource: "models.dev",
+      }],
+    };
+    await expect(createModelsApi(client(valid)).discover({
+      expectedRevision: "a".repeat(64),
+      sourceId: null,
+      providerId: "p",
+      baseUrl: "http://127.0.0.1:1/v1",
+      api: "openai-completions",
+    })).resolves.toEqual(valid);
+    // Unknown catalog source / legacy secret field must fail closed.
+    await expect(createModelsApi(client({ models: [{ id: "m", metadataSource: "other" }] })).discover({
+      expectedRevision: "a".repeat(64),
+      sourceId: null,
+      providerId: "p",
+      baseUrl: "http://127.0.0.1:1/v1",
+      api: "openai-completions",
+    })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+
+    const metadata = { metadata: { "gpt-4o": { contextWindow: 128000 }, miss: null } };
+    await expect(createModelsApi(client(metadata)).metadata({ ids: ["gpt-4o", "miss"], api: "openai-completions" })).resolves.toEqual(metadata);
+    await expect(createModelsApi(client({ metadata: { m: { apiKey: "secret" } } })).metadata({ ids: ["m"], api: "openai-completions" })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
   it("built-in settings use strict GET/PUT CAS envelopes", async () => {
     const revision = "a".repeat(64);
     const body = {

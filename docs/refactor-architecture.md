@@ -400,12 +400,13 @@ Pi 1.0 的原生 MCP/codemode/tool-search factory 只在 Adapter 装配，项目
 
 ### 全局 models.json 编辑器
 
-`ModelConfigStorePort`（runtime-core）→ `@fffattiger/pix-pi-sdk-adapter/models` → Host `GET/PUT /v1/models/config` → Client Models Settings。它与只读 `/v1/models` 独立：只在 `models.configure` seam 真实挂载时广告，sessiond down 时仍可用。Host 的 `POST /v1/models/discover` 独立保留，设置页不调用它。
+`ModelConfigStorePort`（runtime-core）→ `@fffattiger/pix-pi-sdk-adapter/models` → Host `GET/PUT /v1/models/config` → Client Models Settings。它与只读 `/v1/models` 独立：只在 `models.configure` seam 真实挂载时广告，sessiond down 时仍可用。Host 的 `POST /v1/models/discover`（拉取模型列表）与 `POST /v1/models/metadata`（models.dev 参数查询）同属该 seam，设置页经 typed transport 调用。
 
 - GET 返回 SHA-256 revision、Provider/显式模型编辑投影和内置 Provider 目录；API Key 只投影 `apiKeyConfigured`，绝不返回 key/header 值。
 - PUT 使用 expectedRevision compare-and-swap；API Key 只能 `preserve/remove/replace` 单向输入。Adapter 按 `sourceId/sourceIndex` 合并，保留 UI 未编辑且可能含敏感值的 headers/compat/modelOverrides/sampling 等 Pi 字段；候选文件先通过离线 ModelRuntime 验证，再以 owner-only bounded atomic document 写入。
-- discovery 是认证后的显式网络动作：20 秒有界、2 MiB 响应上限、只接受 http/https；已有 key 仅在 Provider identity 与 Base URL 都未改变时可内部复用，改 endpoint 必须重新输入 key，shell-command key 不执行。响应只返回去重后的模型 id/name。
-- Client 使用 typed transport/TanStack mutation；无裸 fetch。Models 页为独立 Provider/模型树、Provider/模型表单、密钥遮罩、手动增删与保存/取消，不提供网络导入；Add Provider 目录为离线内置元数据，按自定义、订阅、API Key 分组。OAuth 订阅卡在 OAuth mutation seam 未交付前诚实 disabled，不伪造登录成功。
+- discovery 是认证后的显式网络动作：20 秒有界、2 MiB 响应上限、只接受 http/https；已有 key 仅在 Provider identity 与 Base URL 都未改变时可内部复用，改 endpoint 必须重新输入 key，shell-command key 不执行。Anthropic（`has_more`/`last_id`）与 Google（`nextPageToken`）分页最多 10 页。响应只返回去重后的模型 id/name 及可选的 models.dev 补全参数（`metadataSource`）。
+- models.dev 参数补全在 adapter（`internal/models-dev-catalog.ts`）：api.json 拉取 10 秒有界、redirect 拒绝、16 MiB 上限，缓存于 `<agentDir>/pix/models-dev-cache.json`（24 小时新鲜，过期后台刷新，失败沿用旧缓存，无缓存且拉取失败=无参数，绝不伪造）。匹配仅精确 id → 一轮规范化（小写、去 `models/`、去首段 `provider/`），多候选按 api 类型偏好与原厂优先级排序；不做模糊匹配。cost 单位两处一致（每百万 token 美元），原值透传；0 或缺失字段不填。
+- Client 使用 typed transport/TanStack mutation；无裸 fetch。Models 页为独立 Provider/模型树、Provider/模型表单、密钥遮罩、手动增删与保存/取消；拉取模型列表在内联选择区勾选后进入草稿（带补全参数），已有模型可一键「从 models.dev 填参数」填入草稿，均由保存条统一落盘；Add Provider 目录为离线内置元数据，按自定义、订阅、API Key 分组。OAuth 订阅卡在 OAuth mutation seam 未交付前诚实 disabled，不伪造登录成功。
 
 ### 只读主题目录（D3B-R6）
 
