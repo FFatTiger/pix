@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { PixieIcon } from "@/components/icons/PixieIcon";
-import { SessionStatusDot, type SessionDisplayStatus } from "@/components/SessionStatusDot";
+import { RunningSessionIndicator, SessionStatusDot, type SessionDisplayStatus } from "@/components/SessionStatusDot";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -29,9 +29,6 @@ import {
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { createMutationOptions } from "@/api/mutations";
 import { PROJECT_PAGE_SIZE, PROJECT_SESSION_PAGE_SIZE, SESSION_PAGE_SIZE } from "@/api/session-list";
-
-/** Sessiond caps a sessions page at 100 rows. */
-const SEARCH_PAGE_SIZE = 100;
 import { urls } from "@/api/urls";
 import { SessionContextResponseSchema } from "@/api/schemas";
 import { HttpError } from "@/api/http-client";
@@ -43,6 +40,7 @@ import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state"
 import { downloadVisibleBranch } from "@/lib/visible-branch-export";
 import { loadPinnedSectionOpen, loadProjectsSectionOpen, savePinnedSectionOpen, saveProjectsSectionOpen } from "@/lib/sidebar-section-state";
 import { useSidebarItemState } from "@/lib/sidebar-item-state";
+import { projectDisplayName, sessionActivityMs, sessionRowTitle } from "@/lib/session-row";
 import { formatCompactActivity } from "@/lib/i18n/format";
 import { configuredTitleModel, requestLiveSessionTitle } from "@/features/session-title/session-title";
 import { useRuntimeConnection } from "@/runtime";
@@ -62,6 +60,8 @@ const FRESH_SESSION_MS = 5_000;
 export interface SidebarProps {
   /** Current workspace cwd (AppShell is the URL owner). */
   cwd: string | undefined;
+  /** Open the ⌘K session search palette (replaces the old inline filter). */
+  onOpenSearch?: () => void;
   /** The currently selected session id (the URL-selected session, AppShell-owned). */
   selectedSessionId: string | null;
   /**
@@ -112,26 +112,6 @@ export interface SidebarProps {
    * always-on by design; no online/starting dot exists).
    */
   assistantStatus?: SessionDisplayStatus | undefined;
-}
-
-/**
- * Resolve the most recent usable activity instant for a session.
- *
- * Preference order is `updatedAt → lastMessageAt → createdAt`. Each candidate
- * is only consumed when it is a finite number that maps to a representable
- * `Date`. Returns the epoch-ms instant, or `undefined` when no candidate is
- * usable.
- */
-function activityMs(session: SessionHeader): number | undefined {
-  for (const value of [session.updatedAt, session.lastMessageAt, session.createdAt]) {
-    if (value === undefined || value === null) continue;
-    if (typeof value !== "number" || !Number.isFinite(value)) continue;
-    const time = new Date(value).getTime();
-    // getTime() is NaN for out-of-range instants (e.g. 1e30); skip those.
-    if (!Number.isFinite(time)) continue;
-    return value;
-  }
-  return undefined;
 }
 
 /**
@@ -218,10 +198,6 @@ function isFreshSession(session: SessionHeader): boolean {
   return age >= 0 && age < FRESH_SESSION_MS;
 }
 
-function pathBaseName(path: string): string {
-  return path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
 /**
  * Path label that ellipsizes on the LEFT, keeping the (most relevant) trailing
  * segments visible: "…orkspace/my-project". Shows as much of the path as fits
@@ -270,7 +246,7 @@ function buildSessionTree(sessions: readonly SessionHeader[]): SessionTreeNode[]
   }
 
   // Sort each level by activity desc
-  const activity = (s: SessionHeader): number => activityMs(s) ?? 0;
+  const activity = (s: SessionHeader): number => sessionActivityMs(s) ?? 0;
   const sort = (nodes: SessionTreeNode[]) => {
     nodes.sort((a, b) => activity(b.session) - activity(a.session));
     nodes.forEach((n) => sort(n.children));
@@ -322,6 +298,7 @@ export function Sidebar({
   onSelectSession,
   onNewSession,
   canNewSession,
+  onOpenSearch,
   onOpenSettings,
   onCollapseSidebar,
   onNewSessionInProject,
@@ -406,16 +383,6 @@ export function Sidebar({
       return !open;
     });
   }, []);
-  // Session-list quick-search: the header icon opens a filter box pinned at
-  // the top of the scroll area, and sessionSearch live-filters the loaded
-  // sessions; a non-empty query replaces the whole scroll area with results.
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [sessionSearch, setSessionSearch] = useState("");
-  // ponytail: search filters titles of the newest SEARCH_PAGE_SIZE sessions
-  // client-side; add a server search param when that window is not enough.
-  const searchPageQuery = useQuery({
-    ...options.sessions.page(1, SEARCH_PAGE_SIZE, { enabled: canBrowseSessions && searchOpen }),
-  });
   const {
     state: itemState,
     pinSession,
@@ -433,7 +400,6 @@ export function Sidebar({
   // Exact selected detail stays out-of-band: never insert it into the loaded
   // page sequence or alter the authority-owned totals.
   const visibleSessions = canBrowseSessions ? loadedSessions : [];
-  const sessionsListError = canBrowseSessions && sessionPageQuery.isError === true;
 
   /** Resolve the project root for a cwd from the freshest data available. */
   const projectRootFor = useCallback((cwd: string | null | undefined): string | null => {
@@ -509,15 +475,6 @@ export function Sidebar({
     if (!isProjectExpanded(root)) setProjectExpanded(root, true);
   }, [collapsedProjects, expandedProjects, latestActivityByRoot, selectedHeader, selectedSessionId, setProjectExpanded, visibleSessions]);
 
-  // Live quick-search: filters the loaded first sessions page against the
-  // exact title shown in the list (a user-set name, else a short id). A
-  // non-empty query replaces the whole scroll area with the matching tree.
-  const searchQuery = sessionSearch.trim().toLowerCase();
-  const searchScopedSessions = searchQuery
-    ? dedupeSessions([...visibleSessions, ...(canBrowseSessions ? searchPageQuery.data?.sessions ?? [] : [])])
-      .filter((s) => sessionRowTitle(s).toLowerCase().includes(searchQuery))
-    : visibleSessions;
-
   const projectQueryRoots = [...new Set([
     ...itemState.pinnedProjects.filter((projectRoot) => !itemState.archivedProjects.includes(projectRoot)),
     ...recentProjects,
@@ -576,7 +533,7 @@ export function Sidebar({
   const pinnedSessionIds = new Set(itemState.pinnedSessions);
   const pinnedProjectRoots = new Set(itemState.pinnedProjects);
 
-  const recentSessionPool = searchScopedSessions.filter((session) => !archivedSessionIds.has(session.sessionId));
+  const recentSessionPool = visibleSessions.filter((session) => !archivedSessionIds.has(session.sessionId));
   const sessionTree = buildSessionTree(recentSessionPool);
   const pinnedSessionNodes = itemState.pinnedSessions
     .map((sessionId, index): SessionTreeNode | undefined => {
@@ -584,11 +541,9 @@ export function Sidebar({
       if (loaded) return loaded;
       const detail = pinnedSessionDetailQueries[index]?.data?.session;
       if (!detail || detail.sessionId !== sessionId || detail.parentSessionId !== undefined || archivedSessionIds.has(sessionId)) return undefined;
-      if (searchQuery && !sessionRowTitle(detail).toLowerCase().includes(searchQuery)) return undefined;
       return { session: detail, children: [] };
     })
     .filter((node): node is SessionTreeNode => node !== undefined);
-  const recentSessionNodes = sessionTree.filter((node) => !pinnedSessionIds.has(node.session.sessionId));
   const visibleProjectRoots = recentProjects.filter((project) => !archivedProjectRoots.has(project));
   // Pinned roots are durable identities, not a view over the currently loaded
   // project page. Render them directly from the persisted root path so a pin
@@ -716,10 +671,7 @@ export function Sidebar({
               data-testid="sidebar-search"
               title={t("desktop.searchSessions")}
               aria-label={t("desktop.searchSessions")}
-              onClick={() => {
-                setSearchOpen((open) => !open);
-                if (searchOpen) setSessionSearch("");
-              }}
+              onClick={() => onOpenSearch?.()}
             >
               <MagnifyingGlass size={16} weight="regular" aria-hidden="true" />
             </button>
@@ -782,56 +734,7 @@ export function Sidebar({
           <div className="sidebar-status sidebar-status--error" role="alert">{t(flagError)}</div>
         ) : null}
 
-        {searchOpen ? (
-          <div className="sidebar-search-field" data-testid="sidebar-search-field">
-            <div className="sidebar-search-wrap">
-              <MagnifyingGlass size={13} className="sidebar-search-icon" aria-hidden="true" />
-              <input
-                value={sessionSearch}
-                onChange={(e) => setSessionSearch(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    if (sessionSearch) setSessionSearch("");
-                    else setSearchOpen(false);
-                  }
-                }}
-                placeholder={t("desktop.searchSessionsPlaceholder")}
-                aria-label={t("desktop.searchSessions")}
-                autoFocus
-              />
-            </div>
-            <button
-              type="button"
-              className="sidebar-icon-btn"
-              onClick={() => { setSearchOpen(false); setSessionSearch(""); }}
-              title={t("desktop.exitSearch")}
-              aria-label={t("desktop.exitSearch")}
-            >
-              <X size={13} weight="regular" aria-hidden="true" />
-            </button>
-          </div>
-        ) : null}
-
-        {searchOpen && searchQuery ? (
-          // Active query: the scroll area IS the result list (pinned sessions
-          // first, then every loaded matching root) — nothing else shows.
-          <section className="sidebar-section" data-testid="sidebar-search-results">
-            {!canBrowseSessions ? (
-              <div className="sidebar-status">Session history unavailable until the runtime connects.</div>
-            ) : sessionsListError ? (
-              <div className="sidebar-status sidebar-status--error">{t("desktop.sessionsUnavailable")}</div>
-            ) : pinnedSessionNodes.length === 0 && recentSessionNodes.length === 0 ? (
-              <div className="sidebar-status">{t("desktop.noMatchingSessions")}</div>
-            ) : (
-              <>
-                {pinnedSessionNodes.map((node) => renderTreeItem(node))}
-                {recentSessionNodes.map((node) => renderTreeItem(node))}
-              </>
-            )}
-          </section>
-        ) : (
-          <>
-            {showPinnedSection ? (
+        {showPinnedSection ? (
           <section className="sidebar-section" data-testid="sidebar-pinned">
             <div className="sidebar-section-head" data-expanded={pinnedOpen ? "true" : "false"}>
               <button
@@ -899,8 +802,6 @@ export function Sidebar({
           </div>
           ) : null}
         </section>
-          </>
-        )}
       </div>
 
       <div className="sidebar-footer">
@@ -964,16 +865,6 @@ function sessionWorkspaceStatus(
   const decision = resolveWorkspaceAccessDecision(session);
   if (decision.kind === "authorized") return null;
   return describeWorkspaceAccess(decision, t);
-}
-
-function sessionRowTitle(session: SessionHeader): string {
-  if (session.title) return session.title;
-  const first = session.firstMessage;
-  if (typeof first === "string" && first.trim().length > 0) {
-    const oneLine = first.replace(/[\r\n\t]+/g, " ").trim();
-    return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
-  }
-  return session.sessionId.slice(0, 12);
 }
 
 function LoadMoreButton({
@@ -1109,7 +1000,7 @@ function ProjectRow({
         ) : (
           <Folder size={17} weight="regular" aria-hidden="true" />
         )}
-        <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
+        <span className="sidebar-row-title sidebar-title-fade">{projectDisplayName(project)}</span>
       </button>
       {/* Collapsed summary: busy spinner wins over the waiting dot; an
           expanded project shows nothing here (its session rows own markers). */}
@@ -1292,45 +1183,6 @@ function SessionTreeItem({
   );
 }
 
-function RunningSessionIndicator() {
-  const { t } = useI18n();
-
-  return (
-    <span
-      className="sidebar-row-status"
-      title={t("desktop.agentRunning")}
-      aria-label={t("desktop.agentRunningLabel")}
-      style={{
-        width: 14,
-        height: 14,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexShrink: 0,
-        color: "var(--accent)",
-      }}
-    >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ display: "block" }}>
-        <g>
-          <path
-            d="M21 12a9 9 0 1 1-3.8-7.4"
-            stroke="currentColor"
-            strokeWidth="2.8"
-            strokeLinecap="round"
-          />
-          <animateTransform
-            attributeName="transform"
-            type="rotate"
-            from="0 12 12"
-            to="360 12 12"
-            dur="0.9s"
-            repeatCount="indefinite"
-          />
-        </g>
-      </svg>
-    </span>
-  );
-}
 
 /**
  * Lightweight pending cue for the sidebar row the no-flicker selection flow is
@@ -1652,7 +1504,7 @@ function SessionItem({
 
   const workspaceStatus = sessionWorkspaceStatus(session, t);
   const historyOnly = workspaceStatus !== null;
-  const activity = activityMs(session);
+  const activity = sessionActivityMs(session);
   const rowTitle = isWaiting
     ? `${title} · ${t("desktop.sessionStatus.waiting")}`
     : isRunning

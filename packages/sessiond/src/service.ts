@@ -51,7 +51,7 @@ import {
 } from "@fffattiger/pix-protocol";
 import type { RuntimeCloseReason, SessiondRunningWatchPush } from "@fffattiger/pix-protocol";
 import type { AssistantPresence } from "@fffattiger/pix-protocol";
-import { READ_ONLY_RUNTIME_COMMAND_TYPES, isRuntimeError, isAssistantWorkspacePath, resolveAssistantWorkspaceDir, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
+import { READ_ONLY_RUNTIME_COMMAND_TYPES, compareSessionQueryHits, isRuntimeError, isAssistantWorkspacePath, matchSessionQuery, resolveAssistantWorkspaceDir, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMatchSource, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
 import { AssistantOpsAuthority, type AssistantOpsRecordView } from "./assistant-ops.js";
 import { AssistantResidencySupervisor, type AssistantResidencySurface } from "./assistant-residency.js";
 import { WorkspaceStateError } from "./workspace-state.js";
@@ -3926,19 +3926,34 @@ export class SessiondService {
     const catalog = this.sessionCatalog();
     if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable", false);
     const captured = this.titleOverlay.captureAll();
-    const page = catalog.listSessionPage
-      ? await catalog.listSessionPage(request)
-      : await this.legacySessionPage(catalog, request);
     // A transient store failure must not degrade to "no pins"
     // (fallback-as-success); the listing fails honestly instead.
-    let workspace: Record<string, import("./workspace-state.js").WorkspaceFlags> | undefined;
+    let snapshot: import("./workspace-state.js").WorkspaceStateSnapshot | undefined;
     if (this.deps.workspaceState !== null && this.deps.workspaceState !== undefined) {
       try {
-        workspace = this.deps.workspaceState.snapshot().sessions;
+        snapshot = this.deps.workspaceState.snapshot();
       } catch (error) {
         throw this.mapWorkspaceStateFailure(error, "session");
       }
     }
+    const workspace = snapshot?.sessions;
+    // Keyword-search visibility parity with the sidebar: archived sessions and
+    // every session of an archived project are excluded BEFORE pagination so
+    // they never surface in search results and totals stay honest. Only
+    // keyword-filtered pages carry the exclusions — plain pages keep merging
+    // the flags onto headers for the presentation edge.
+    const catalogRequest: SessionPageRequest = request.query === undefined ? request : {
+      ...request,
+      excludeSessionIds: snapshot === undefined ? [] : Object.entries(snapshot.sessions)
+        .filter(([, flags]) => flags.archived === true)
+        .map(([sessionId]) => sessionId),
+      excludeProjectRoots: snapshot === undefined ? [] : Object.entries(snapshot.projects)
+        .filter(([, flags]) => flags.archived === true)
+        .map(([projectRoot]) => projectRoot),
+    };
+    const page = catalog.listSessionPage
+      ? await catalog.listSessionPage(catalogRequest)
+      : await this.legacySessionPage(catalog, catalogRequest);
     return {
       ...page,
       sessions: page.sessions.map((item) => {
@@ -3959,12 +3974,28 @@ export class SessiondService {
     if (request.parentSessionId !== undefined && !allSessions.some((session) => session.sessionId === request.parentSessionId)) {
       throw new SessiondError("not_found", "parent session was not found", false);
     }
-    const sessions = allSessions.filter((session) =>
+    const excludedIds = new Set(request.excludeSessionIds ?? []);
+    const excludedRoots = new Set(request.excludeProjectRoots ?? []);
+    let sessions = allSessions.filter((session) =>
       (request.parentSessionId !== undefined
         ? session.parentSessionId === request.parentSessionId
         : session.parentSessionId === undefined)
       && (request.cwd === undefined || session.cwd === request.cwd)
-      && (request.projectRoot === undefined || session.projectRoot === request.projectRoot));
+      && (request.projectRoot === undefined || session.projectRoot === request.projectRoot)
+      && !excludedIds.has(session.sessionId)
+      && !excludedRoots.has(session.projectRoot));
+    // Keyword pages rank through the shared runtime-core matcher (the SAME
+    // tiers every catalog implementation uses) and tag each row with its
+    // match source for the client.
+    if (request.query !== undefined) {
+      const matched: Array<SessionHeader & { matchSource: SessionMatchSource }> = [];
+      for (const session of sessions) {
+        const source = matchSessionQuery(session, request.query);
+        if (source !== null) matched.push({ ...session, matchSource: source });
+      }
+      matched.sort(compareSessionQueryHits);
+      sessions = matched;
+    }
     const offset = (request.page - 1) * request.pageSize;
     return {
       sessions: sessions.slice(offset, offset + request.pageSize),

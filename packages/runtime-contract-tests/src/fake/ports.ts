@@ -29,13 +29,14 @@ import type {
   SessionListFilter,
   SessionLocation,
   SessionLocatorPort,
+  SessionMatchSource,
   SessionThinkingBlock,
   SessionTree,
   SkillInfo,
   SlashCommandInfo,
   TrustGateResult,
 } from "@fffattiger/pix-runtime-core";
-import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
+import { compareSessionQueryHits, makeRuntimeError, matchSessionQuery } from "@fffattiger/pix-runtime-core";
 import type { ReferenceSessionStore } from "./store.js";
 
 /* ------------------------------------------------------------------ */
@@ -123,6 +124,20 @@ export class ReferenceSessionCatalog implements SessionCatalogPort {
     }
     if (request.cwd !== undefined) headers = headers.filter((header) => header.cwd === request.cwd);
     if (request.projectRoot !== undefined) headers = headers.filter((header) => header.projectRoot === request.projectRoot);
+    const excludedIds = new Set(request.excludeSessionIds ?? []);
+    const excludedRoots = new Set(request.excludeProjectRoots ?? []);
+    headers = headers.filter((header) => !excludedIds.has(header.sessionId) && !excludedRoots.has(header.projectRoot));
+    // Keyword pages filter + rank through the shared runtime-core matcher —
+    // the SAME tiers every catalog implementation uses.
+    if (request.query !== undefined) {
+      const matched: Array<SessionHeader & { matchSource: SessionMatchSource }> = [];
+      for (const header of headers) {
+        const source = matchSessionQuery(header, request.query);
+        if (source !== null) matched.push({ ...header, matchSource: source });
+      }
+      matched.sort(compareSessionQueryHits);
+      headers = matched;
+    }
     const total = headers.length;
     const offset = (request.page - 1) * request.pageSize;
     return {

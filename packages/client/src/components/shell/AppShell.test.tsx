@@ -187,6 +187,7 @@ function controllableStubFetch(opts: {
       const pageSize = Number(url.searchParams.get("pageSize") ?? 50);
       const projectRoot = url.searchParams.get("projectRoot");
       const parentSessionId = url.searchParams.get("parentSessionId");
+      const query = url.searchParams.get("query");
       if (projectRoot !== null && opts.projectSessionsError !== undefined) {
         return jsonStatus(opts.projectSessionsError.body, opts.projectSessionsError.status);
       }
@@ -194,9 +195,33 @@ function controllableStubFetch(opts: {
         ? sessions.filter((session) => session.parentSessionId === undefined && !/pi-(?:claude-)?subagents/.test(session.projectRoot))
         : sessions.filter((session) => session.parentSessionId === parentSessionId);
       const scoped = projectRoot === null ? visible : visible.filter((session) => session.projectRoot === projectRoot);
-      // Round 5 server contract: pinned rows always surface first (durable
-      // identities on every device's first page), then recency.
-      const filtered = [...scoped].sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0));
+      // Server-side keyword search (mirrors the daemon contract): case-
+      // insensitive substring over title (first-message display name when
+      // untitled) / project basename / first message, ranked title > project >
+      // message then latest activity, tagged with matchSource.
+      let filtered = [...scoped].sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0));
+      if (query !== null && query.trim().length > 0) {
+        const needle = query.trim().toLowerCase();
+        const projectName = (session: SessionHeader) => (session.projectRoot || session.cwd).replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() ?? "";
+        const matchOf = (session: SessionHeader): "title" | "project" | "message" | null => {
+          const title = session.title && session.title.trim().length > 0 ? session.title : session.firstMessage;
+          if (title && title.toLowerCase().includes(needle)) return "title";
+          if (projectName(session).toLowerCase().includes(needle)) return "project";
+          if (session.firstMessage && session.firstMessage.toLowerCase().includes(needle)) return "message";
+          return null;
+        };
+        const tier = { title: 0, project: 1, message: 2 } as const;
+        filtered = scoped
+          .map((session) => {
+            const source = matchOf(session);
+            return source === null ? null : { session, source };
+          })
+          .filter((entry): entry is { session: SessionHeader; source: "title" | "project" | "message" } => entry !== null)
+          .sort((a, b) => tier[a.source] - tier[b.source]
+            || (b.session.updatedAt ?? b.session.lastMessageAt ?? b.session.createdAt ?? 0)
+              - (a.session.updatedAt ?? a.session.lastMessageAt ?? a.session.createdAt ?? 0))
+          .map(({ session, source }) => ({ ...session, matchSource: source }));
+      }
       const offset = (page - 1) * pageSize;
       return json({ sessions: filtered.slice(offset, offset + pageSize), page, pageSize, total: filtered.length, totalPages: filtered.length === 0 ? 0 : Math.ceil(filtered.length / pageSize), catalogRevision: 0 });
     }
@@ -293,6 +318,8 @@ let previousFetch: typeof fetch;
 // each test still starts from an isolated browser preference baseline unless
 // it explicitly seeds localStorage after this hook.
 beforeEach(() => {
+  // jsdom has no scrollIntoView — the ⌘K palette keyboard navigation uses it.
+  Element.prototype.scrollIntoView = vi.fn();
   window.localStorage.removeItem("pi-sidebar-item-state");
   window.localStorage.removeItem("pi-sidebar-projects-open");
   window.localStorage.removeItem("pi-sidebar-sessions-open");
@@ -1623,6 +1650,24 @@ describe("AppShell — immediate session selection (no prepare/pending)", () => 
     rerender({ cwd: "/x", session: "B" });
     await act(async () => { await flush(8); });
     expect(contextDeferreds.get("B")).toBeDefined();
+  });
+
+  it("opening a session from the ⌘K palette navigates exactly like a sidebar row click", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
+    mountApp({ cwd: "/x" });
+    await settle();
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const input = screen.getByTestId("search-palette-input");
+    fireEvent.change(input, { target: { value: "Session C" } });
+    await act(async () => { vi.advanceTimersByTime(200); });
+    await settle();
+    fireEvent.click(within(screen.getByTestId("search-palette-results")).getByText("Session C"));
+    await act(async () => { await flush(8); });
+    // The SAME navigation owner and arguments as a sidebar row: one navigate,
+    // cwd preserved, and the palette closes.
+    expect(navigateMock).toHaveBeenCalledTimes(1);
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/", search: { session: "C", cwd: "/x" } }));
+    expect(screen.queryByTestId("search-palette")).toBeNull();
   });
 
   it("serves a warm complete-branch cache without issuing a context fetch", async () => {
@@ -3668,7 +3713,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.queryByTestId("session-select-A")).toBeNull();
   });
 
-  it("hides parent-linked subagents from the project body and search", async () => {
+  it("hides parent-linked subagents from the project body and the search palette", async () => {
     const now = Date.now();
     globalThis.fetch = controllableStubFetch({
       sessions: [
@@ -3681,12 +3726,14 @@ describe("AppShell — source-like sidebar rail", () => {
     const projectSessions = screen.getByTestId("sidebar-project-sessions");
     expect(within(projectSessions).getByTestId("session-select-parent")).toBeTruthy();
     expect(within(projectSessions).queryByTestId("session-select-child")).toBeNull();
-    // Search filters the loaded root-only sequence — the fork never surfaces.
-    fireEvent.click(screen.getByTestId("sidebar-search"));
-    const input = screen.getByTestId("sidebar-search-field").querySelector("input")!;
+    // The ⌘K palette searches the same browse-visible roots — the fork never
+    // surfaces (the sidebar's inline filter is gone).
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const input = screen.getByTestId("search-palette-input");
     fireEvent.change(input, { target: { value: "Child" } });
+    await act(async () => { vi.advanceTimersByTime(200); });
     await settle();
-    expect(within(screen.getByTestId("sidebar-search-results")).queryByTestId("session-select-child")).toBeNull();
+    expect(within(screen.getByTestId("search-palette-results")).queryByText("Child session")).toBeNull();
   });
 
   it("keeps a directly deep-linked subagent out of browse lists", async () => {
@@ -3726,7 +3773,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(order(screen.getByTestId("sidebar-project-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
   });
 
-  it("search replaces the scroll area with matching loaded sessions; Esc exits", async () => {
+  it("the ⌘K palette searches server-side; Esc closes and the sidebar sections stay put", async () => {
     const now = Date.now();
     const many: SessionHeader[] = Array.from({ length: 7 }, (_, index) => ({
       sessionId: `S${index + 1}`,
@@ -3742,32 +3789,40 @@ describe("AppShell — source-like sidebar rail", () => {
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
-    fireEvent.click(screen.getByTestId("sidebar-search"));
-    const field = screen.getByTestId("sidebar-search-field");
-    const input = field.querySelector("input")!;
-    // Search covers the loaded first page (S1..S5) — no extra paging fires.
-    fireEvent.change(input, { target: { value: "Session 4" } });
-    await settle();
-    const results = screen.getByTestId("sidebar-search-results");
-    expect(within(results).getByTestId("session-select-S4")).toBeTruthy();
-    expect(within(results).queryByTestId("session-select-S1")).toBeNull();
-    // An active query replaces the whole scroll area: no section chrome.
-    expect(screen.queryByTestId("sidebar-projects")).toBeNull();
-    expect(screen.queryByTestId("sidebar-pinned")).toBeNull();
-    expect(countMockFetchCalls(fetchImpl, "page=2")).toBe(0);
-    fireEvent.change(input, { target: { value: "zzz" } });
-    await settle();
-    expect(within(screen.getByTestId("sidebar-search-results")).getByText("No matching sessions")).toBeTruthy();
-    // First Esc clears the query (sections return); the field stays open.
-    fireEvent.keyDown(input, { key: "Escape" });
-    await settle();
-    expect(screen.queryByTestId("sidebar-search-results")).toBeNull();
-    expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
-    // Second Esc closes search entirely.
-    fireEvent.keyDown(input, { key: "Escape" });
-    await settle();
+    // The sidebar no longer mounts an inline search field — the magnifier
+    // opens the palette instead.
     expect(screen.queryByTestId("sidebar-search-field")).toBeNull();
+    fireEvent.click(screen.getByTestId("sidebar-search"));
+    const input = screen.getByTestId("search-palette-input");
+    expect(screen.getByTestId("search-palette")).toBeTruthy();
+    // Typing fires a server-side keyword request (debounced 150ms — advance
+    // the suite's fake timers past the debounce, then settle the query).
+    fireEvent.change(input, { target: { value: "Session 4" } });
+    await act(async () => { vi.advanceTimersByTime(200); });
+    await settle();
+    expect(countMockFetchCalls(fetchImpl, "query=Session+4")).toBeGreaterThanOrEqual(1);
+    const results = screen.getByTestId("search-palette-results");
+    expect(within(results).getByText("Session 4")).toBeTruthy();
+    expect(within(results).queryByText("Session 1")).toBeNull();
+    // The palette is an overlay: sidebar sections never move.
     expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
+    fireEvent.change(input, { target: { value: "zzz" } });
+    await act(async () => { vi.advanceTimersByTime(200); });
+    await settle();
+    expect(screen.getByTestId("search-palette-empty")).toBeTruthy();
+    // Esc closes the palette (the input survives for the next open).
+    fireEvent.keyDown(input, { key: "Escape" });
+    await settle();
+    expect(screen.queryByTestId("search-palette")).toBeNull();
+    expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
+    // Re-open with ⌘K: the previous query and its result are still there.
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await settle();
+    expect((screen.getByTestId("search-palette-input") as HTMLInputElement).value).toBe("zzz");
+    // ⌘K again toggles it closed.
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await settle();
+    expect(screen.queryByTestId("search-palette")).toBeNull();
   });
 
   it("Projects and Sessions load more independently; project rows append", async () => {

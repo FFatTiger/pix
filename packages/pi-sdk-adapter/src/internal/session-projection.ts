@@ -67,7 +67,7 @@ import type {
   SessionPage,
   SessionPageRequest,
 } from "@fffattiger/pix-runtime-core";
-import { matchesAssistantWorkspacePattern } from "@fffattiger/pix-runtime-core";
+import { matchesAssistantWorkspacePattern, matchSessionQuery, SESSION_MATCH_SOURCES } from "@fffattiger/pix-runtime-core";
 
 /**
  * Bump when the persisted schema/checksum layout or browse-kind policy changes
@@ -360,12 +360,41 @@ export class SessionProjectionIndex {
   /**
    * Query one true numbered session page directly from the ready materialized
    * index. No filesystem or JSONL operation occurs here.
+   *
+   * Keyword requests (`query`) filter and rank through the ONE runtime-core
+   * matcher: `pix_session_match_rank` is a thin SQL wrapper over
+   * `matchSessionQuery`, so this SQLite path, the store's in-memory fallback
+   * and sessiond's legacy path can never disagree on tiers or case folding.
+   * Ordering mirrors `compareSessionQueryHits` exactly (tier asc, activity
+   * desc, id asc); the served `matchSource` is re-derived in JS from the same
+   * matcher (never a second ranking rule).
    */
   querySessionPage(request: SessionPageRequest): SessionPage | null {
     let db: DatabaseSync | null = null;
     try {
       db = new DatabaseSync(this.indexPath);
       const parentSessionId = request.parentSessionId;
+      const query = request.query;
+      if (query !== undefined) {
+        // NOTE: node:sqlite registers the SQL argument arity from the function
+        // signature — the needle is a bound 4th SQL argument (not a closure)
+        // so the registered arity matches the call sites exactly.
+        db.function("pix_session_match_rank", (name: unknown, firstMessage: unknown, projectRoot: unknown, needle: unknown): number | null => {
+          if (typeof needle !== "string") return null;
+          const source = matchSessionQuery({
+            title: typeof name === "string" && name.length > 0 ? name : undefined,
+            // Match against the SAME sanitized one-line text the served header
+            // carries (projectionRowToHeader collapses \r\n\t to spaces); the
+            // "(no messages)" sentinel is the persisted empty marker.
+            firstMessage: typeof firstMessage === "string" && firstMessage !== "(no messages)"
+              ? firstMessage.replace(/[\r\n\t]+/g, " ").trim()
+              : undefined,
+            projectRoot: typeof projectRoot === "string" ? projectRoot : undefined,
+          }, needle);
+          return source === null ? null : SESSION_MATCH_SOURCES.indexOf(source);
+        });
+      }
+      const rankExpr = query === undefined ? null : "pix_session_match_rank(s.name, s.first_message, s.project_root, ?)";
       const conditions: string[] = [];
       const parameters: Array<string | number> = [];
       if (parentSessionId !== undefined) {
@@ -392,14 +421,28 @@ export class SessionProjectionIndex {
           parameters.push(request.projectRoot);
         }
       }
+      // Organization-state exclusions (archived sessions / archived projects)
+      // filter BEFORE totals, exactly like cwd/projectRoot.
+      if (request.excludeSessionIds !== undefined && request.excludeSessionIds.length > 0) {
+        conditions.push(`s.id NOT IN (${request.excludeSessionIds.map(() => "?").join(", ")})`);
+        parameters.push(...request.excludeSessionIds);
+      }
+      if (request.excludeProjectRoots !== undefined && request.excludeProjectRoots.length > 0) {
+        conditions.push(`s.project_root NOT IN (${request.excludeProjectRoots.map(() => "?").join(", ")})`);
+        parameters.push(...request.excludeProjectRoots);
+      }
       const where = conditions.join(" AND ");
+      const unfiltered = query === undefined
+        && request.excludeSessionIds === undefined
+        && request.excludeProjectRoots === undefined;
+      const totalSql = `SELECT COUNT(*) AS total FROM session_projection s LEFT JOIN session_projection parent ON parent.path = s.parent_session_path WHERE ${where}${rankExpr === null ? "" : ` AND ${rankExpr} IS NOT NULL`}`;
       let total: number;
       if (parentSessionId !== undefined) {
-        const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM session_projection s LEFT JOIN session_projection parent ON parent.path = s.parent_session_path WHERE ${where}`).get(...parameters) as { total: number | bigint };
+        const totalRow = db.prepare(totalSql).get(...parameters, ...(query === undefined ? [] : [query])) as { total: number | bigint };
         total = Number(totalRow.total);
-      } else if (request.cwd === undefined && request.projectRoot === undefined) {
+      } else if (unfiltered && request.cwd === undefined && request.projectRoot === undefined) {
         total = metaInteger(db, "session_total");
-      } else if (request.cwd === undefined && request.projectRoot !== undefined) {
+      } else if (unfiltered && request.cwd === undefined && request.projectRoot !== undefined) {
         const row = db.prepare("SELECT session_count FROM project_projection WHERE project_root = ?").get(request.projectRoot) as { session_count?: number | bigint } | undefined;
         if (row?.session_count !== undefined) {
           total = Number(row.session_count);
@@ -414,7 +457,7 @@ export class SessionProjectionIndex {
           total = Number(scoped.total);
         }
       } else {
-        const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM session_projection s WHERE ${where}`).get(...parameters) as { total: number | bigint };
+        const totalRow = db.prepare(totalSql).get(...parameters, ...(query === undefined ? [] : [query])) as { total: number | bigint };
         total = Number(totalRow.total);
       }
       const offset = (request.page - 1) * request.pageSize;
@@ -423,9 +466,15 @@ export class SessionProjectionIndex {
         + "s.message_count, s.first_message, s.project_root, s.browse_kind, s.file_mtime_ms, "
         + "s.file_size, s.checksum, parent.id AS parent_session_id "
         + "FROM session_projection s LEFT JOIN session_projection parent ON parent.path = s.parent_session_path "
-        + `WHERE ${where} ORDER BY s.modified_ms DESC, s.id COLLATE BINARY ASC LIMIT ? OFFSET ?`,
-      ).all(...parameters, request.pageSize, offset) as unknown as Array<DbRow & { parent_session_id: string | null }>;
-      const sessions: SessionHeader[] = rows.map((row) => projectionRowToHeader(row, row.parent_session_id));
+        + `WHERE ${where}${rankExpr === null ? "" : ` AND ${rankExpr} IS NOT NULL`} `
+        + `ORDER BY ${rankExpr === null ? "" : `${rankExpr} ASC, `}s.modified_ms DESC, s.id COLLATE BINARY ASC LIMIT ? OFFSET ?`,
+      ).all(...parameters, ...(query === undefined ? [] : [query, query]), request.pageSize, offset) as unknown as Array<DbRow & { parent_session_id: string | null }>;
+      const sessions: SessionHeader[] = rows.map((row) => {
+        const header = projectionRowToHeader(row, row.parent_session_id);
+        if (query === undefined) return header;
+        const source = matchSessionQuery(header, query);
+        return source === null ? header : { ...header, matchSource: source };
+      });
       return {
         sessions,
         page: request.page,

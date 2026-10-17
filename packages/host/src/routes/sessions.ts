@@ -47,6 +47,9 @@ const RENAME_BODY_LIMIT = 4 * 1024;
 /** Frozen session-name length cap (mirrors the adapter/sessiond/UX rule). */
 const MAX_SESSION_NAME_LENGTH = 200;
 
+/** Frozen keyword-query cap (mirrors runtime-core MAX_SESSION_QUERY_LENGTH / the Protocol schema). */
+const MAX_SESSION_QUERY_LENGTH = 200;
+
 interface SessionRouteDeps {
   /** Narrow read-only client (the sessiond RPC catalog). */
   client: SessionHistoryReadClient;
@@ -375,7 +378,7 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
   });
 
   app.get("/v1/sessions", async (c) => {
-    requireOnlyQueryKeys(c.req.url, ["page", "pageSize", "cwd", "projectRoot", "parentSessionId"]);
+    requireOnlyQueryKeys(c.req.url, ["page", "pageSize", "cwd", "projectRoot", "parentSessionId", "query"]);
     const cwdRaw = c.req.query("cwd");
     const cwd = cwdRaw && cwdRaw.length > 0 ? cwdRaw : undefined;
     const projectRootRaw = c.req.query("projectRoot");
@@ -385,12 +388,22 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
       throw new HttpError(400, "INVALID_QUERY", "parentSessionId must be a non-empty string");
     }
     const parentSessionId = parentSessionIdRaw;
+    // Keyword search (⌘K panel): outer whitespace trimmed, blank treated as
+    // absent (never a 400 for a stray `?query=`), over-long rejected with a
+    // fixed 400 BEFORE the RPC.
+    const queryRaw = c.req.query("query");
+    const queryTrimmed = queryRaw?.trim() ?? "";
+    if (queryTrimmed.length > MAX_SESSION_QUERY_LENGTH) {
+      throw new HttpError(400, "INVALID_QUERY", `query must be at most ${MAX_SESSION_QUERY_LENGTH} characters`);
+    }
+    const query = queryTrimmed.length > 0 ? queryTrimmed : undefined;
     const page = boundedInt(c.req.query("page"), "page", 1, Number.MAX_SAFE_INTEGER) ?? 1;
     const pageSize = boundedInt(c.req.query("pageSize"), "pageSize", 1, SESSIONS_MAX_PAGE_SIZE) ?? 50;
-    const params: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string } = { page, pageSize };
+    const params: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string; query?: string } = { page, pageSize };
     if (cwd !== undefined) params.cwd = cwd;
     if (projectRoot !== undefined) params.projectRoot = projectRoot;
     if (parentSessionId !== undefined) params.parentSessionId = parentSessionId;
+    if (query !== undefined) params.query = query;
     let result: unknown;
     try {
       result = await deps.client.list(params);

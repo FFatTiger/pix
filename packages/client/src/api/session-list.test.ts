@@ -73,7 +73,7 @@ describe("true numbered catalog pages", () => {
     });
     await options.queryFn!({ signal: new AbortController().signal } as never);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe("/v1/sessions?page=1&pageSize=20&parentSessionId=parent-1");
-    expect(options.queryKey).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1"]);
+    expect(options.queryKey).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1", null]);
   });
 
   it("Projects are a separate resource and request", async () => {

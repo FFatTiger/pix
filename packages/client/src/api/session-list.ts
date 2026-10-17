@@ -33,6 +33,7 @@ export function createSessionPageQueryOptions(input: {
   readonly cwd?: string;
   readonly projectRoot?: string;
   readonly parentSessionId?: string;
+  readonly query?: string;
 }) {
   const api = createSessionsApi(input.http);
   return queryOptions<SessionPage>({
@@ -43,6 +44,7 @@ export function createSessionPageQueryOptions(input: {
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.projectRoot === undefined ? {} : { projectRoot: input.projectRoot }),
       ...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
+      ...(input.query === undefined ? {} : { query: input.query }),
       signal,
     }),
     enabled: input.enabled,

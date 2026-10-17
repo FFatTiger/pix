@@ -103,6 +103,13 @@ export const SessionHeaderSchema = z.strictObject({
    */
   pinned: z.boolean().optional(),
   archived: z.boolean().optional(),
+  /**
+   * Match source on keyword-filtered session pages (`query` present on
+   * `sessions.list`). Mirrors the runtime-core `SESSION_MATCH_SOURCES`
+   * authority (protocol must stay runtime-core-free); absence means an
+   * unfiltered page or an older producer — render without highlight/snippet.
+   */
+  matchSource: z.enum(["title", "project", "message"]).optional(),
 });
 export type SessionHeader = z.infer<typeof SessionHeaderSchema>;
 

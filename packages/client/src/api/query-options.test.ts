@@ -17,7 +17,7 @@ function invalidationHarness(body: unknown) {
 describe("query keys and options", () => {
   it("uses stable hierarchical keys including cwd and provider id", () => {
     expect(queryKeys.sessions.page(2, 50, "/repo")).toEqual(queryKeys.sessions.page(2, 50, "/repo"));
-    expect(queryKeys.sessions.page(1, 20, undefined, undefined, "parent-1")).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1"]);
+    expect(queryKeys.sessions.page(1, 20, undefined, undefined, "parent-1")).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1", null]);
     expect(queryKeys.sessions.page(1, 20, undefined, undefined, "parent-1")).not.toEqual(queryKeys.sessions.page(1, 20));
     expect(queryKeys.projects.page(1, 10)).not.toEqual(queryKeys.projects.page(2, 10));
     expect(queryKeys.sessions.detail("s").slice(0, 4)).toEqual(queryKeys.sessions.byId("s"));
@@ -102,7 +102,7 @@ describe("query keys and options", () => {
 
     const byCwd = options.sessions.page(2, 50, { cwd: "/repo" });
     expect(byCwd.staleTime).toBe(30_000);
-    expect(byCwd.queryKey).toEqual(["pix", "sessions", "page", 2, 50, "/repo", null, null]);
+    expect(byCwd.queryKey).toEqual(["pix", "sessions", "page", 2, 50, "/repo", null, null, null]);
     const signal = new AbortController().signal;
     await byCwd.queryFn!({ signal } as never);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -111,7 +111,7 @@ describe("query keys and options", () => {
     );
 
     const byParent = options.sessions.page(1, 20, { parentSessionId: "parent-1" });
-    expect(byParent.queryKey).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1"]);
+    expect(byParent.queryKey).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1", null]);
     await byParent.queryFn!({ signal } as never);
     expect(fetchImpl).toHaveBeenCalledWith(
       "/v1/sessions?page=1&pageSize=20&parentSessionId=parent-1",
