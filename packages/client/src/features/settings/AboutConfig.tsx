@@ -61,10 +61,10 @@ export function AboutConfig() {
   const about = aboutQuery.data;
   const checking = updateQuery.isFetching;
   const updateResult = updateQuery.data;
-  // Install command composes from the wire's own package name — the client
-  // never hardcodes a sibling package name.
+  // `pix update` installs the exact version this check found (and explains
+  // the manual npm route when pix is not a global npm install).
   const updateCommand = updateResult?.updateAvailable && updateResult.latest !== null
-    ? `npm install -g ${updateResult.package}@${updateResult.latest}`
+    ? `pix update ${updateResult.latest}`
     : null;
 
   const onCheckUpdate = () => {

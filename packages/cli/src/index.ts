@@ -2,7 +2,7 @@
  * pix CLI — production composition + lifecycle entry point.
  *
  * Dispatches the lifecycle commands (`start`, `host`, `status`, `down`,
- * `sessiond`, `test:e2e:startup`) to their command modules. The root
+ * `sessiond`, `update`, `test:e2e:startup`) to their command modules. The root
  * `scripts/product-entry.mjs` and the `pix` bin both reach the CLI through
  * {@link runCli}, keeping a single source of truth for command behavior.
  *
@@ -19,6 +19,7 @@ import { hostCommand } from "./commands/host.js";
 import { statusCommand } from "./commands/status.js";
 import { downCommand } from "./commands/down.js";
 import { sessiondCommand } from "./commands/sessiond-foreground.js";
+import { updateCommand } from "./commands/update.js";
 import { pixErr, pixLog } from "./log.js";
 
 /**
@@ -48,6 +49,7 @@ function printHelp(): void {
   pixLog("  status                                              report sessiond state");
   pixLog("  down --all                                          stop sessiond (requires --all)");
   pixLog("  sessiond                                            run sessiond in the foreground");
+  pixLog("  update [version] [--check] [--restart]              install the latest (or given) release from npm");
 }
 
 /**
@@ -73,6 +75,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return downCommand(rest);
     case "sessiond":
       return sessiondCommand();
+    case "update":
+      return updateCommand(rest);
     case undefined:
     case "-h":
     case "--help":

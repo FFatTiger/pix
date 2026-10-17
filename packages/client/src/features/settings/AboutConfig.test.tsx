@@ -79,7 +79,7 @@ describe("AboutConfig", () => {
     fireEvent.click(await screen.findByTestId("about-check-update"));
     expect(await screen.findByTestId("about-update-available")).toBeTruthy();
     expect(screen.getByText("Version 0.4.0 is available.")).toBeTruthy();
-    expect(screen.getByTestId("about-update-command").textContent).toContain(`npm install -g ${UPDATE_PACKAGE}@0.4.0`);
+    expect(screen.getByTestId("about-update-command").textContent).toContain("pix update 0.4.0");
     const link = screen.getByRole("link", { name: "Release notes" }) as HTMLAnchorElement;
     expect(link.href).toBe("https://github.com/FFatTiger/pix/releases/tag/v0.4.0");
     expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
