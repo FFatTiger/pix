@@ -151,7 +151,7 @@ export const enLocale = {
     "desktop.memoryProvider_lore": "Lore",
     "desktop.memoryProvider_off": "Off",
     "desktop.memoryLoreSectionTitle": "Lore connection",
-    "desktop.memoryLoreLinkSaas": "Sign up on loremem.com",
+    "desktop.memoryLoreLinkSaas": "Create a free cloud key",
     "desktop.memoryLoreLinkSelfHost": "Self-host guide",
     "desktop.memoryLoreLinkManual": "Connect an existing server",
     "desktop.memoryLoreBaseUrl": "Server address",

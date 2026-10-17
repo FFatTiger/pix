@@ -83,8 +83,8 @@ describe("MemoryConfig", () => {
     });
     mount(fetchMock);
     fireEvent.click(await screen.findByRole("radio", { name: "Lore" }));
-    // Guidance links for SaaS signup / self-host / manual connection.
-    expect(screen.getByText("Sign up on loremem.com")).toBeTruthy();
+    // Guidance links: free cloud key / self-host / manual connection.
+    expect(screen.getByText("Create a free cloud key")).toBeTruthy();
     expect(screen.getByText("Self-host guide")).toBeTruthy();
     expect(screen.getByText("Connect an existing server")).toBeTruthy();
     // Token field never echoes a value (write-only).

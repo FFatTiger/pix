@@ -151,7 +151,7 @@ export const zhCNLocale = {
     "desktop.memoryProvider_lore": "Lore",
     "desktop.memoryProvider_off": "关闭",
     "desktop.memoryLoreSectionTitle": "Lore 连接",
-    "desktop.memoryLoreLinkSaas": "去官网注册 SaaS",
+    "desktop.memoryLoreLinkSaas": "免费在云服务创建 Key",
     "desktop.memoryLoreLinkSelfHost": "自己部署",
     "desktop.memoryLoreLinkManual": "连接已有服务器",
     "desktop.memoryLoreBaseUrl": "服务地址",

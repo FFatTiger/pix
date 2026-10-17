@@ -25,7 +25,7 @@ import {
 
 /** Lore product links, picked by UI locale (official site, zh-CN has /zh-cn). */
 const LORE_LINKS = {
-  saas: (locale: string) => (locale === "zh-CN" ? "https://loremem.com/zh-cn" : "https://loremem.com"),
+  saas: () => "https://app.loremem.com/login",
   selfHost: (locale: string) =>
     locale === "zh-CN"
       ? "https://loremem.com/zh-cn/documents/installation/install-lore"
@@ -226,7 +226,7 @@ export function MemoryConfig() {
         {provider === "lore" ? (
           <SettingsSection title={t("desktop.memoryLoreSectionTitle")}>
             <p className="workspace-hint">
-              <a href={LORE_LINKS.saas(locale)} target="_blank" rel="noreferrer" style={linkStyle}>{t("desktop.memoryLoreLinkSaas")}</a>
+              <a href={LORE_LINKS.saas()} target="_blank" rel="noreferrer" style={linkStyle}>{t("desktop.memoryLoreLinkSaas")}</a>
               <span> · </span>
               <a href={LORE_LINKS.selfHost(locale)} target="_blank" rel="noreferrer" style={linkStyle}>{t("desktop.memoryLoreLinkSelfHost")}</a>
               <span> · </span>
