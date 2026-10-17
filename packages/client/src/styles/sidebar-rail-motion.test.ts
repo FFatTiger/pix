@@ -40,9 +40,9 @@ describe("sidebar rail motion", () => {
     expect(trailing).toContain("display: grid");
     expect(trailing).toContain("grid-area: 1 / 1");
     expect(trailing).toContain('.sidebar-row-trailing-status[data-on="true"]');
-    // Compact time: 11px tabular numerals, no uppercase/letter-spacing.
+    // Compact time: 12px tabular numerals, no uppercase/letter-spacing.
     const meta = css.slice(css.indexOf(".sidebar-row-meta {"), css.indexOf("/* Trailing slot"));
-    expect(meta).toContain("font-size: 11px");
+    expect(meta).toContain("font-size: 12px");
     expect(meta).toContain("font-variant-numeric: tabular-nums");
     expect(meta).not.toContain("text-transform");
     expect(meta).not.toContain("letter-spacing");
@@ -69,9 +69,9 @@ describe("sidebar rail motion", () => {
       css.indexOf(".sidebar-files {"),
     );
 
-    // Project title: 10px row inset + 16px icon + 8px gap = 34px.
-    // Nested session title: 24px parent inset + 10px row inset = 34px.
-    expect(projectSessions).toContain("padding: 2px 0 8px 24px;");
+    // Project title: 10px row inset + 17px icon + 8px gap = 35px.
+    // Nested session title: 25px parent inset + 10px row inset = 35px.
+    expect(projectSessions).toContain("padding: 2px 0 8px 25px;");
   });
 
   it("keeps every row at the same compact copy size", () => {
@@ -79,7 +79,7 @@ describe("sidebar rail motion", () => {
     const rows = css.slice(css.indexOf(".sidebar-list-row {"), css.indexOf("/* Liveness", css.indexOf(".sidebar-list-row {")));
     const projects = css.slice(css.indexOf(".sidebar-list-row--project {"), css.indexOf("/* Liveness", css.indexOf(".sidebar-list-row--project {")));
 
-    expect(rows).toContain("font-size: 13px");
+    expect(rows).toContain("font-size: 14px");
     expect(projects).not.toContain("font-size: 14px");
   });
 });

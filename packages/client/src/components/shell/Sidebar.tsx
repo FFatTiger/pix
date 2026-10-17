@@ -750,7 +750,7 @@ export function Sidebar({
               aria-current={assistantActive === true ? "page" : undefined}
               onClick={onOpenAssistant}
             >
-              <PixieIcon size={16} />
+              <PixieIcon size={17} />
               <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.assistantNav")}</span>
               {assistantStatus === "running" ? (
                 <RunningSessionIndicator />
@@ -771,7 +771,7 @@ export function Sidebar({
             aria-label={t("desktop.newSession")}
             onClick={onNewSession}
           >
-            <NotePencil size={16} weight="regular" aria-hidden="true" />
+            <NotePencil size={17} weight="regular" aria-hidden="true" />
             <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.newSession")}</span>
           </button>
         </nav>
@@ -934,7 +934,7 @@ export function SidebarFooter({
         aria-label={t("desktop.settings")}
         onClick={() => onOpenSettings?.("appearance")}
       >
-        <GearSix size={16} weight="regular" aria-hidden="true" />
+        <GearSix size={17} weight="regular" aria-hidden="true" />
         <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.settings")}</span>
       </button>
       {version ? (
@@ -1105,9 +1105,9 @@ function ProjectRow({
         onClick={onToggle}
       >
         {expanded ? (
-          <FolderOpen size={16} weight="regular" aria-hidden="true" />
+          <FolderOpen size={17} weight="regular" aria-hidden="true" />
         ) : (
-          <Folder size={16} weight="regular" aria-hidden="true" />
+          <Folder size={17} weight="regular" aria-hidden="true" />
         )}
         <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
       </button>
