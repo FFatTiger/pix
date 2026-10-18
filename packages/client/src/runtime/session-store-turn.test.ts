@@ -174,6 +174,56 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     expect(terminal).toMatchObject({ sessionId: "s1", state: "completed" });
   });
 
+  it("stop after the turn reached the wire settles UNCERTAIN (bubble kept, no draft restore)", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const sendP = h.store.sendPrompt("in flight");
+    let error: unknown = null;
+    const settled = sendP.then(() => "resolved", (cause: unknown) => { error = cause; return "rejected"; });
+    await flush();
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    expect(submit).toBeTruthy();
+    // The prompt is running: abort-first, then the bounded stop.
+    const stopP = h.store.stop("user");
+    await flush();
+    const interrupt = lastFrame<{ type: "interrupt"; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: interrupt.id, payload: { sessionId: "s1", commandId: interrupt.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await flush();
+    const stopFrame = lastFrame<{ type: "stop"; id: string }>(ws, "stop")!;
+    ws.serverSend({ type: "response", id: stopFrame.id, payload: { ok: true, result: { sessionId: "s1", stopped: true } } });
+    await flush();
+    await stopP;
+    await expect(settled).resolves.toBe("rejected");
+    // The bytes already reached the authority: this is NOT proven non-delivery.
+    expect(error).toMatchObject({ code: "interrupted", phase: "uncertain", retryable: false });
+    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual({ role: "user", content: "in flight" });
+  });
+
+  it("stop before the turn reached the wire stays a proven pre-wire failure (bubble removed, draft restored)", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    // Transport dies with a delivered close: the submit is gated in the wire
+    // queue and never reaches the authority.
+    ws.serverClose(1006);
+    await flush();
+    const sendP = h.store.sendPrompt("pre wire");
+    let error: unknown = null;
+    const settled = sendP.then(() => "resolved", (cause: unknown) => { error = cause; return "rejected"; });
+    await flush();
+    expect(submitFrames(ws)).toHaveLength(0);
+    const stopP = h.store.stop("user").catch(() => undefined);
+    // Bounded abort-first wait, then the pre-wire settle.
+    await vi.advanceTimersByTimeAsync(6_000);
+    await flush(8);
+    await expect(settled).resolves.toBe("rejected");
+    expect(error).toMatchObject({ code: "interrupted", phase: "activation" });
+    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
+    // The stop itself cannot be confirmed on a dead transport — it stays honest.
+    await vi.advanceTimersByTimeAsync(20_000);
+    await flush();
+    await stopP;
+  });
+
   it("not_delivered removes the optimistic bubble and rejects tagged phase=activation (draft restored, staging preserved)", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
@@ -360,7 +410,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await expect(sendP).resolves.toBeTruthy();
   });
 
-  it("a late snapshot after the 10s bound cannot send", async () => {
+  it("a late snapshot after the shared 30s send budget cannot send", async () => {
     const h = createHarness();
     let ws = await openAndAttachTurn(h);
     ws.serverClose(1006);
@@ -371,7 +421,8 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
     await flush();
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    // The send budget is shared with the silent recovery (30s), not a 10s gate.
+    await vi.advanceTimersByTimeAsync(30_000);
     await flush();
     await expect(sendP).rejects.toMatchObject({ code: "timeout", phase: "activation", retryable: true });
     expect(settlements).toBe(1);
@@ -392,7 +443,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
   });
 
-  it("rejects a closed-socket submit after the 10s readiness bound as proven non-delivery", async () => {
+  it("rejects a closed-socket submit after the shared 30s send budget as proven non-delivery", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
     const closedSent = ws.sent.length;
@@ -407,7 +458,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     expect(h.store.getSnapshot().turnActive).toBe(true);
     expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(30_000);
     await flush();
     await expect(sendP).rejects.toMatchObject({ code: "timeout", phase: "activation", retryable: true });
     expect(settlements).toBe(1);

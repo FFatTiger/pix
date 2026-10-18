@@ -762,11 +762,13 @@ const DEFAULT_STOP_SEND_TIMEOUT_MS = 10_000;
 const DEFAULT_STOP_ACK_TIMEOUT_MS = 10_000;
 const DEFAULT_DETACH_ACK_TIMEOUT_MS = 10_000;
 const DEFAULT_SIDE_CHAT_COMMAND_TIMEOUT_MS = 10_000;
-/** Bounded wait for shared transport sendability before a submit-turn envelope. */
-const SUBMIT_SEND_TIMEOUT_MS = 10_000;
 /** How long a steer / follow-up sent during transport recovery waits for the re-attach. */
 const QUEUED_TURN_RESUME_TIMEOUT_MS = 20_000;
-/** One silent recover-and-resend after a non-user send failure. Never loops. */
+/** One silent recover-and-resend after a non-user send failure. Never loops.
+ *  The pre-wire send gate shares this SAME budget: a wake-from-hidden recovery
+ *  (probe + connect + handshake + re-attach) routinely outlives a short gate,
+ *  and giving each stage its own budget would turn an honest slow recovery into
+ *  a false "message not sent". */
 const SUBMIT_RECOVERY_BUDGET_MS = 30_000;
 /** Bounded lifecycle/attach send gate (create/open through the shared transport gate). */
 const LIFECYCLE_GATE_TIMEOUT_MS = 30_000;
@@ -3713,31 +3715,41 @@ export class SessionController implements RuntimeControllerPort {
     };
   }
 
-  /** One 10s pre-wire gate covering reconnect sendability and exact resume-attach.
-   * A recovery resend uses the remaining 30s budget instead, so the one retry
-   * cannot add a second full wait and cannot hang past its deadline. */
+  /** One bounded pre-wire gate covering reconnect sendability and exact
+   * resume-attach. The gate and the single silent recovery share ONE
+   * {@link SUBMIT_RECOVERY_BUDGET_MS} deadline for the whole logical send, so
+   * the retry cannot add a second full wait and a slow (but real) recovery is
+   * never judged "not sent" halfway through.
+   *
+   * The shared deadline covers the PRE-WIRE phase only. A turn the authority
+   * already admitted gets a fresh budget when it is re-sent after a reconnect
+   * (that resend re-opens the status subscription and must not be settled as a
+   * failure just because the original send started minutes ago). */
   private waitForSubmitWire(pending: TurnPending, revision: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
+      const preWire = pending.delivery === "in_flight";
+      const deadline = preWire
+        ? (pending.transportRecoveryDeadline ?? Date.now() + SUBMIT_RECOVERY_BUDGET_MS)
+        : Date.now() + SUBMIT_RECOVERY_BUDGET_MS;
+      if (preWire) pending.transportRecoveryDeadline = deadline;
+      const budget = Math.max(0, deadline - Date.now());
       const finish = (fn: () => void): void => {
         if (settled) return;
         settled = true;
         this.clearTimeoutFn(timer);
         fn();
       };
-      const budget = pending.transportRecoveryDeadline === null
-        ? SUBMIT_SEND_TIMEOUT_MS
-        : Math.max(0, pending.transportRecoveryDeadline - Date.now());
       const timer = this.setTimeoutFn(() => {
         finish(() => reject({ code: "timeout", message: "runtime not sendable in time", retryable: true } satisfies ProtocolError));
-      }, Math.min(SUBMIT_SEND_TIMEOUT_MS, budget));
+      }, budget);
       void (async () => {
         try {
           if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
           // ALWAYS pass the send gate: a ready-but-stale (half-open) connection
           // probes liveness here and waits through a forced reconnect instead
           // of letting the submit race into a dead socket.
-          await this.whenSendable(SUBMIT_SEND_TIMEOUT_MS);
+          await this.whenSendable(budget);
           if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
           await Promise.resolve();
           if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
@@ -3796,11 +3808,13 @@ export class SessionController implements RuntimeControllerPort {
 
   /**
    * Settle the pending turn exactly once on lifecycle teardown (dispose / detach /
-   * stop / session switch). If the admission is still in flight the promise is
-   * rejected and the optimistic bubble removed (definite interruption); an
-   * already-accepted/uncertain turn keeps its bubble (it continues server-side)
-   * and only the status tracker is dropped. Never called on transport loss
-   * (the turn survives for same-epoch reconnect resend).
+   * stop / session switch). An in-flight admission settles by delivery evidence:
+   * still PROVEN pre-wire → fixed interruption with the optimistic bubble
+   * removed (draft restored); already on the wire (`wireSeen`) → uncertain
+   * delivery, bubble kept, never a draft restore. An already-accepted/uncertain
+   * turn keeps its bubble (it continues server-side) and only the status
+   * tracker is dropped. Never called on transport loss (the turn survives for
+   * same-epoch reconnect resend).
    */
   private settleTurn(error: ProtocolError): void {
     const pending = this.pendingTurn;
@@ -3810,8 +3824,20 @@ export class SessionController implements RuntimeControllerPort {
     this.binding.unregisterTurn(pending.operationId);
     this.pendingTurn = null;
     if (pending.delivery === "in_flight") {
-      this.settlePromptTransaction(pending.tx, { removeBubble: true });
-      pending.reject(error);
+      // Same delivery judgment as failSubmitTurnBeforeWire: once an attempt for
+      // this operation passed the send gate (wireSeen), the bytes may be in
+      // flight or already admitted server-side. A lifecycle teardown (stop /
+      // session switch / dispose) is then UNCERTAIN delivery — the bubble is
+      // kept and the Composer never restores the draft. Only a proven pre-wire
+      // pending settles as fixed interruption with the bubble removed.
+      if (pending.wireSeen) {
+        this.retainedUncertainDelivery = true;
+        this.settlePromptTransaction(pending.tx, { removeBubble: false });
+        pending.reject(this.uncertainTagged(error));
+      } else {
+        this.settlePromptTransaction(pending.tx, { removeBubble: true });
+        pending.reject(this.activationTagged(error));
+      }
     }
     // Phase 5A: lifecycle teardown of the turn slot releases a deferred
     // leaf-fence rebase (the turn is no longer in flight).

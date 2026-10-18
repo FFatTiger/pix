@@ -583,6 +583,12 @@ export class RuntimeSocket {
     if (!suspendedHeartbeat) this.hiddenAt = null;
     if (suspendedHeartbeat) this.wakeUnproven = true;
     if (!this.livenessNegotiated || !canSend(this.state)) return;
+    // Hiding stopped the chain (the browser suspends timers there). Coming back
+    // restarts it on this same connection — otherwise an idle visible tab has
+    // no liveness proof until the next reconnect. startHeartbeat no-ops while a
+    // chain is already armed, so a wake probe below cannot double it; a failed
+    // probe's forceReconnect stops it and the next ack restarts it.
+    this.startHeartbeat();
     // The decision uses the duration captured above. isFresh() reads the
     // clock again, and a test clock advances on that read.
     if (!suspendedHeartbeat && hiddenFor < this.liveness.hiddenProbeThresholdMs) return;

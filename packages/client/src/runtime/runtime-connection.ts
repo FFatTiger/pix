@@ -1128,14 +1128,17 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       if (this.attempts.get(record.envelopeId)?.token !== record.token) continue; // cancelled/settled
       if (record.generation !== this.currentGeneration) {
         // A recovery superseded this socket. The old-generation attempt is
-        // dropped WITHOUT writing (never double-written on the new socket).
-        // Delivery after recovery is owned by each lane's documented loss
-        // semantics — controller-held logical-retry slots resend via
-        // resync/pendingCreate; caller-timer lanes (side chat) and one-shot
-        // lanes fail their bounded honest error instead. Connection loss
-        // itself releases server-side attach state (the Host closes the
-        // subscription on browser close), so a dropped detach leaks nothing.
-        this.removeExactAttempt(record);
+        // dropped WITHOUT writing (never double-written on the new socket) and
+        // settles exactly like any other unexpected loss: one-shot lanes
+        // (`reject_on_disconnect`) fail their bounded honest error, exactly as
+        // removeGenerationAttempts already did for registered attempts — this
+        // record never reached that sweep only because it was still queued.
+        // `logical_retry` lanes keep their pending semantics and are resent by
+        // the controller after resync. Connection loss itself releases
+        // server-side attach state (the Host closes the subscription on browser
+        // close), so a dropped detach leaks nothing.
+        if (!this.removeExactAttempt(record)) continue;
+        if (record.disconnectPolicy === "reject_on_disconnect") record.onDisconnect(connectionLostError());
         continue;
       }
       const message = record.message;

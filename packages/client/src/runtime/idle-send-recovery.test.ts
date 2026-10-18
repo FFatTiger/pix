@@ -186,6 +186,43 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
     h.dispose();
   });
 
+  it("the heartbeat resumes after a hide→visible cycle on the SAME connection", async () => {
+    // A hide stops the heartbeat chain (iOS suspends timers); coming back must
+    // restart it, otherwise an idle visible tab loses its only liveness proof
+    // until the next reconnect. The wake probe may run — a live socket answers
+    // it — and the chain must be running again afterwards.
+    const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 10_000, hiddenProbeThresholdMs: 5_000, freshnessMs: 60_000 } });
+    const ws = await openAndAttach(h);
+    h.changeVisibility(false);
+    vi.advanceTimersByTime(10_000);
+    h.changeVisibility(true);
+    await flush();
+    const pingsAfterWake = pingFrames(ws).length;
+    // Answer every probe ping so the wake probe proves the socket alive.
+    for (const ping of pingFrames(ws)) ws.serverSend({ type: "pong", id: ping.id });
+    await flush();
+    // One full heartbeat interval after the wake: exactly one NEW ping.
+    vi.advanceTimersByTime(30_000);
+    await flush();
+    expect(pingFrames(ws)).toHaveLength(pingsAfterWake + 1);
+    expect(h.sockets).toHaveLength(1);
+    h.dispose();
+  });
+
+  it("a hide below the wake threshold also resumes the heartbeat (no probe path)", async () => {
+    const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 10_000, hiddenProbeThresholdMs: 5_000, freshnessMs: 60_000 } });
+    const ws = await openAndAttach(h);
+    h.changeVisibility(false);
+    vi.advanceTimersByTime(1_000);
+    h.changeVisibility(true);
+    await flush();
+    expect(pingFrames(ws)).toHaveLength(0);
+    vi.advanceTimersByTime(30_000);
+    await flush();
+    expect(pingFrames(ws)).toHaveLength(1);
+    h.dispose();
+  });
+
   it("a brief hide (below the threshold) does not probe", async () => {
     const h = createHarness({ liveness: { heartbeatIntervalMs: 1_000_000, pongTimeoutMs: 10_000, hiddenProbeThresholdMs: 5_000, freshnessMs: 60_000 } });
     const ws = await openAndAttach(h);
@@ -284,6 +321,61 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
     expect(lastFrame(ws1, "command")).toBeUndefined();
     ws2.serverSend({ type: "response", id: cmd2.id, payload: { ok: true, result: { commandId: "cmd-idle-1", result: { ok: true, type: "prompt" } } } });
     await expect(cmdP).resolves.toBeTruthy();
+    h.dispose();
+  });
+
+  it("a send that waits through a 15s reconnect still lands (one 30s budget, no false 'not sent')", async () => {
+    // Wake-from-hidden is often 5s probe + 10s connect + 10s handshake + attach,
+    // which is well past the old 10s send gate. The gate and the silent recovery
+    // share ONE 30s budget: the send waits it out and lands, without an error
+    // and without restoring the draft.
+    const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 5_000, freshnessMs: 60_000 } });
+    const ws1 = await openAndAttach(h);
+    // Proven-dead transport with a delivered close: the ordinary reconnect path.
+    ws1.serverClose(1006);
+    const sendP = h.store.sendPrompt("slow recovery");
+    let outcome: "pending" | "resolved" | "rejected" = "pending";
+    void sendP.then(() => { outcome = "resolved"; }, () => { outcome = "rejected"; });
+    await flush();
+    // 15s of black-holed connect attempts: the old 10s gate already gave up here.
+    vi.advanceTimersByTime(15_000);
+    await flush(8);
+    expect(outcome).toBe("pending");
+    const ws2 = h.lastSocket();
+    ws2.serverOpen();
+    ws2.serverSend(ackWithLiveness());
+    await flush(8);
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach")!;
+    expect(attachFrame).toBeTruthy();
+    ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
+    await flush(8);
+    const submits = submitFrames(ws2);
+    expect(submits).toHaveLength(1);
+    expect(submits[0]!.payload.prompt).toBe("slow recovery");
+    ws2.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission("s1", submits[0]!.payload.operationId) });
+    await expect(sendP).resolves.toBeTruthy();
+    expect(outcome).toBe("resolved");
+    h.dispose();
+  });
+
+  it("a send whose recovery never comes online fails honestly at the shared budget and keeps the draft", async () => {
+    const reports: Array<{ kind: string; code: string }> = [];
+    const h = createHarness({
+      liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 5_000, freshnessMs: 60_000 },
+      connectionOptions: { reportSendFailure: (report) => { reports.push({ kind: report.kind, code: report.code }); } },
+    });
+    const ws1 = await openAndAttach(h);
+    ws1.serverClose(1006);
+    const sendP = h.store.sendPrompt("never recovers");
+    let error: unknown = null;
+    void sendP.catch((cause: unknown) => { error = cause; });
+    // Black-hole every attempt; the shared budget must expire once, ~30s in.
+    for (let i = 0; i < 60 && error === null; i += 1) {
+      vi.advanceTimersByTime(1_000);
+      await flush(4);
+    }
+    expect(error).toMatchObject({ code: "timeout", retryable: true, phase: "activation" });
+    expect(reports.map((report) => report.kind)).toContain("send_failure");
     h.dispose();
   });
 
