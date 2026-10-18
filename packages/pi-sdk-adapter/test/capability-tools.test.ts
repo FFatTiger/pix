@@ -128,6 +128,16 @@ describe("capabilityOwnedToolNames (tools follow their capability)", () => {
   it("exposes the family helper for off with no tools", () => {
     assert.deepEqual(memoryCapabilityToolNames("off", ["memory_read", "lore_search"]), []);
   });
+
+  it("covers every tool the pinned lore extension registers, including lore_skill_import", () => {
+    const loreTools = [
+      "lore_status", "lore_boot", "lore_get_node", "lore_search", "lore_list_domains",
+      "lore_create_node", "lore_update_node", "lore_delete_node", "lore_move_node",
+      "lore_skill_list", "lore_skill_search", "lore_skill_get", "lore_skill_create",
+      "lore_skill_update", "lore_skill_delete", "lore_skill_import", "lore_skill_status",
+    ];
+    assert.deepEqual(memoryCapabilityToolNames("lore", [...loreTools, "read"]), loreTools);
+  });
 });
 
 describe("applyToolsSelection unions capability-owned tools into custom allowlists", () => {
