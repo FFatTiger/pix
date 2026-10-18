@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RuntimeSocket, type RuntimeSocketHandler, type RuntimeSocketDeps } from "./socket";
+import { RuntimeSocket, type LivenessOptions, type RuntimeSocketHandler, type RuntimeSocketDeps } from "./socket";
 import { FakeWebSocket } from "./testing/harness";
 import type { ClientIdentity, HostCapability, ProtocolHandshakeResponse, WsHostMessage } from "@fffattiger/pix-protocol";
 
@@ -23,7 +23,7 @@ function makeHandler(rec: Recorded): RuntimeSocketHandler {
   };
 }
 
-function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnline?: (cb: () => void) => () => void; onVisible?: (cb: () => void) => () => void; onVisibility?: (cb: (visible: boolean) => void) => () => void } = {}): RuntimeSocketDeps {
+function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnline?: (cb: () => void) => () => void; onVisibility?: (cb: (visible: boolean) => void) => () => void; liveness?: Partial<LivenessOptions> } = {}): RuntimeSocketDeps {
   return {
     createWebSocket: (url) => { const ws = new FakeWebSocket(url); sockets.push(ws); return ws; },
     now: () => Date.now(),
@@ -33,8 +33,8 @@ function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnl
     location: { href: "https://pix.local/app/" },
     identity: { shell: "web", platform: "mac" } satisfies ClientIdentity,
     onOnline: opts.onOnline ?? (() => () => undefined),
-    onVisible: opts.onVisible ?? (() => () => undefined),
     ...(opts.onVisibility === undefined ? {} : { onVisibility: opts.onVisibility }),
+    ...(opts.liveness === undefined ? {} : { liveness: opts.liveness }),
   };
 }
 
@@ -124,12 +124,11 @@ describe("RuntimeSocket", () => {
     expect(sockets).toHaveLength(7);
   });
 
-  it("online/visibility recovery triggers immediate reconnect", () => {
+  it("online recovery triggers immediate reconnect", () => {
     const sockets: FakeWebSocket[] = [];
     const onlineCbs: (() => void)[] = [];
     const deps = makeDeps(sockets, {
       onOnline: (cb) => { onlineCbs.push(cb); return () => undefined; },
-      onVisible: () => () => undefined,
     });
     const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
     const socket = new RuntimeSocket(deps, makeHandler(rec));
@@ -277,6 +276,68 @@ describe("RuntimeSocket", () => {
     visibilityCb!(true);
     visibilityCb!(false);
     expect(ws.sent.length).toBe(before);
+    socket.dispose();
+  });
+
+  // ONE liveness clock: a probe sends the ping and is answered by the pong (or
+  // by the pong deadline that proves the transport dead). There is no second
+  // probe timer; only a SHORTER caller wait truncates the answer.
+  it("a probe is answered by the armed pong deadline, not by a second timer", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const deps = makeDeps(sockets, { liveness: { heartbeatIntervalMs: 1_000_000, pongTimeoutMs: 5_000 } });
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(deps, makeHandler(rec));
+    socket.connect();
+    const ws = sockets[0]!;
+    ws.serverOpen();
+    ws.serverSend({ type: "handshake_ack", payload: { ...ackPayload(), acceptedFeatures: ["runtime.liveness.v1"] } });
+    // The caller waits longer than the pong timeout: death is proven at 5s, not
+    // at the caller's 60s (one clock, no leftover timer).
+    const alive = socket.probe(60_000);
+    vi.advanceTimersByTime(4_999);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    await expect(alive).resolves.toBe(false);
+    expect(sockets).toHaveLength(2); // the pong deadline forced the reconnect
+    socket.dispose();
+  });
+
+  it("a shorter caller wait resolves first and the single pong deadline still proves death", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const deps = makeDeps(sockets, { liveness: { heartbeatIntervalMs: 1_000_000, pongTimeoutMs: 5_000 } });
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(deps, makeHandler(rec));
+    socket.connect();
+    const ws = sockets[0]!;
+    ws.serverOpen();
+    ws.serverSend({ type: "handshake_ack", payload: { ...ackPayload(), acceptedFeatures: ["runtime.liveness.v1"] } });
+    const alive = socket.probe(1_000);
+    vi.advanceTimersByTime(1_000);
+    await expect(alive).resolves.toBe(false);
+    expect(sockets).toHaveLength(1); // the caller's truncation never reconnects
+    vi.advanceTimersByTime(4_000);
+    expect(sockets).toHaveLength(2); // the one pong deadline still decides death
+    socket.dispose();
+  });
+
+  // The browser fires visibilitychange once and the socket is its ONLY
+  // subscriber: becoming visible reconnects a non-sendable transport on that
+  // one path (no second "page is visible" hook racing it).
+  it("becoming visible reconnects a non-sendable transport on the one visibility path", async () => {
+    const sockets: FakeWebSocket[] = [];
+    let visibilityCb: ((visible: boolean) => void) | undefined;
+    const deps = makeDeps(sockets, {
+      onVisibility: (cb) => { visibilityCb = cb; return () => undefined; },
+    });
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(deps, makeHandler(rec));
+    socket.connect();
+    sockets[0]!.serverOpen();
+    sockets[0]!.serverSend({ type: "handshake_ack", payload: ackPayload() });
+    sockets[0]!.serverClose(1006); // unavailable, backoff pending
+    expect(socket.connectionState).toBe("unavailable");
+    visibilityCb!(true);
+    expect(sockets).toHaveLength(2); // immediate reconnect, no backoff wait
     socket.dispose();
   });
 });

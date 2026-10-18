@@ -79,11 +79,8 @@ export function createBrowserSocketDeps(overrides: Partial<RuntimeSocketDeps> = 
       globalThis.addEventListener("online", cb);
       return () => globalThis.removeEventListener("online", cb);
     }),
-    onVisible: overrides.onVisible ?? ((cb) => {
-      const handler = (): void => { if (globalThis.document.visibilityState === "visible") cb(); };
-      globalThis.document.addEventListener("visibilitychange", handler);
-      return () => globalThis.document.removeEventListener("visibilitychange", handler);
-    }),
+    // ONE visibility subscription: the socket owns wake reconnect + probe +
+    // heartbeat restart + the visibility report in that order.
     onVisibility: overrides.onVisibility ?? ((cb) => {
       const handler = (): void => { cb(globalThis.document.visibilityState === "visible"); };
       globalThis.document.addEventListener("visibilitychange", handler);

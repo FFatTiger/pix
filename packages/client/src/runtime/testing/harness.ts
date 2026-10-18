@@ -97,12 +97,10 @@ export interface RuntimeHarness {
   readonly store: TestRuntimeStore;
   readonly sockets: FakeWebSocket[];
   readonly onlineListeners: Set<() => void>;
-  readonly visibleListeners: Set<() => void>;
   readonly visibilityListeners: Set<(visible: boolean) => void>;
   /** Explicit owner cleanup: disposes the registry exactly once (closes the one socket). */
   dispose(): void;
   goOnline(): void;
-  goVisible(): void;
   changeVisibility(visible: boolean): void;
   lastSocket(): FakeWebSocket;
   controller(sessionId: string): SessionController | null;
@@ -111,7 +109,6 @@ export interface RuntimeHarness {
 export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
   const sockets: FakeWebSocket[] = [];
   const onlineListeners = new Set<() => void>();
-  const visibleListeners = new Set<() => void>();
   const visibilityListeners = new Set<(visible: boolean) => void>();
   let firstAttempt = true;
   const deps: RuntimeSocketDeps = {
@@ -133,10 +130,6 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
     onOnline: (cb) => {
       onlineListeners.add(cb);
       return () => { onlineListeners.delete(cb); };
-    },
-    onVisible: (cb) => {
-      visibleListeners.add(cb);
-      return () => { visibleListeners.delete(cb); };
     },
     onVisibility: (cb) => {
       visibilityListeners.add(cb);
@@ -164,17 +157,10 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
     store,
     sockets,
     onlineListeners,
-    visibleListeners,
     visibilityListeners,
     dispose: () => registry.dispose(),
     goOnline: () => { for (const cb of onlineListeners) cb(); },
-    goVisible: () => { for (const cb of visibleListeners) cb(); },
-    changeVisibility: (visible: boolean) => {
-      for (const cb of visibilityListeners) cb(visible);
-      // The browser fires visibilitychange once. Both subscribers run: the
-      // probe owner and the "page became visible, reconnect now" owner.
-      if (visible) for (const cb of visibleListeners) cb();
-    },
+    changeVisibility: (visible: boolean) => { for (const cb of visibilityListeners) cb(visible); },
     lastSocket: () => sockets[sockets.length - 1]!,
     controller: (sessionId) => registry.lookup(sessionId),
   };

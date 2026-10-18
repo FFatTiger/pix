@@ -115,7 +115,6 @@ function fakeDeps(): RuntimeSocketDeps {
     location: { href: "https://pix.local/app/" },
     identity: { shell: "web", platform: "mac" },
     onOnline: () => () => undefined,
-    onVisible: () => () => undefined,
   };
 }
 
@@ -510,7 +509,6 @@ describe("TranscriptList — live rebase keeps the user's scroll", () => {
       location: { href: "https://pix.local/app/" },
       identity: { shell: "web", platform: "mac" },
       onOnline: () => () => undefined,
-      onVisible: () => () => undefined,
     };
   }
 

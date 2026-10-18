@@ -512,8 +512,14 @@ interface QueuedTurnPending {
   attempt: RuntimeAttemptHandle | null;
   /** Backoff timer for an uncertain-outcome reconciliation re-send. */
   reconcileTimer: unknown | null;
-  /** Bounded uncertain-outcome reconciliations used (0..2). */
-  reconcileCount: number;
+  /** ONE re-send budget (same bound as the prompt lane). */
+  resendCount: number;
+  /** ONE deadline, armed at the first re-send and cleared on any settle. */
+  resendDeadline: number | null;
+  /** The single deadline timer: settles an unresolved queued turn when it
+   *  passes, so a re-send waiting for a reconnect that never comes cannot lock
+   *  the queue lane forever. */
+  resendTimer: unknown | null;
   readonly sessionId: string;
   readonly command: WsClientMessage;
   readonly type: "steer" | "follow_up";
@@ -594,6 +600,44 @@ interface InterruptPending {
 }
 
 /**
+ * One pending lane that survives a transport loss and must be decided at every
+ * attach boundary (same-epoch resend vs. lost-identity settle) and at a session
+ * switch. Lanes differ only in how their slot is read, re-sent and settled —
+ * never in the decision rule — so both {@link resyncAfterAttach} and the
+ * session-switch cleanup in {@link startAttach} drive the SAME table.
+ */
+interface PendingLane {
+  readonly name: string;
+  /** The lane's pending slot, or null when it is idle. */
+  pending(): { readonly sessionId: string } | null;
+  /**
+   * Re-send the pending frame with the SAME at-most-once id. Absent for a pure
+   * query lane (bounded reads): those are re-issued by their caller and never
+   * resent, so the attach resync does not touch them.
+   */
+  resend?(): void;
+  /** Settle the slot exactly once for an outcome that must not be re-sent. */
+  settle(error: ProtocolError): void;
+  /** Surface the resync settle error in the controller view. */
+  readonly reportsError: boolean;
+  /**
+   * Settled when an attach for a DIFFERENT session starts: `always`, or only on
+   * a fresh (non-resume) attach.
+   */
+  readonly switchSettle: "always" | "fresh-only";
+  /** The current attempt is authoritative — nothing to re-sync for this lane. */
+  readonly skipResync?: () => boolean;
+  /**
+   * Lane-specific resync settle error. Interrupts are a control channel: after
+   * an epoch rollover the old worker is gone, so nothing is ambiguous and the
+   * interrupt is simply moot — it is settled with its own copy and never
+   * surfaced as a user-visible error (unlike a data lane whose effect may have
+   * landed).
+   */
+  readonly resyncError?: ProtocolError;
+}
+
+/**
  * Phase 2B independent read slot. Reads travel on a DEDICATED bounded lane
  * (browser `read` envelope, negotiated `runtime.read-rpc.v1`) and are
  * correlated by (sessionId, epoch, requestId, generation, read type) — never
@@ -630,7 +674,13 @@ export type TurnDelivery = "not_delivered" | "in_flight" | "accepted" | "uncerta
  * generation, sessionId, operationId, turnId, epoch, status revision).
  */
 type SubmitTurnFenceSource = "explicit" | "attached" | "created" | "none";
-type RevisionRepairCount = 0 | 1;
+
+/**
+ * Re-send fence for a repaired logical turn: the epoch (and optionally the
+ * authoritative revision) the next frame must carry, or `"drop"` to send
+ * unfenced (a stale attached fence proved not active).
+ */
+type ResendFence = { epoch: string; revision?: number } | "drop";
 
 interface TurnPending {
   readonly operationId: string;
@@ -642,26 +692,30 @@ interface TurnPending {
   request: SubmitTurnRequest;
   /** Authority source of the original admission fence. */
   fenceSource: SubmitTurnFenceSource;
-  /** Bounded authority-fence repair attempts for this logical turn. */
-  revisionRepairCount: RevisionRepairCount;
-  /** Silent recover-and-resend used (0|1). A second failure surfaces. */
-  transportRecoveryCount: 0 | 1;
-  /** Deadline for the silent recovery, measured from the first failure. */
-  transportRecoveryDeadline: number | null;
-  /** Bounded stale-attached-fence drop (idle-lost observation) — independent of revisionRepairCount. */
-  staleAttachedRepairCount: RevisionRepairCount;
-  /** Bounded attached-fence conflict repair: a concurrent ordinary command
-   * (set_model / auto-title / queue writes) advanced the journal revision
-   * between the fence capture and the admission — independent of the other counters. */
-  attachedConflictRepairCount: RevisionRepairCount;
-  /** One same-operationId reconciliation resend after an UNCERTAIN admission
-   * (admission receipt lost / RPC failed after possible dispatch). */
-  uncertainReconcileCount: 0 | 1;
-  /** Deadline watchdog for the uncertain-delivery reconciliation: bounds how
-   * long the pending slot may stay unresolved (e.g. a reconcile re-send that
-   * went on the wire and then lost its transport forever). Fired settle is
-   * uncertain-tagged — never a definite send failure. */
-  uncertainWatchdog: unknown | null;
+  /** The authority-fence race was already repaired once for this logical turn. */
+  fenceRepaired: boolean;
+  /** The original attached fence was deliberately dropped (stale epoch); the
+   *  next attempt must stay unfenced instead of re-arming it from the current
+   *  attached cursor. */
+  fenceDropped: boolean;
+  /**
+   * ONE re-send budget for this logical turn, shared by every resend shape
+   * (transport recovery → stale-attached fence drop → authority revision
+   * repair → uncertain reconciliation). Bounded by
+   * {@link SUBMIT_MAX_RESENDS}: the longest reachable chain is one pass of
+   * each of those, so a fourth resend can only come from a bug.
+   */
+  resendCount: number;
+  /** ONE deadline for the whole logical send, armed at the first failure or
+   *  the first re-send and cleared on any terminal settle. A re-send in flight
+   *  is bounded by it — there is no second watchdog. */
+  resendDeadline: number | null;
+  /** The single deadline timer: settles an unresolved in-flight re-send when
+   *  {@link resendDeadline} passes. */
+  resendTimer: unknown | null;
+  /** Why the last re-send happened: a `reconcile` is never repeated, the other
+   *  two are bounded by {@link SUBMIT_MAX_RESENDS} and share the deadline. */
+  resendReason: "transport" | "fence" | "reconcile" | null;
   /** True once any attempt for this operation passed the send gate and was
    * registered on the transport: from then on a failure is UNCERTAIN delivery
    * (bytes may be in flight or already admitted server-side), never proven
@@ -745,7 +799,6 @@ const QUEUED_TURN_UNCERTAIN_CODES: ReadonlySet<string> = new Set([
   "unavailable",
   "worker_unavailable",
 ]);
-const QUEUED_TURN_UNCERTAIN_LIMIT = 1;
 
 function isUserSendRejection(error: ProtocolError): boolean {
   return USER_SEND_REJECTION_CODES.has(error.code);
@@ -771,6 +824,16 @@ const QUEUED_TURN_RESUME_TIMEOUT_MS = 20_000;
  *  and giving each stage its own budget would turn an honest slow recovery into
  *  a false "message not sent". */
 const SUBMIT_RECOVERY_BUDGET_MS = 30_000;
+/**
+ * ONE re-send budget for a logical send, shared by every resend shape:
+ * transport recovery → stale-attached fence drop → authority revision repair →
+ * uncertain reconciliation. That chain is the longest reachable one, so three
+ * resends is the honest maximum; a pending that exhausts it settles by what the
+ * wire actually proved (`wireSeen`), never by another retry.
+ */
+const SUBMIT_MAX_RESENDS = 3;
+/** Backoff before a queued-turn reconciliation re-send (bounded by the same budget). */
+const QUEUED_TURN_RECONCILE_DELAY_MS = 1_000;
 /** Bounded lifecycle/attach send gate (create/open through the shared transport gate). */
 const LIFECYCLE_GATE_TIMEOUT_MS = 30_000;
 /** Browser-side bound below Host/sessiond limits; read floods fail closed locally. */
@@ -1360,7 +1423,7 @@ export class SessionController implements RuntimeControllerPort {
     const sessionId = this.sessionId;
     const wsMessage: WsClientMessage = { type: "command", id: this.id(), payload: this.withEpoch({ sessionId, command }) };
     const dispatch = new Promise((resolve, reject) => {
-      const pending: QueuedTurnPending = { commandId: command.commandId, attempt: null, reconcileTimer: null, reconcileCount: 0, sessionId, command: wsMessage, type, resolve, reject };
+      const pending: QueuedTurnPending = { commandId: command.commandId, attempt: null, reconcileTimer: null, resendCount: 0, resendDeadline: null, resendTimer: null, sessionId, command: wsMessage, type, resolve, reject };
       this.pendingQueuedTurn = pending;
       this.notify();
       if (this.attached) this.sendQueuedTurnAttempt(pending);
@@ -1806,14 +1869,13 @@ export class SessionController implements RuntimeControllerPort {
         request,
         provenance,
         fenceSource: fence.source,
-        revisionRepairCount: 0,
-        staleAttachedRepairCount: 0,
-        attachedConflictRepairCount: 0,
-        uncertainReconcileCount: 0,
-        uncertainWatchdog: null,
+        fenceRepaired: false,
+        fenceDropped: false,
+        resendCount: 0,
+        resendDeadline: null,
+        resendTimer: null,
+        resendReason: null,
         wireSeen: false,
-        transportRecoveryCount: 0,
-        transportRecoveryDeadline: null,
         dispatchRevision: 0,
         wireGeneration: null,
         optimisticId: tx.optimisticId,
@@ -3031,12 +3093,48 @@ export class SessionController implements RuntimeControllerPort {
         ) {
           this.flushPendingLeafRebase();
         }
-      } catch {
-        this.reattach();
+      } catch (cause: unknown) {
+        // The reducer threw BEFORE the cursor advanced, so re-attaching would
+        // replay the same event and throw again — a reconnect loop that never
+        // converges. Fail honestly instead: keep the cursor where it is, expose
+        // the error and report it once; the next real snapshot/attach boundary
+        // re-establishes authority.
+        const error: ProtocolError = {
+          code: "internal",
+          message: `runtime event could not be applied: ${cause instanceof Error ? cause.message : "unknown error"}`,
+          retryable: false,
+        };
+        this.reportEventApplyFailure(error);
+        this.setError(error);
       }
       this.notify();
     } else if (decision.decision === "reattach") {
-      this.reattach();
+      this.resumeAttach();
+    }
+  }
+
+  /**
+   * Fire-and-forget diagnostic for an event the shared reducer rejected. One
+   * structured line per failure, never a retry: the same event would throw
+   * again on replay, so a resend has no information to gain.
+   */
+  private reportEventApplyFailure(error: ProtocolError): void {
+    const report = this.runtimeConnection.reportSendFailure;
+    if (!report) return;
+    try {
+      report({
+        kind: "event_apply_failure",
+        code: error.code,
+        phase: "dispatch",
+        message: error.message.slice(0, 200),
+        retryable: false,
+        connectionState: this.runtimeConnection.connectionState,
+        epoch: this.epoch,
+        sessionKind: this.snapshot?.cwd?.endsWith("/pix/assistant") ? "assistant" : "session",
+        sessionId: this.sessionId,
+      });
+    } catch {
+      // Diagnostics never change what the controller reports.
     }
   }
 
@@ -3079,7 +3177,7 @@ export class SessionController implements RuntimeControllerPort {
         this.settleSnapshotCapabilityLoss();
       }
       pending.terminal = true;
-      this.clearUncertainWatchdog(pending);
+      this.clearResendDeadline(pending);
       // Release only this turn's speculative overlay. The refreshed snapshot
       // remains authoritative, including a genuinely running external stream.
       if (this.optimisticPromptSessionId === pending.sessionId) {
@@ -3202,7 +3300,7 @@ export class SessionController implements RuntimeControllerPort {
     admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>,
   ): void {
     pending.delivery = "accepted";
-    this.clearUncertainWatchdog(pending);
+    this.clearResendDeadline(pending);
     pending.turnId = admission.turnId === undefined ? null : admission.turnId;
     pending.epoch = admission.epoch;
     pending.statusRevision = admission.turnStatus.revision;
@@ -3267,7 +3365,7 @@ export class SessionController implements RuntimeControllerPort {
         );
       }
     }
-    if (pending.transportRecoveryCount === 1) this.reportSendDiagnostic("send_recovered", pending, { code: "unavailable", message: "recovered", retryable: true });
+    if (pending.resendCount > 0) this.reportSendDiagnostic("send_recovered", pending, { code: "unavailable", message: "recovered", retryable: true });
     pending.resolve(admission);
     this.notify();
     if (!this.attached) {
@@ -3289,56 +3387,52 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
-   * Settle a rejected admission. `not_delivered` → proven non-delivery: the
-   * optimistic bubble + overlay are removed, the draft restored (rejection is
-   * tagged `phase: "activation"` so the Composer restores the draft regardless
-   * of retryable transport metadata) and staged settings are preserved.
-   * `uncertain` → the turn may have been delivered: bubble + staging retained,
-   * overlay cleared (authority events take over if the turn is running).
+   * Settle a rejected admission. `not_delivered` → the authority PROVED
+   * non-delivery, so a repairable fence race gets its one re-send (see
+   * {@link submitTurnFenceRepair}) and anything else settles as activation
+   * (bubble removed, draft restored, staged settings preserved). `uncertain` →
+   * the turn may have been delivered: reconcile once by re-sending the SAME
+   * operationId (the authority's idempotent admission answers duplicate /
+   * accepted when it landed, or admits / proves not_delivered when it did
+   * not); a second uncertainty or an exhausted budget settles uncertain-tagged
+   * with the bubble kept.
    */
   private rejectTurn(pending: TurnPending, admission: Extract<SubmitTurnAdmission, { status: "rejected" }>): void {
-    if (this.repairSubmitTurnFence(pending, admission)) return;
     pending.delivery = admission.delivery;
-    // UNCERTAIN delivery: the turn may be running server-side. Never surface
-    // that as a definite send failure — first reconcile by RE-SENDING the SAME
-    // operationId (the authority's idempotent admission answers duplicate /
-    // accepted when it landed, or admits / proves not_delivered when it did
-    // not). Only a bounded give-up settles the promise, uncertain-tagged.
-    if (admission.delivery === "uncertain" && this.reconcileUncertainTurn(pending, admission.error)) return;
-    this.clearUncertainWatchdog(pending);
-    this.binding.unregisterTurn(pending.operationId);
-    this.pendingTurn = null;
-    this.notify();
     if (admission.delivery === "not_delivered") {
-      if (pending.transportRecoveryCount === 1) this.reportSendDiagnostic("send_recovery_failed", pending, admission.error);
-      else this.reportSendDiagnostic("send_failure", pending, admission.error);
-      this.settlePromptTransaction(pending.tx, { removeBubble: true });
-      pending.reject(this.activationTagged(admission.error));
-    } else {
-      this.reportSendDiagnostic("send_failure", pending, admission.error);
-      this.settlePromptTransaction(pending.tx, { removeBubble: false });
-      pending.reject(this.uncertainTagged(admission.error));
+      const fence = this.submitTurnFenceRepair(pending, admission);
+      if (fence !== null && this.resendTurn(pending, fence, "fence")) return;
+      // Not repairable, or the shared re-send budget is spent: the authority
+      // PROVED this frame was not delivered — record that proof so the single
+      // settle judgment ({@link settleTurnPending}) sees a pre-wire outcome.
+      pending.wireSeen = false;
+    } else if (pending.resendReason !== "reconcile") {
+      // One reconciliation re-send per logical turn. A reconcile that answers
+      // uncertain again has not made delivery any more likely, so it settles.
+      if (this.resendTurn(pending, undefined, "reconcile")) return;
     }
-    this.setError(admission.error);
+    this.settleTurnPending(pending, admission.error);
   }
 
   /**
-   * Bounded fence repair. Two independent 0|1 counters:
-   *  - stale-attached: idle-lost observation sent an attached epoch that is no
-   *    longer active (`not_delivered` + `epoch_changed`). Drop the fence and
-   *    resend the SAME operation once. No attach/activate preflight.
-   *  - authority revision: created-seed conflict, or an unfenced (none-source)
-   *    live-worker conflict / epoch_changed that returns the exact authority
-   *    epoch+revision. Retry the SAME operation once with that fence.
-   * Explicit fences never auto-drop. Qualification is structural (codes +
-   * fence source + epoch/revision identity), never human error-message text.
+   * Structural qualification of a bounded fence repair. Returns the fence the
+   * re-send must carry, or null when this rejection is not a repairable fence
+   * race. Qualification is structural (codes + fence source + epoch/revision
+   * identity), never human error-message text:
+   *  - stale-attached: an idle-lost observation sent an attached epoch that is
+   *    no longer active (`epoch_changed`). Drop the fence and re-send unfenced.
+   *  - authority revision: created-seed conflict, an unfenced live-worker
+   *    conflict / epoch_changed, or an attached-source conflict from a
+   *    concurrent ordinary command (set_model / auto-title / queue writes)
+   *    that advanced the journal between fence capture and admission. All three
+   *    re-arm the fence from the exact cursor the authority returned.
+   * A repaired fence is recorded on the pending, so a second race on it fails
+   * closed instead of repairing again.
    */
-  private repairSubmitTurnFence(
+  private submitTurnFenceRepair(
     pending: TurnPending,
     admission: Extract<SubmitTurnAdmission, { status: "rejected" }>,
-  ): boolean {
-    if (admission.delivery !== "not_delivered") return false;
-
+  ): ResendFence | null {
     const submittedEpoch = pending.request.expectedEpoch ?? null;
     const submittedRevision = pending.request.expectedRevision ?? null;
     const originalFenceSource = pending.fenceSource;
@@ -3350,74 +3444,27 @@ export class SessionController implements RuntimeControllerPort {
       && originalFenceSource === "attached"
       && currentFenceSource === "attached"
       && submittedEpoch !== null
-      && pending.staleAttachedRepairCount === 0
     ) {
-      pending.staleAttachedRepairCount = 1;
-      pending.transportRecoveryCount = 1;
-      // The rejection PROVED the previous frame was not delivered, so the
-      // repair re-send starts as a fresh pre-wire attempt (activation
-      // semantics apply until it reaches the wire again).
-      pending.wireSeen = false;
-      pending.fenceSource = "none";
-      pending.epoch = null;
-      const { expectedEpoch: _expectedEpoch, expectedRevision: _expectedRevision, ...unfenced } = pending.request;
-      pending.request = unfenced;
-      pending.delivery = "in_flight";
-      pending.wireGeneration = null;
-      this.sendSubmitTurn();
-      return true;
+      return "drop";
     }
 
-    // Attached-source CONFLICT (same epoch): a concurrent ordinary command
-    // (set_model from the picker, auto title generation, queue writes)
-    // appended journal events between the fence capture and the admission, so
-    // sessiond proved NOT delivered and returned the exact authority cursor.
-    // The attached event lane has already delivered (or is about to deliver)
-    // those events, so re-arm the fence from the freshest same-epoch cursor —
-    // max(authority revision at rejection, locally applied cursor) — and retry
-    // the SAME operation exactly once. Never a new operationId (one user
-    // intent = one logical turn), never a second repair.
-    if (
-      admission.error.code === "conflict"
-      && originalFenceSource === "attached"
-      && currentFenceSource === "attached"
-      && submittedEpoch !== null
-      && admission.epoch !== undefined
-      && admission.revision !== undefined
-      && admission.epoch === submittedEpoch
-      && pending.attachedConflictRepairCount === 0
-    ) {
-      pending.attachedConflictRepairCount = 1;
-      // This resend is the fence repair, not a transport failure. A throw while
-      // writing it settles; it must not start a second recovery on top. The
-      // conflict PROVED the previous frame was not delivered, so the repair
-      // re-send is a fresh pre-wire attempt (sendTurnAttempt re-arms wireSeen).
-      pending.transportRecoveryCount = 1;
-      pending.wireSeen = false;
-      const localCursor = this.attached && this.epoch === admission.epoch ? this.lastEventId : -1;
-      const revision = Math.max(admission.revision, localCursor);
-      pending.epoch = admission.epoch;
-      pending.request = {
-        ...pending.request,
-        expectedEpoch: admission.epoch,
-        expectedRevision: revision,
-      };
-      pending.delivery = "in_flight";
-      pending.wireGeneration = null;
-      this.sendSubmitTurn();
-      return true;
+    // One fence repair per logical turn: a second race on a repaired fence proves
+    // the repair cannot converge, so it settles instead of looping.
+    if (admission.error.code === "conflict" && currentFenceSource === "attached" && submittedEpoch !== null) {
+      if (
+        admission.epoch === undefined
+        || admission.revision === undefined
+        || admission.epoch !== submittedEpoch
+      ) return null;
+      // The authority returns the journal head; the attached event lane replays
+      // the same events, so no local cursor reconciliation is needed here.
+      return pending.fenceRepaired ? null : { epoch: admission.epoch, revision: admission.revision };
     }
 
     const authorityRepairable =
       admission.error.code === "conflict"
       || (admission.error.code === "epoch_changed" && currentFenceSource === "none");
-    if (
-      !authorityRepairable
-      || admission.epoch === undefined
-      || admission.revision === undefined
-    ) {
-      return false;
-    }
+    if (!authorityRepairable || admission.epoch === undefined || admission.revision === undefined) return null;
 
     if (currentFenceSource === "created") {
       if (
@@ -3426,39 +3473,20 @@ export class SessionController implements RuntimeControllerPort {
         || admission.epoch !== submittedEpoch
         || admission.revision <= submittedRevision
         || !this.advanceCreatedAuthority(submittedEpoch, admission.revision)
-      ) return false;
-      if (pending.revisionRepairCount === 1) return false;
+      ) return null;
     } else if (currentFenceSource === "none") {
       // A detached Browser may target an already-live idle Worker without
-      // having observed its epoch/revision. sessiond proves the first attempt
-      // was NOT delivered and returns its exact current fence. Retry the SAME
-      // operation exactly once with that authority fence; a second race fails
-      // closed instead of looping or guessing. This preserves atomic submit —
-      // no pre-send attachment/Worker takeover is introduced.
-      if (submittedEpoch !== null || submittedRevision !== null || pending.revisionRepairCount === 1) return false;
+      // having observed its epoch/revision. sessiond proves the attempt was NOT
+      // delivered and returns its exact current fence; retry the SAME operation
+      // with that fence. This preserves atomic submit — no pre-send
+      // attachment/Worker takeover is introduced.
+      if (submittedEpoch !== null || submittedRevision !== null) return null;
     } else {
-      return false;
+      return null;
     }
-
-    pending.revisionRepairCount = 1;
-    // This resend is the fence repair, not a transport failure. A throw while
-    // writing it settles; it must not start a second recovery on top.
-    pending.transportRecoveryCount = 1;
-    // The conflict PROVED the previous frame was not delivered: the repair
-    // re-send is a fresh pre-wire attempt (sendTurnAttempt re-arms wireSeen).
-    pending.wireSeen = false;
-    pending.epoch = admission.epoch;
-    pending.request = {
-      ...pending.request,
-      expectedEpoch: admission.epoch,
-      expectedRevision: admission.revision,
-    };
-    pending.delivery = "in_flight";
-    pending.wireGeneration = null;
-    // Fresh Browser envelope/current generation; operationId, prompt, images,
-    // overrides and their authority fingerprint remain unchanged.
-    this.sendSubmitTurn();
-    return true;
+    // The created-seed cursor above is advanced even when the repair itself is
+    // already spent: the authority's revision is real progress either way.
+    return pending.fenceRepaired ? null : { epoch: admission.epoch, revision: admission.revision };
   }
 
   private advanceCreatedAuthority(expectedEpoch: string, authorityRevision: number): boolean {
@@ -3468,11 +3496,6 @@ export class SessionController implements RuntimeControllerPort {
     if (!this.authorityCursorKnown || authorityRevision > this.lastEventId) this.lastEventId = authorityRevision;
     this.authorityCursorKnown = true;
     return true;
-  }
-
-  /** Tag a proven non-delivery rejection so the Composer restores the draft. */
-  private activationTagged(error: ProtocolError): ProtocolError & { readonly phase: "activation" } {
-    return { ...error, phase: "activation" as const };
   }
 
   /** Tag an UNRESOLVED-delivery rejection: the Composer must NEVER treat it as
@@ -3488,142 +3511,159 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
-   * Proven pre-wire non-delivery: cancel/unregister, clear the pending slot and
-   * optimistic bubble exactly once, reject tagged `phase: "activation"`, and set
-   * the controller error. Composer restores the draft even when retryable=true.
-   *
-   * Once any attempt for this operation passed the send gate (`wireSeen`), a
-   * later failure is NOT proven pre-wire non-delivery — the bytes may be in
-   * flight or the turn already admitted server-side. Such a settle keeps the
-   * optimistic bubble and rejects `phase: "uncertain"` (never a draft
-   * restore, never the "not sent" judgment — re-sending could duplicate).
+   * ONE settle judgment for the pending turn, driven by delivery evidence:
+   *  - `wireSeen` (any attempt for this operation passed the send gate): the
+   *    bytes may be in flight or already admitted server-side, so the settle is
+   *    UNCERTAIN — the optimistic bubble is kept and the Composer shows
+   *    "unconfirmed"; a draft restore here could duplicate the turn;
+   *  - otherwise delivery is PROVEN pre-wire, so the settle is tagged
+   *    `phase: "activation"`: the bubble is removed and the Composer restores
+   *    the draft.
+   * Every settle point routes through here (before-wire failure, rejected
+   * admission, the shared deadline, lifecycle teardown, epoch change,
+   * exhausted re-send budget), so the judgment can never diverge per caller.
    */
-  private failSubmitTurnBeforeWire(pending: TurnPending, cause: unknown): void {
+  private settleTurnPending(pending: TurnPending, cause: unknown, surface = true): void {
     if (this.pendingTurn !== pending) return;
     const error = pending.wireSeen
-      ? this.uncertainTagged(this.protocolErrorFrom(cause, "submit transport failed after dispatch"))
+      ? this.uncertainTagged(this.protocolErrorFrom(cause, "turn delivery could not be confirmed"))
       : this.activationFailure(cause);
-    if (this.recoverSubmitTurn(pending, error)) return;
-    if (pending.transportRecoveryCount === 1) this.reportSendDiagnostic("send_recovery_failed", pending, error);
+    this.reportSendDiagnostic(pending.resendCount > 0 ? "send_recovery_failed" : "send_failure", pending, error);
+    this.clearResendDeadline(pending);
     pending.attempt?.cancel();
+    pending.attempt = null;
     this.binding.unregisterTurn(pending.operationId);
     this.pendingTurn = null;
     this.settlePromptTransaction(pending.tx, { removeBubble: !pending.wireSeen });
+    this.notify();
     pending.reject(error);
-    this.setError(error);
+    // Lifecycle teardown (stop / switch / dispose) and the deadline settle only
+    // the caller; the Composer owns that copy, so no controller error banner.
+    if (surface) this.setError(error);
   }
 
   /**
-   * One silent recovery for a send that failed before the server admitted it.
-   * User-side rejections, a second failure, and a blown 30s budget surface
-   * instead. Returns true when the resend was started.
-   *
-   * Two dead-transport shapes share this one retry:
-   *  - the socket threw while still OPEN: the connection only marks the socket
-   *    dead (`noteOutboundDead`) and fails the attempt — it does NOT reconnect
-   *    or resend. This retry reconnects and resends the SAME operationId.
-   *  - any other non-user failure (stale epoch, conflict, a gate that gave
-   *    up while the socket still looked sendable): force one reconnect +
-   *    re-attach, then resend that same operationId. sessiond's duplicate
-   *    admission makes a resend that already landed a no-op.
+   * A transport failure on a send that has not been admitted yet. At most one
+   * silent transport recovery (reconnect + re-send the SAME operationId) is
+   * attempted through {@link resendTurn}; user-side rejections, a gate timeout
+   * (that already waited the whole budget) and an exhausted budget settle
+   * instead.
    */
-  private recoverSubmitTurn(pending: TurnPending, error: ProtocolError): boolean {
-    if (this.pendingTurn !== pending) return false;
-    if (pending.transportRecoveryCount !== 0) return false;
-    if (isUserSendRejection(error)) {
-      this.reportSendDiagnostic("send_failure", pending, error);
-      return false;
-    }
-    // A gate timeout already waited its full budget for a connection that
-    // never came back. Recovering it would start that wait over.
-    if (error.code === "timeout") {
-      this.reportSendDiagnostic("send_failure", pending, error);
-      return false;
-    }
-    const now = Date.now();
-    const deadline = pending.transportRecoveryDeadline ?? now + SUBMIT_RECOVERY_BUDGET_MS;
-    if (now >= deadline) {
-      this.reportSendDiagnostic("send_failure", pending, error);
-      return false;
-    }
-    pending.transportRecoveryCount = 1;
-    pending.transportRecoveryDeadline = deadline;
-    pending.delivery = "in_flight";
-    pending.wireGeneration = null;
+  private failSubmitTurnBeforeWire(pending: TurnPending, cause: unknown): void {
+    if (this.pendingTurn !== pending) return;
+    if (this.resendBeforeWire(pending, cause)) return;
+    this.settleTurnPending(pending, cause);
+  }
+
+  /**
+   * The ONE silent transport recovery: force a reconnect and re-send the SAME
+   * operationId, so it stays a single-attempt-per-socket shape instead of the
+   * controller duplicating the send logic. A user-side rejection, a gate timeout
+   * (that already waited the whole budget) and an already-re-sent turn surface
+   * instead.
+   */
+  private resendBeforeWire(pending: TurnPending, cause: unknown): boolean {
+    const error = this.protocolErrorFrom(cause, "submit transport failed");
+    if (isUserSendRejection(error) || error.code === "timeout") return false;
+    // The transport retry is the FIRST shape in the chain, so anything already
+    // re-sent proves it is spent.
+    if (pending.resendCount > 0) return false;
+    if (!this.resendTurn(pending, undefined, "transport")) return false;
     this.reportSendDiagnostic("send_failure", pending, error);
     const state = this.runtimeConnection.connectionState;
     if (state !== "unavailable" && state !== "reconnecting" && state !== "connecting" && state !== "handshaking") {
       this.runtimeConnection.recoverTransport("submit turn recovery");
     }
     if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
+    return true;
+  }
+
+  /**
+   * THE re-send function. Every re-send shape goes through it — transport
+   * recovery, stale-attached fence drop, authority revision repair, uncertain
+   * reconciliation, and same-epoch reconnect — so the budget, the deadline and
+   * the wire bookkeeping exist once:
+   *  - check {@link SUBMIT_MAX_RESENDS} before the busy work and count only a
+   *    re-send that actually happens ("one quiet try, then surface");
+   *  - arm the single deadline on the first re-send (already armed by the
+   *    pre-wire gate before it) and refuse once it has passed;
+   *  - apply the fence: `"drop"` sends unfenced, an object re-arms
+   *    expectedEpoch/expectedRevision, `undefined` keeps the current request;
+   *  - clear `wireSeen` only for a fence repair, where the authority itself
+   *    proved the previous frame was never delivered;
+   *  - bump `dispatchRevision` and hand off to {@link sendTurnAttempt}.
+   */
+  private resendTurn(
+    pending: TurnPending,
+    fence: ResendFence | undefined,
+    reason: "transport" | "fence" | "reconcile",
+  ): boolean {
+    if (this.pendingTurn !== pending) return false;
+    if (pending.resendCount >= SUBMIT_MAX_RESENDS) return false;
+    const now = Date.now();
+    const deadline = pending.resendDeadline ?? now + SUBMIT_RECOVERY_BUDGET_MS;
+    if (now >= deadline) return false;
+
+    pending.resendCount += 1;
+    pending.resendReason = reason;
+    // A fence repair is the authority PROVING the previous frame was not
+    // delivered, so the attempt starts over as pre-wire; a transport throw or an
+    // uncertain admission leaves the wire proof standing.
+    if (reason === "fence") pending.wireSeen = false;
+    if (fence === "drop") {
+      pending.fenceDropped = true;
+      pending.fenceSource = "none";
+      pending.epoch = null;
+      const { expectedEpoch: _expectedEpoch, expectedRevision: _expectedRevision, ...unfenced } = pending.request;
+      pending.request = unfenced;
+    } else if (fence !== undefined) {
+      pending.fenceRepaired = true;
+      pending.epoch = fence.epoch;
+      pending.request = {
+        ...pending.request,
+        expectedEpoch: fence.epoch,
+        ...(fence.revision === undefined ? {} : { expectedRevision: fence.revision }),
+      };
+    }
+    pending.delivery = "in_flight";
+    pending.wireGeneration = null;
+    this.armResendDeadline(pending);
+    // Fresh Browser envelope/current generation; operationId, prompt, images,
+    // overrides and their authority fingerprint remain unchanged.
     this.sendSubmitTurn();
     return true;
   }
 
   /**
-   * One bounded same-operationId reconciliation resend after an UNCERTAIN
-   * admission (the Host/sessiond RPC failed after possible dispatch, or the
-   * worker admission timed out). The resend is the verify step: sessiond's
-   * idempotent admission answers duplicate/accepted when the turn already
-   * landed (the caller promise resolves as delivered), admits it now when it
-   * never landed, or proves not_delivered — all exactly-one delivery on the
-   * wire. Shares the recovery deadline; a second uncertainty (or a blown
-   * budget) settles honestly instead (uncertain-tagged, never "not sent").
+   * Arm the ONE deadline for this logical turn: the send budget is fixed by the
+   * pre-wire gate (or by the first re-send) and its timer settles a re-send that
+   * never comes back on the wire (an attempt waiting for a reconnect that never
+   * arrives). The timer is installed only once; a first send that never failed
+   * gets no client-side settle timeout of its own. Any terminal settle clears it.
    */
-  private reconcileUncertainTurn(pending: TurnPending, error: ProtocolError): boolean {
-    if (this.pendingTurn !== pending) return false;
-    if (pending.uncertainReconcileCount !== 0) return false;
-    if (isUserSendRejection(error)) {
-      this.reportSendDiagnostic("send_failure", pending, error);
-      return false;
-    }
-    const now = Date.now();
-    const deadline = pending.transportRecoveryDeadline ?? now + SUBMIT_RECOVERY_BUDGET_MS;
-    if (now >= deadline) {
-      this.reportSendDiagnostic("send_failure", pending, error);
-      return false;
-    }
-    pending.uncertainReconcileCount = 1;
-    pending.transportRecoveryDeadline = deadline;
-    pending.delivery = "in_flight";
-    pending.wireGeneration = null;
-    this.reportSendDiagnostic("send_failure", pending, error);
-    // Bound the whole unresolved window: a reconcile re-send that went on the
-    // wire and then lost its transport (logical retry waiting for a reconnect
-    // that never comes) must still settle within the recovery budget instead
-    // of locking the composer forever.
-    pending.uncertainWatchdog = this.setTimeoutFn(() => {
-      pending.uncertainWatchdog = null;
-      this.settleUncertainDeadline(pending);
-    }, Math.max(0, deadline - Date.now()));
-    // No forced transport recovery here: an uncertain ADMISSION arrived over a
-    // live connection, so the reconcile re-send goes straight through the
-    // normal send gate (which itself probes/reconnects when the transport is
-    // actually dead — a recovery resend then re-enters through the same
-    // operationId with the duplicate-admission proof intact).
-    this.sendSubmitTurn();
-    return true;
+  private armResendDeadline(pending: TurnPending): void {
+    if (pending.resendDeadline === null) pending.resendDeadline = Date.now() + SUBMIT_RECOVERY_BUDGET_MS;
+    if (pending.resendTimer !== null) return;
+    // Only an unresolved in-flight turn is bounded here; an accepted admission
+    // is tracked by its status subscription, not by this send budget.
+    if (pending.delivery !== "in_flight") return;
+    const budget = Math.max(0, pending.resendDeadline - Date.now());
+    pending.resendTimer = this.setTimeoutFn(() => {
+      pending.resendTimer = null;
+      if (this.pendingTurn !== pending || pending.delivery !== "in_flight") return;
+      this.settleTurnPending(pending, {
+        code: "timeout",
+        message: "turn delivery could not be confirmed",
+        retryable: true,
+      } satisfies ProtocolError, false);
+    }, budget);
   }
 
-  /** Bounded give-up for an unresolved uncertain delivery: settles the promise
-   *  uncertain-tagged (never a definite failure, never a draft restore) while
-   *  keeping the optimistic bubble for the authority event stream to claim. */
-  private settleUncertainDeadline(pending: TurnPending): void {
-    if (this.pendingTurn !== pending) return;
-    const error = this.uncertainTagged({ code: "timeout", message: "turn delivery could not be confirmed", retryable: true } satisfies ProtocolError);
-    this.reportSendDiagnostic("send_failure", pending, error);
-    pending.attempt?.cancel();
-    this.binding.unregisterTurn(pending.operationId);
-    this.pendingTurn = null;
-    this.settlePromptTransaction(pending.tx, { removeBubble: false });
-    this.notify();
-    pending.reject(error);
-  }
-
-  private clearUncertainWatchdog(pending: TurnPending): void {
-    if (pending.uncertainWatchdog === null) return;
-    this.clearTimeoutFn(pending.uncertainWatchdog);
-    pending.uncertainWatchdog = null;
+  private clearResendDeadline(pending: TurnPending): void {
+    pending.resendDeadline = null;
+    if (pending.resendTimer === null) return;
+    this.clearTimeoutFn(pending.resendTimer);
+    pending.resendTimer = null;
   }
 
   /** Fire-and-forget diagnostic. Never throws into the send path. */
@@ -3656,13 +3696,14 @@ export class SessionController implements RuntimeControllerPort {
     }
   }
 
-  /** Refresh a never-fenced none-source pending from the exact attached epoch. */
+  /** Refresh a never-fenced none-source pending from the exact attached fence
+   *  cursor (the same one {@link resolveSubmitTurnFence} uses for `attached`). */
   private refreshNoneSourceFenceFromAttached(pending: TurnPending): void {
     if (
       pending.fenceSource !== "none"
+      || pending.fenceDropped
       || pending.request.expectedEpoch !== undefined
       || pending.request.expectedRevision !== undefined
-      || pending.staleAttachedRepairCount !== 0
       || !this.attached
       || this.sessionId !== pending.sessionId
       || this.epoch === null
@@ -3672,14 +3713,14 @@ export class SessionController implements RuntimeControllerPort {
     pending.request = {
       ...pending.request,
       expectedEpoch: this.epoch,
-      expectedRevision: this.lastEventId,
+      expectedRevision: this.attachedFenceRevision ?? this.lastEventId,
     };
   }
 
   /** One bounded pre-wire gate covering reconnect sendability and exact
-   * resume-attach. The gate and the single silent recovery share ONE
+   * resume-attach. The gate and every re-send share ONE
    * {@link SUBMIT_RECOVERY_BUDGET_MS} deadline for the whole logical send, so
-   * the retry cannot add a second full wait and a slow (but real) recovery is
+   * a retry cannot add a second full wait and a slow (but real) recovery is
    * never judged "not sent" halfway through.
    *
    * The shared deadline covers the PRE-WIRE phase only. A turn the authority
@@ -3690,10 +3731,13 @@ export class SessionController implements RuntimeControllerPort {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       const preWire = pending.delivery === "in_flight";
-      const deadline = preWire
-        ? (pending.transportRecoveryDeadline ?? Date.now() + SUBMIT_RECOVERY_BUDGET_MS)
+      // The pre-wire wait fixes the ONE budget for the whole logical send; it is
+      // installed here (without a settle timer) so the first failure's re-send
+      // shares it instead of starting a second full wait.
+      if (preWire && pending.resendDeadline === null) pending.resendDeadline = Date.now() + SUBMIT_RECOVERY_BUDGET_MS;
+      const deadline = preWire && pending.resendDeadline !== null
+        ? pending.resendDeadline
         : Date.now() + SUBMIT_RECOVERY_BUDGET_MS;
-      if (preWire) pending.transportRecoveryDeadline = deadline;
       const budget = Math.max(0, deadline - Date.now());
       const finish = (fn: () => void): void => {
         if (settled) return;
@@ -3759,45 +3803,35 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
-   * Same-epoch reconnect resend: SAME operationId + payload on a FRESH
+   * Same-epoch reconnect re-send: SAME operationId + payload on a FRESH
    * transport envelope + generation. sessiond returns duplicate+accepted and
-   * re-opens the status subscription. Never called across an epoch boundary.
+   * re-opens the status subscription. Never called across an epoch boundary,
+   * and never after a failure — this is the current attempt moving to a new
+   * socket, so it does not consume the re-send budget ({@link resendTurn}).
    */
-  private resendTurn(): void {
+  private resendTurnAfterReconnect(): void {
     this.sendSubmitTurn();
   }
 
   /**
    * Settle the pending turn exactly once on lifecycle teardown (dispose / detach /
-   * stop / session switch). An in-flight admission settles by delivery evidence:
-   * still PROVEN pre-wire → fixed interruption with the optimistic bubble
-   * removed (draft restored); already on the wire (`wireSeen`) → uncertain
-   * delivery, bubble kept, never a draft restore. An already-accepted/uncertain
-   * turn keeps its bubble (it continues server-side) and only the status
-   * tracker is dropped. Never called on transport loss (the turn survives for
-   * same-epoch reconnect resend).
+   * stop / session switch / epoch change). An in-flight admission settles by
+   * delivery evidence through {@link settleTurnPending} (proven pre-wire →
+   * activation with the bubble removed; on the wire → uncertain with the bubble
+   * kept). An already-accepted turn keeps its bubble (it continues server-side)
+   * and only the status tracker is dropped. Never called on transport loss (the
+   * turn survives for the same-epoch reconnect resend).
    */
   private settleTurn(error: ProtocolError): void {
     const pending = this.pendingTurn;
     if (!pending) return;
-    this.clearUncertainWatchdog(pending);
-    pending.attempt?.cancel();
-    this.binding.unregisterTurn(pending.operationId);
-    this.pendingTurn = null;
     if (pending.delivery === "in_flight") {
-      // Same delivery judgment as failSubmitTurnBeforeWire: once an attempt for
-      // this operation passed the send gate (wireSeen), the bytes may be in
-      // flight or already admitted server-side. A lifecycle teardown (stop /
-      // session switch / dispose) is then UNCERTAIN delivery — the bubble is
-      // kept and the Composer never restores the draft. Only a proven pre-wire
-      // pending settles as fixed interruption with the bubble removed.
-      if (pending.wireSeen) {
-        this.settlePromptTransaction(pending.tx, { removeBubble: false });
-        pending.reject(this.uncertainTagged(error));
-      } else {
-        this.settlePromptTransaction(pending.tx, { removeBubble: true });
-        pending.reject(this.activationTagged(error));
-      }
+      this.settleTurnPending(pending, error, false);
+    } else {
+      this.clearResendDeadline(pending);
+      pending.attempt?.cancel();
+      this.binding.unregisterTurn(pending.operationId);
+      this.pendingTurn = null;
     }
     // Phase 5A: lifecycle teardown of the turn slot releases a deferred
     // leaf-fence rebase (the turn is no longer in flight).
@@ -3825,45 +3859,17 @@ export class SessionController implements RuntimeControllerPort {
   private startAttach(sessionId: string, mode: "fresh" | "resume", intent: AttachIntent = "legacy"): Promise<void> {
     if (sessionId !== this.sessionId) return Promise.reject(this.identityMismatchError(sessionId));
     this.intendedSession = { sessionId, intent };
-    // Phase 3 EXPLICIT FRESH session-switch cleanup: a pending turn bound to a
-    // DIFFERENT target is settled exactly once so its late status cannot settle
-    // the newly selected context. A turn for the fresh attach target is kept.
-    // Resume/reattach MUST defer a cross-session pending turn to
-    // resyncAfterAttach: until the resume snapshot lands, possible delivery is
-    // ambiguous and may only become uncertain (never definite interruption).
-    if (mode === "fresh" && this.pendingTurn && this.pendingTurn.sessionId !== sessionId) {
-      this.settleTurn({ code: "interrupted", message: "session switched", retryable: false });
-    }
-    // D2-P4 session-switch cleanup: a queued turn bound to a DIFFERENT session
-    // must not resolve into the new session's context (fixed error).
-    if (this.pendingQueuedTurn && this.sessionId !== null && this.sessionId !== sessionId) {
-      this.settlePendingQueuedTurn({ code: "interrupted", message: "session switched", retryable: false });
-    }
-    // F1 session-switch cleanup: a pending ordinary command bound to the OLD
-    // session — bash / compact / read-only queries AND a PROMPT — is rejected
-    // exactly once on a switch so its late result/events cannot settle the new
-    // session AND the new session's ordinary slot is free (a surviving old
-    // prompt would otherwise be re-sent by resyncAfterAttach with the same
-    // commandId on a new envelope, blocking the new session).
-    if (this.pendingCommand && this.sessionId !== null && this.sessionId !== sessionId) {
-      this.settlePendingCommand({ code: "interrupted", message: "session switched", retryable: false });
-    }
-    // Phase 2B: pending reads bound to the OLD session are settled exactly once
-    // on a switch so a late read_result can never settle the new session (reads
-    // are always bound to the currently attached session).
-    if (this.pendingReads.size > 0 && this.sessionId !== null && this.sessionId !== sessionId) {
-      this.settleAllPendingReads({ code: "interrupted", message: "session switched", retryable: false });
-    }
-    // D2-P8: an in-flight extension reply bound to the OLD session is rejected
-    // exactly once on a switch so its late result cannot settle the new session.
-    if (this.pendingExtensionUiCommand && this.sessionId !== null && this.sessionId !== sessionId) {
-      this.settlePendingExtensionUi({ code: "interrupted", message: "session switched", retryable: false });
-    }
-    // E15: incremental input bound to the OLD session (in-flight head + waiting
-    // tail — entries are settled on switch, so any survivor belongs to the old
-    // session) is rejected exactly once on a switch.
-    if ((this.extensionUiInputInFlight !== null || this.extensionUiInputQueue.length > 0) && this.sessionId !== null && this.sessionId !== sessionId) {
-      this.settlePendingExtensionUiInputs({ code: "interrupted", message: "session switched", retryable: false });
+    // Session-switch cleanup, driven by the ONE pending-lane table: a lane bound
+    // to a session OTHER than this attach target is settled exactly once so its
+    // late frame/status can never settle the newly attached context. A resume
+    // keeps the ambiguous turn lane (resyncAfterAttach decides it by delivery
+    // evidence); every other lane and every fresh attach settle here.
+    for (const lane of this.pendingLanes()) {
+      if (lane.switchSettle === "fresh-only" && mode !== "fresh") continue;
+      const pending = lane.pending();
+      if (pending !== null && pending.sessionId !== sessionId) {
+        lane.settle({ code: "interrupted", message: "session switched", retryable: false });
+      }
     }
     this.attached = false;
     this.attachedFenceRevision = null;
@@ -3921,20 +3927,18 @@ export class SessionController implements RuntimeControllerPort {
     if (handle !== null) this.attachAttempt = { handle, sessionId, mode, intent };
   }
 
-  /** Reconnect resume: re-attach the intended session, reusing any deferred AND its observation intent. */
+  /**
+   * Re-attach an ALREADY attached session after a transport loss or a cursor
+   * violation (gap / epoch / session mismatch). Always observation-safe
+   * (`existing_only`): the session was attached before, so a recovery attach
+   * must never be able to cold-activate a Worker — even when
+   * {@link cancelObservationIntent} already cleared the declared intent (LC-02).
+   */
   private resumeAttach(): void {
-    if (!this.intendedSession) return;
-    void this.startAttach(this.intendedSession.sessionId, "resume", this.intendedSession.intent).catch(() => {
+    if (!this.sessionId) return;
+    void this.startAttach(this.sessionId, "resume", this.intendedSession?.intent ?? "existing").catch(() => {
       // Resume failed; socket backoff retries and `ready` re-triggers resume.
     });
-  }
-
-  /** Re-attach after a cursor violation (gap / epoch / session mismatch). */
-  private reattach(): void {
-    if (!this.sessionId) return;
-    this.attached = false;
-    this.attachedFenceRevision = null;
-    void this.startAttach(this.sessionId, "resume", this.intendedSession?.intent ?? "legacy").catch(() => undefined);
   }
 
   /** Reject + clear any in-flight attach deferred (detach / stop / dispose). */
@@ -3945,13 +3949,149 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
-   * After an initial snapshot, re-send pending command/interrupt ONLY when the
-   * session/epoch identity survived. Defense-in-depth (F1): a lane is re-sent
-   * only when BOTH its own sessionId matches the newly attached session AND the
-   * prior epoch identity survived (the prior session/epoch are captured BEFORE
-   * applySnapshot overwrote them). On epoch_changed / a session mismatch the
-   * prior command's effect is ambiguous → reject, never resend. No-op when
-   * nothing is pending (fresh attach).
+   * The ONE pending-lane table. Every attach boundary and every session switch
+   * walks it: a lane is re-sent only when its OWN sessionId matches the newly
+   * attached session AND the prior epoch identity survived (the prior session /
+   * epoch are captured BEFORE applySnapshot overwrote them); on epoch_changed or
+   * a session mismatch the lane's effect is ambiguous → settle, never resend.
+   *
+   * Lanes that are pure control/input channels keep one deliberate difference:
+   * the interrupt settle is a `moot control` error that is never surfaced in the
+   * view (`reportsError: false`), because after an epoch rollover the old Worker
+   * is gone and the interrupt has nothing left to interrupt.
+   */
+  private pendingLanes(): readonly PendingLane[] {
+    return [
+      {
+        name: "command",
+        pending: () => this.pendingCommand,
+        resend: () => { const pending = this.pendingCommand; if (pending) this.sendCommandAttempt(pending); },
+        settle: (error) => {
+          if (!this.pendingCommand) return;
+          this.pendingCommand.reject(error);
+          this.pendingCommand = null;
+        },
+        reportsError: true,
+        switchSettle: "always",
+      },
+      {
+        name: "side-chat command",
+        pending: () => this.pendingSideChatCommand,
+        resend: () => { const pending = this.pendingSideChatCommand; if (pending) this.sendSideChatCommandAttempt(pending); },
+        settle: (error) => this.settlePendingSideChatCommand(error),
+        reportsError: false,
+        // The side-chat caller already owns its own error surface; the resync
+        // never invents a second one.
+        switchSettle: "always",
+      },
+      {
+        name: "queued turn",
+        pending: () => this.pendingQueuedTurn,
+        resend: () => {
+          const pending = this.pendingQueuedTurn;
+          if (pending === null) return;
+          // A transport resync and an armed reconcile timer must never both fire
+          // for the same commandId.
+          this.clearQueuedTurnReconcile(pending);
+          this.sendQueuedTurnAttempt(pending);
+        },
+        settle: (error) => {
+          if (!this.pendingQueuedTurn) return;
+          this.clearQueuedTurnReconcile(this.pendingQueuedTurn);
+          this.pendingQueuedTurn.reject(error);
+          this.pendingQueuedTurn = null;
+          this.notify();
+        },
+        reportsError: true,
+        switchSettle: "always",
+      },
+      {
+        name: "extension ui response",
+        pending: () => this.pendingExtensionUiCommand,
+        resend: () => { const pending = this.pendingExtensionUiCommand; if (pending) this.sendExtensionUiAttempt(pending); },
+        settle: (error) => {
+          if (!this.pendingExtensionUiCommand) return;
+          this.pendingExtensionUiCommand.reject(error);
+          this.pendingExtensionUiCommand = null;
+          this.notify();
+        },
+        reportsError: true,
+        switchSettle: "always",
+      },
+      {
+        name: "extension ui input",
+        // The whole FIFO: the in-flight head is re-sent on a same-epoch resume;
+        // the waiting tail never touched the wire and stays queued.
+        pending: () => this.extensionUiInputInFlight ?? this.extensionUiInputQueue[0] ?? null,
+        resend: () => {
+          const head = this.extensionUiInputInFlight;
+          if (head) this.sendExtensionUiInputAttempt(head);
+        },
+        settle: (error) => {
+          if (this.extensionUiInputInFlight === null && this.extensionUiInputQueue.length === 0) return;
+          this.settlePendingExtensionUiInputs(error);
+        },
+        reportsError: true,
+        switchSettle: "always",
+      },
+      {
+        name: "pending read",
+        // Reads are pure queries bound to the prior session/epoch: applySnapshot
+        // settles them on any identity change, and a same-epoch resume never
+        // re-issues them (the caller does). The lane states that explicitly so
+        // no read can be resent across a reconnect.
+        pending: () => this.pendingReads.values().next().value ?? null,
+        settle: (error) => this.settleAllPendingReads(error),
+        reportsError: false,
+        switchSettle: "always",
+        // A same-epoch resume leaves reads alone (applySnapshot settles them when
+        // the session/epoch identity changed; the caller re-issues the query).
+        skipResync: () => true,
+      },
+      {
+        name: "interrupt",
+        pending: () => this.pendingInterrupt,
+        resend: () => { const pending = this.pendingInterrupt; if (pending) this.sendInterruptAttempt(pending); },
+        settle: (error) => {
+          this.pendingInterrupt?.reject(error);
+          this.pendingInterrupt = null;
+          this.pendingInterruptPromise = null;
+        },
+        reportsError: false,
+        switchSettle: "always",
+        resyncError: { code: "epoch_changed", message: "epoch changed; interrupt not re-sent", retryable: false },
+      },
+      {
+        name: "turn",
+        pending: () => this.pendingTurn,
+        resend: () => this.resendTurnAfterReconnect(),
+        // The ONE 3A settle judgment: delivery evidence decides activation vs
+        // uncertain (in-flight), and an already-accepted turn keeps its bubble
+        // while only the status tracker is dropped.
+        settle: (error) => this.settleTurn(error),
+        // The settle already tags the caller (uncertain keeps the bubble and
+        // the Composer shows its own copy); no second error in the view.
+        reportsError: false,
+        // A resume MUST defer a cross-session turn to resyncAfterAttach: until
+        // the resume snapshot lands, possible delivery is ambiguous and may only
+        // become uncertain (never a definite interruption).
+        switchSettle: "fresh-only",
+        // Current-generation admission is authoritative (accept/reject/repair);
+        // a proven pre-wire pending waits for the send gate after this attach.
+        skipResync: () => {
+          const pending = this.pendingTurn;
+          if (pending === null) return false;
+          const currentGeneration = this.runtimeConnection.currentGeneration;
+          return pending.wireGeneration === currentGeneration || pending.wireGeneration === null;
+        },
+        resyncError: { code: "epoch_changed", message: "turn epoch changed; delivery uncertain", retryable: true },
+      },
+    ];
+  }
+
+  /**
+   * After an initial snapshot, decide every pending lane (see
+   * {@link pendingLanes}). No-op when nothing is pending (fresh attach).
    */
   private resyncAfterAttach(
     resumeStatus: "snapshot" | "gap" | "epoch_changed",
@@ -3969,143 +4109,28 @@ export class SessionController implements RuntimeControllerPort {
       priorSessionId !== null &&
       priorSessionId === attachedSessionId &&
       (priorEpoch === null || priorEpoch === snapshotEpoch);
-    // Per-lane effective resume status: fail closed unless the lane's OWN
-    // sessionId matches the newly attached session AND the prior epoch identity
-    // survived. Any mismatch downgrades to epoch_changed → reject, never resend
-    // across sessions.
-    const laneStatus = (laneSessionId: string | null): "snapshot" | "gap" | "epoch_changed" =>
-      epochSurvived && laneSessionId === attachedSessionId ? resumeStatus : "epoch_changed";
-    if (this.pendingCommand) {
-      const decision = decideCommandRetry(laneStatus(this.pendingCommand.sessionId));
+    for (const lane of this.pendingLanes()) {
+      const pending = lane.pending();
+      if (pending === null) continue;
+      if (lane.skipResync?.() === true) continue;
+      // Per-lane status: fail closed unless the lane's OWN sessionId matches the
+      // newly attached session AND the prior epoch identity survived.
+      const laneStatus = epochSurvived && pending.sessionId === attachedSessionId ? resumeStatus : "epoch_changed";
+      const decision = decideCommandRetry(laneStatus);
       if (decision.decision === "resend") {
-        this.resendCommand();
-      } else {
-        this.pendingCommand.reject(decision.error);
-        this.pendingCommand = null;
-        this.setError(decision.error);
-      }
-    }
-    if (this.pendingSideChatCommand) {
-      const decision = decideCommandRetry(laneStatus(this.pendingSideChatCommand.sessionId));
-      if (decision.decision === "resend") {
-        this.resendSideChatCommand();
-      } else {
-        this.settlePendingSideChatCommand(decision.error);
-      }
-    }
-    // D2-P4 dual-slot queued turn: same-epoch snapshot/gap → resend with the
-    // SAME commandId on a fresh envelope; epoch_changed / session mismatch →
-    // reject, never resend.
-    if (this.pendingQueuedTurn) {
-      const decision = decideCommandRetry(laneStatus(this.pendingQueuedTurn.sessionId));
-      if (decision.decision === "resend") {
-        this.resendQueuedTurn();
-      } else {
-        if (this.pendingQueuedTurn.reconcileTimer !== null) this.clearTimeoutFn(this.pendingQueuedTurn.reconcileTimer);
-        this.pendingQueuedTurn.reject(decision.error);
-        this.pendingQueuedTurn = null;
-        this.notify();
-        this.setError(decision.error);
-      }
-    }
-    // D2-P8 extension-UI reply: same-epoch snapshot/gap → resend with the SAME
-    // commandId on a fresh envelope (runtime dedups by sessionId+commandId);
-    // epoch_changed / session mismatch → reject, never resend (ambiguous).
-    if (this.pendingExtensionUiCommand) {
-      const decision = decideCommandRetry(laneStatus(this.pendingExtensionUiCommand.sessionId));
-      if (decision.decision === "resend") {
-        this.resendExtensionUi();
-      } else {
-        this.pendingExtensionUiCommand.reject(decision.error);
-        this.pendingExtensionUiCommand = null;
-        this.notify();
-        this.setError(decision.error);
-      }
-    }
-    // E15 extension-UI incremental input: same-epoch snapshot/gap → resend the
-    // in-flight head with the SAME commandId (at-most-once per epoch; the
-    // waiting tail has not touched the wire and stays queued). epoch_changed /
-    // session mismatch → the worker restarted / session changed and every
-    // pending extension request is gone, so the whole queue settles exactly once
-    // with the structured epoch error and nothing is resent (fail-closed, no
-    // pointless not_found frames).
-    if (this.extensionUiInputInFlight || this.extensionUiInputQueue.length > 0) {
-      const laneSessionId = this.extensionUiInputInFlight?.sessionId ?? this.extensionUiInputQueue[0]?.sessionId ?? null;
-      const decision = decideCommandRetry(laneStatus(laneSessionId));
-      if (decision.decision === "resend") {
-        this.resendExtensionUiInput();
-      } else {
-        this.settlePendingExtensionUiInputs(decision.error);
-        this.setError(decision.error);
-      }
-    }
-    if (this.pendingInterrupt) {
-      if (laneStatus(this.pendingInterrupt.sessionId) !== "epoch_changed") {
-        this.resendInterrupt();
-      } else {
-        const err: ProtocolError = { code: "epoch_changed", message: "epoch changed; interrupt not re-sent", retryable: false };
-        this.pendingInterrupt.reject(err);
-        this.pendingInterrupt = null;
-        this.pendingInterruptPromise = null;
-      }
-    }
-    // Phase 3 atomic turn: same-epoch snapshot/gap → resend the SAME
-    // operationId + payload on a fresh envelope + generation (sessiond returns
-    // duplicate+accepted and re-opens the status subscription). epoch_changed /
-    // session mismatch after possible delivery → NEVER resend: an in-flight
-    // admission becomes UNCERTAIN (bubble + staging retained), an
-    // accepted/uncertain turn keeps its bubble and only drops the status tracker.
-    if (this.pendingTurn) {
-      const pending = this.pendingTurn;
-      const currentGeneration = this.runtimeConnection.currentGeneration;
-      // Current-generation admission is authoritative (accept/reject/repair).
-      // A proven pre-wire pending waits for the 10s gate after this attach.
-      if (pending.wireGeneration === currentGeneration || pending.wireGeneration === null) return;
-      const decision = decideCommandRetry(laneStatus(pending.sessionId));
-      if (decision.decision === "resend") {
-        this.resendTurn();
-      } else {
-        this.binding.unregisterTurn(pending.operationId);
-        this.pendingTurn = null;
-        if (pending.delivery === "in_flight") {
-          const err = this.uncertainTagged({ code: "epoch_changed", message: "turn epoch changed; delivery uncertain", retryable: true } satisfies ProtocolError);
-          this.settlePromptTransaction(pending.tx, { removeBubble: false });
-          pending.reject(err);
-          this.setError(err);
+        const resend = lane.resend;
+        if (resend === undefined) {
+          // A lane with no resend shape never crosses a reconnect: settle it
+          // instead of leaving the slot armed forever.
+          lane.settle({ code: "epoch_changed", message: `${lane.name} could not be re-sent after reconnect`, retryable: false });
+          continue;
         }
-        this.notify();
+        resend();
+        continue;
       }
+      lane.settle(lane.resyncError ?? decision.error);
+      if (lane.reportsError) this.setError(decision.error);
     }
-  }
-
-  /** Re-send a pending command with the SAME commandId (at-most-once per epoch). */
-  private resendCommand(): void {
-    if (this.pendingCommand) this.sendCommandAttempt(this.pendingCommand);
-  }
-
-  /** Re-send a pending side-chat command with the SAME commandId. */
-  private resendSideChatCommand(): void {
-    if (this.pendingSideChatCommand) this.sendSideChatCommandAttempt(this.pendingSideChatCommand);
-  }
-
-  /** Re-send a pending queued turn with the SAME commandId (at-most-once per epoch). */
-  private resendQueuedTurn(): void {
-    if (this.pendingQueuedTurn) this.sendQueuedTurnAttempt(this.pendingQueuedTurn);
-  }
-
-  /** Re-send a pending extension reply with the SAME commandId (at-most-once per epoch). */
-  private resendExtensionUi(): void {
-    if (this.pendingExtensionUiCommand) this.sendExtensionUiAttempt(this.pendingExtensionUiCommand);
-  }
-
-  /** Re-send the in-flight extension-UI input head with the SAME commandId (at-most-once per epoch). */
-  private resendExtensionUiInput(): void {
-    if (this.extensionUiInputInFlight) this.sendExtensionUiInputAttempt(this.extensionUiInputInFlight);
-  }
-
-  /** Re-send a pending interrupt with the SAME commandId (at-most-once per epoch). */
-  private resendInterrupt(): void {
-    if (this.pendingInterrupt) this.sendInterruptAttempt(this.pendingInterrupt);
   }
 
   // --- helpers -----------------------------------------------------------
@@ -4574,7 +4599,73 @@ export class SessionController implements RuntimeControllerPort {
     }
   }
 
+  /**
+   * Schedule the ONE bounded reconciliation re-send for an unresolved queued
+   * turn. The same {@link SUBMIT_MAX_RESENDS} budget and
+   * {@link SUBMIT_RECOVERY_BUDGET_MS} deadline as the prompt lane apply, so a
+   * steer / follow_up cannot re-send forever either. The deadline is armed on
+   * the first re-send and its timer settles the lane if the re-send never comes
+   * back. Returns false when the budget is spent — the caller settles instead.
+   */
+  private scheduleQueuedTurnReconcile(pending: QueuedTurnPending): boolean {
+    if (pending.resendCount >= SUBMIT_MAX_RESENDS) return false;
+    const now = Date.now();
+    if (pending.resendDeadline === null) pending.resendDeadline = now + SUBMIT_RECOVERY_BUDGET_MS;
+    if (now >= pending.resendDeadline) return false;
+    pending.resendCount += 1;
+    this.clearQueuedTurnReconcile(pending);
+    pending.reconcileTimer = this.setTimeoutFn(() => {
+      pending.reconcileTimer = null;
+      if (this.pendingQueuedTurn === pending) this.sendQueuedTurnAttempt(pending);
+    }, QUEUED_TURN_RECONCILE_DELAY_MS);
+    this.armQueuedTurnDeadline(pending);
+    return true;
+  }
+
+  /**
+   * The queued-turn deadline: armed once alongside the first re-send, it
+   * settles an unresolved lane by delivery evidence ({@link settleQueuedTurn})
+   * instead of leaving the queue lane locked when the transport never returns.
+   */
+  private armQueuedTurnDeadline(pending: QueuedTurnPending): void {
+    if (pending.resendTimer !== null || pending.resendDeadline === null) return;
+    const budget = Math.max(0, pending.resendDeadline - Date.now());
+    pending.resendTimer = this.setTimeoutFn(() => {
+      pending.resendTimer = null;
+      if (this.pendingQueuedTurn !== pending) return;
+      this.settleQueuedTurn(pending, {
+        code: "timeout",
+        message: "queued turn delivery could not be confirmed",
+        retryable: true,
+      } satisfies ProtocolError);
+    }, budget);
+  }
+
+  private clearQueuedTurnReconcile(pending: QueuedTurnPending): void {
+    if (pending.reconcileTimer === null) return;
+    this.clearTimeoutFn(pending.reconcileTimer);
+    pending.reconcileTimer = null;
+  }
+
+  /** Release this lane's timers and settle its caller exactly once. */
+  private settleQueuedTurn(pending: QueuedTurnPending, error: ProtocolError): void {
+    if (this.pendingQueuedTurn !== pending) return;
+    this.pendingQueuedTurn = null;
+    pending.attempt?.cancel();
+    pending.attempt = null;
+    this.clearQueuedTurnReconcile(pending);
+    pending.resendDeadline = null;
+    if (pending.resendTimer !== null) {
+      this.clearTimeoutFn(pending.resendTimer);
+      pending.resendTimer = null;
+    }
+    this.reportQueuedSendFailure(pending, error, "dispatch");
+    this.notify();
+    pending.reject(this.uncertainTagged(error));
+  }
+
   private sendQueuedTurnAttempt(pending: QueuedTurnPending): void {
+    this.clearQueuedTurnReconcile(pending);
     pending.attempt?.cancel();
     pending.attempt = this.binding.sendAttempt({
       buildMessage: (id) => ({ ...pending.command, id }),
@@ -4583,11 +4674,16 @@ export class SessionController implements RuntimeControllerPort {
       onFrame: (frame) => {
         if (this.pendingQueuedTurn !== pending || frame.type !== "response") return;
         if (frame.payload.ok) {
+          const result = frame.payload.result;
           this.pendingQueuedTurn = null;
           pending.attempt = null;
-          if (pending.reconcileTimer !== null) this.clearTimeoutFn(pending.reconcileTimer);
+          pending.resendDeadline = null;
+          if (pending.resendTimer !== null) {
+            this.clearTimeoutFn(pending.resendTimer);
+            pending.resendTimer = null;
+          }
           this.notify();
-          pending.resolve(frame.payload.result);
+          pending.resolve(result);
           return;
         }
         const error = frame.payload.error;
@@ -4597,27 +4693,24 @@ export class SessionController implements RuntimeControllerPort {
         // SAME commandId — sessiond's idempotent command admission replays the
         // cached result when it already landed, never a second queue entry.
         if (QUEUED_TURN_UNCERTAIN_CODES.has(error.code)) {
-          if (pending.reconcileCount < QUEUED_TURN_UNCERTAIN_LIMIT) {
-            pending.reconcileCount += 1;
-            pending.reconcileTimer = this.setTimeoutFn(() => {
-              pending.reconcileTimer = null;
-              if (this.pendingQueuedTurn === pending) this.sendQueuedTurnAttempt(pending);
-            }, 1_000);
+          if (this.scheduleQueuedTurnReconcile(pending)) {
             this.notify();
             return;
           }
-          // Budget exhausted: settle honestly WITHOUT claiming non-delivery —
-          // the optimistic bubble stays (queue events take over if it landed).
-          this.reportQueuedSendFailure(pending, error, "dispatch");
-          this.pendingQueuedTurn = null;
-          pending.attempt = null;
-          this.notify();
-          pending.resolve(null);
+          // Shared budget spent: unresolved delivery, never "not sent".
+          this.settleQueuedTurn(pending, error);
           return;
         }
+        // A DEFINITE rejection: the authority proved it did not queue this
+        // steer/follow_up, so it settles plainly (no uncertain tag) — the
+        // Composer restores the draft for it.
         this.pendingQueuedTurn = null;
         pending.attempt = null;
-        if (pending.reconcileTimer !== null) this.clearTimeoutFn(pending.reconcileTimer);
+        pending.resendDeadline = null;
+        if (pending.resendTimer !== null) {
+          this.clearTimeoutFn(pending.resendTimer);
+          pending.resendTimer = null;
+        }
         this.notify();
         pending.reject(error);
         this.setError(error);
@@ -4626,7 +4719,11 @@ export class SessionController implements RuntimeControllerPort {
         if (this.pendingQueuedTurn !== pending) return;
         this.pendingQueuedTurn = null;
         pending.attempt = null;
-        if (pending.reconcileTimer !== null) this.clearTimeoutFn(pending.reconcileTimer);
+        pending.resendDeadline = null;
+        if (pending.resendTimer !== null) {
+          this.clearTimeoutFn(pending.resendTimer);
+          pending.resendTimer = null;
+        }
         pending.reject(this.protocolErrorFrom(cause, "queued turn send failed"));
         this.notify();
       },
@@ -4848,7 +4945,7 @@ export class SessionController implements RuntimeControllerPort {
   /** Reject the in-flight queued turn exactly once (D2-P4 stop/detach/dispose/session switch). */
   private settlePendingQueuedTurn(error: ProtocolError): void {
     if (this.pendingQueuedTurn) {
-      if (this.pendingQueuedTurn.reconcileTimer !== null) this.clearTimeoutFn(this.pendingQueuedTurn.reconcileTimer);
+      this.clearQueuedTurnReconcile(this.pendingQueuedTurn);
       this.pendingQueuedTurn.attempt?.cancel();
       this.pendingQueuedTurn.reject(error);
       this.pendingQueuedTurn = null;

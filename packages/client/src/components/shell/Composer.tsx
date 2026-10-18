@@ -712,7 +712,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }
       // Retryable transport loss is still reconnecting — say so instead of the
       // generic failure text (the transport owner keeps retrying in the back).
-      if ((code === "timeout" || code === "unavailable")
+      // An UNCERTAIN-delivery settle wins over this: its bytes may already be
+      // admitted server-side, so "reconnecting" would understate it.
+      if (!isUncertainFailure(cause)
+        && (code === "timeout" || code === "unavailable")
         && (cause as { retryable?: unknown }).retryable === true) {
         return t("desktop.sendReconnecting");
       }
@@ -914,24 +917,34 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     });
   }, [exact, selectedSessionId, selectedSessionHasTitle, applyGeneratedTitle]);
 
+  // Steer / follow-up settle exactly like a prompt send: proven non-delivery
+  // (activation / definite) restores the draft and says so; an unresolved
+  // delivery shows the same "unconfirmed" copy and never restores the draft
+  // (the message may already be queued server-side).
+  const settleQueuedSend = useCallback((message: string, cause: unknown) => {
+    if (!isCurrent()) return;
+    if (isActivationFailure(cause) || isDefiniteFailure(cause)) {
+      restoreDraft(message);
+      setSendError(describeSendFailure(cause));
+      return;
+    }
+    if (isUncertainFailure(cause)) setSendError(describeSendFailure(cause));
+  }, [isCurrent, restoreDraft, describeSendFailure, isActivationFailure, isDefiniteFailure, isUncertainFailure]);
+
   const handleSteer = useCallback(
     (message: string, images?: AttachedImage[]) => {
       if (!liveWorkspaceEnabled || !hasSteer || !exact) return;
-      exact.steer(message, toImageAttachments(images)).catch((cause: unknown) => {
-        if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(message);
-      });
+      exact.steer(message, toImageAttachments(images)).catch((cause: unknown) => settleQueuedSend(message, cause));
     },
-    [liveWorkspaceEnabled, hasSteer, exact, isCurrent, restoreDraft, isDefiniteFailure],
+    [liveWorkspaceEnabled, hasSteer, exact, settleQueuedSend],
   );
 
   const handleFollowUp = useCallback(
     (message: string, images?: AttachedImage[]) => {
       if (!liveWorkspaceEnabled || !hasFollowUp || !exact) return;
-      exact.followUp(message, toImageAttachments(images)).catch((cause: unknown) => {
-        if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(message);
-      });
+      exact.followUp(message, toImageAttachments(images)).catch((cause: unknown) => settleQueuedSend(message, cause));
     },
-    [liveWorkspaceEnabled, hasFollowUp, exact, isCurrent, restoreDraft, isDefiniteFailure],
+    [liveWorkspaceEnabled, hasFollowUp, exact, settleQueuedSend],
   );
 
   const handlePromptWithStreamingBehavior = useCallback(

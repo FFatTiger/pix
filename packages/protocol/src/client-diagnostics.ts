@@ -14,6 +14,14 @@ export const SendFailureDiagnosticKindSchema = z.enum([
   "send_failure",
   "send_recovered",
   "send_recovery_failed",
+  /**
+   * The shared runtime reducer refused an inbound event. A rejected event must
+   * never be retried by a reconnect (replaying it would throw again), so this
+   * single report is the only signal that the controller refused authority
+   * input. Additive value: an older Host rejects it with 400 and the client's
+   * fire-and-forget report is dropped, which changes no behavior.
+   */
+  "event_apply_failure",
 ]);
 export type SendFailureDiagnosticKind = z.infer<typeof SendFailureDiagnosticKindSchema>;
 

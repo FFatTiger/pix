@@ -75,7 +75,6 @@ function fakeDeps(): RuntimeSocketDeps {
     location: { href: "https://pix.local/app/" },
     identity: { shell: "web", platform: "mac" },
     onOnline: () => () => undefined,
-    onVisible: () => () => undefined,
   };
 }
 
@@ -2991,6 +2990,97 @@ describe("Composer — negotiated runtime.submit-turn.v1 atomic model carry", ()
     await act(async () => { await flush(12); vi.advanceTimersByTime(0); await flush(12); });
     expect(screen.getByLabelText("Change model").textContent).toContain("Pending model");
     expect(screen.getByLabelText("Change model").textContent).not.toContain("gpt-5");
+  });
+});
+
+describe("Composer — steer / follow-up settle like a send", () => {
+  // The queued-turn lane now carries the same send-failure judgment as an
+  // ordinary prompt: proven non-delivery restores the draft and says so;
+  // an unresolved delivery shows the "unconfirmed" copy and keeps the message.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateMock.mockReset();
+    previousFetch = globalThis.fetch;
+    modelsCatalog = { models: [{ provider: "openai", id: "gpt-5", displayName: "GPT-5", contextWindow: 1_000_000 }], defaultModel: null };
+    globalThis.fetch = stubFetch();
+    window.localStorage.removeItem("pi-streaming-send-mode");
+  });
+  afterEach(() => { cleanup(); globalThis.fetch = previousFetch; vi.useRealTimers(); });
+
+  /** Mount the live session A while the agent is running so Enter queues a steer. */
+  async function mountRunningA(): Promise<FakeWebSocket> {
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(submitTurnAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: ["A"] } });
+      await flush();
+    });
+    await mountLiveA(ws);
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: { type: "runtime_capabilities_changed", sessionId: "A", epoch: "e1", eventId: 1, capabilities: { capabilities: [...LIVE_CAPS, "runtime.steer", "runtime.follow_up"], version: 1 } },
+      });
+      await flush(12);
+    });
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "message_start",
+          sessionId: "A",
+          epoch: "e1",
+          eventId: 2,
+          streamId: "s1",
+          messageId: "m1",
+          message: { role: "assistant", content: [{ type: "text", text: "working" }] },
+        },
+      });
+      await flush(12);
+    });
+    return ws;
+  }
+
+  function lastCommandFrame(ws: FakeWebSocket): { id: string; payload: { command: { commandId: string; type: string; message?: string } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message?: string } } }>(ws, "command");
+    if (!frame) throw new Error("no command frame was sent");
+    return frame;
+  }
+
+  async function queueWhileRunning(text: string): Promise<void> {
+    const textarea = composerTextarea();
+    await act(async () => { fireEvent.change(textarea, { target: { value: text } }); await flush(); });
+    await act(async () => { fireEvent.keyDown(textarea, { key: "Enter" }); await flush(); });
+  }
+
+  it("an unresolved steer shows the unconfirmed copy and never restores the draft", async () => {
+    const ws = await mountRunningA();
+    await queueWhileRunning("queued while running");
+    const frame = lastCommandFrame(ws);
+    expect(frame.payload.command.type).toBe("follow_up");
+    await act(async () => {
+      ws.serverSend({ type: "response", id: frame.id, payload: { ok: false, error: { code: "unavailable", message: "sessiond request failed", retryable: true } } });
+      await flush();
+    });
+    // The reconcile backoff timer runs, then the shared quota gives up with an
+    // uncertain settle: the message may already be queued server-side.
+    await act(async () => { await vi.advanceTimersByTimeAsync(35_000); await flush(12); });
+    expect(screen.getByRole("alert").textContent).toContain("Delivery is still being confirmed");
+    expect(composerTextarea().value).toBe("");
+  });
+
+  it("a proven non-delivery restores the draft and says it was not sent", async () => {
+    const ws = await mountRunningA();
+    await queueWhileRunning("queued while running");
+    const frame = lastCommandFrame(ws);
+    await act(async () => {
+      ws.serverSend({ type: "response", id: frame.id, payload: { ok: false, error: { code: "session_busy", message: "queue full", retryable: false } } });
+      await flush();
+    });
+    expect(screen.getByRole("alert").textContent).toContain("The message was not sent");
+    expect(composerTextarea().value).toBe("queued while running");
   });
 });
 
