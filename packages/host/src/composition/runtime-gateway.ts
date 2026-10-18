@@ -1,7 +1,6 @@
 import {
   isWithinRuntimeFrameBudget,
   MAX_RUNTIME_FRAME_BYTES,
-  MAX_RUNTIME_FRAME_COUNT,
   MAX_RUNTIME_QUEUED_BYTES,
   PROTOCOL_VERSION,
   ProtocolErrorCodeSchema,
@@ -79,10 +78,6 @@ export interface SessiondRuntimeGatewayLimits {
 }
 
 export interface SessiondRuntimeGatewayOutboundLimits {
-  /** Max queued outbound frames before fail-closed close (default Protocol runtime count). */
-  readonly maxFrames?: number;
-  /** Max queued outbound bytes before fail-closed close (default two runtime frames including newlines). */
-  readonly maxBytes?: number;
   /** Max raw socket bufferedAmount before fail-closed close (default two runtime frames including newlines). */
   readonly maxBufferedAmount?: number;
 }
@@ -174,8 +169,6 @@ export interface SessiondRuntimeGatewayOptions {
   readonly visibilityTracker?: VisibilityTracker;
 }
 
-const DEFAULT_MAX_FRAMES = MAX_RUNTIME_FRAME_COUNT;
-const DEFAULT_MAX_BYTES = MAX_RUNTIME_QUEUED_BYTES;
 const DEFAULT_MAX_BUFFERED = MAX_RUNTIME_QUEUED_BYTES;
 const DEFAULT_MAX_OPEN_SESSIONS = 4;
 const DEFAULT_MAX_SERIAL_FRAMES = 256;
@@ -312,19 +305,18 @@ async function withLifecycleDeadline<T>(
 }
 
 /**
- * Bounded serial outbound queue. Frames are sent in FIFO order; the snapshot
- * always precedes replay/live events because callers enqueue in order. Overflow
- * (frame count, queued bytes, or raw bufferedAmount) is reported so the caller
- * can fail closed instead of growing unbounded memory.
+ * Serial outbound queue. Frames are sent in FIFO order; the snapshot always
+ * precedes replay/live events because callers enqueue in order. The only live
+ * bound is the raw socket `bufferedAmount`: {@link flush} drains synchronously
+ * and `send` is synchronous, so the queue never holds more than the frame
+ * currently being written. Overflow is reported so the caller can fail closed
+ * instead of growing unbounded memory.
  */
 class BoundedOutbound {
   private readonly queue: string[] = [];
-  private queuedBytes = 0;
   private flushing = false;
   private overflowed = false;
   private closed = false;
-  private readonly maxFrames: number;
-  private readonly maxBytes: number;
   private readonly maxBufferedAmount: number;
 
   constructor(
@@ -332,22 +324,18 @@ class BoundedOutbound {
     options: SessiondRuntimeGatewayOutboundLimits,
     private readonly onOverflow: () => void,
   ) {
-    this.maxFrames = positiveSafeInteger(options.maxFrames, DEFAULT_MAX_FRAMES);
-    this.maxBytes = positiveSafeInteger(options.maxBytes, DEFAULT_MAX_BYTES);
     this.maxBufferedAmount = positiveSafeInteger(options.maxBufferedAmount, DEFAULT_MAX_BUFFERED);
   }
 
-  /** Returns false on enqueue-time overflow (frame/byte bound); the connection
-   * fail-closes via {@link onOverflow} on any overflow path. */
+  /** Returns false when the frame itself exceeds the Protocol frame cap; the
+   * connection fail-closes via {@link onOverflow} on any overflow path. */
   enqueue(frame: string): boolean {
     if (this.closed || this.overflowed) return true;
-    const size = Buffer.byteLength(frame, "utf8");
-    if (size > MAX_RUNTIME_FRAME_BYTES || this.queue.length + 1 > this.maxFrames || this.queuedBytes + size > this.maxBytes) {
+    if (Buffer.byteLength(frame, "utf8") > MAX_RUNTIME_FRAME_BYTES) {
       this.markOverflow();
       return false;
     }
     this.queue.push(frame);
-    this.queuedBytes += size;
     void this.flush();
     return true;
   }
@@ -355,7 +343,6 @@ class BoundedOutbound {
   close(): void {
     this.closed = true;
     this.queue.length = 0;
-    this.queuedBytes = 0;
   }
 
   /** True once an overflow has forced the queue to drop further frames. */
@@ -367,7 +354,6 @@ class BoundedOutbound {
     if (this.overflowed) return;
     this.overflowed = true;
     this.queue.length = 0;
-    this.queuedBytes = 0;
     this.onOverflow();
   }
 
@@ -383,7 +369,6 @@ class BoundedOutbound {
         }
         const frame = this.queue.shift();
         if (frame === undefined) break;
-        this.queuedBytes -= Buffer.byteLength(frame, "utf8");
         this.session.send(frame);
       }
     } finally {

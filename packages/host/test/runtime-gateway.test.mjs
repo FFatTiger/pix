@@ -940,7 +940,7 @@ test("detach without id sends no response; with id sends detached result", async
   assert.equal(sub.localClosed, true);
 });
 
-test("default outbound queue admits two Protocol runtime frames including newlines", async () => {
+test("outbound queue delivers consecutive max-size Protocol runtime frames", async () => {
   const client = new FakeClient();
   const sub = new FakeSubscription(attachResponse("s1"));
   client.attachFn = (_p, onPush) => {
@@ -992,7 +992,7 @@ test("outbound overflow fail-closes the browser socket (1009)", async () => {
     sub.onPush = onPush;
     return sub;
   };
-  const gw = makeGateway(client, { outbound: { maxFrames: 1024, maxBytes: 1024 * 1024, maxBufferedAmount: 1024 } });
+  const gw = makeGateway(client, { outbound: { maxBufferedAmount: 1024 } });
   const session = await connect(gw);
   session.receive(JSON.stringify({ type: "attach", id: "a1", payload: { sessionId: "s1" } }));
   await wait();

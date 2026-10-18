@@ -18,6 +18,7 @@ import {
   type StagingKey,
 } from "@/features/composer/session-staging-store";
 import { captureSubmitModel } from "@/features/composer/submit-activation";
+import { isActivationSendFailure, isDefiniteSendFailure, isUncertainSendSettle } from "@/features/composer/send-failure";
 import { useHttpClient } from "@/app/http-context";
 import {
   configuredTitleModel,
@@ -672,13 +673,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [selectedSessionId],
   );
 
-  /** True when a failure is DEFINITE (the turn never started) — only then restore the draft. */
-  const isDefiniteFailure = useCallback((cause: unknown): boolean => {
-    if (cause !== null && typeof cause === "object" && (cause as { retryable?: unknown }).retryable === true) {
-      return false;
-    }
-    return true;
-  }, []);
+  /** True when a failure is DEFINITE (the turn never started) — only then restore the draft.
+   * A retryable transport failure is NOT definite, and neither is an
+   * UNCERTAIN-delivery settle (`phase: "uncertain"`): the turn may be
+   * admitted and running server-side, so restoring the draft (or claiming
+   * "not sent") could duplicate the message. */
+  const isDefiniteFailure = isDefiniteSendFailure;
 
   /**
    * True when a failure happened in the ACTIVATION phase (before the prompt
@@ -687,9 +687,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
    * and no phantom bubble may remain. Tagged by the store (`phase:
    * "activation"`).
    */
-  const isActivationFailure = useCallback((cause: unknown): boolean => {
-    return cause !== null && typeof cause === "object" && (cause as { phase?: unknown }).phase === "activation";
-  }, []);
+  const isActivationFailure = isActivationSendFailure;
+
+  /** True when the store settled a send as UNCERTAIN delivery (the turn may
+   *  still be admitted/running server-side). Never "not sent"; the draft is
+   *  never restored for it (a manual re-send could duplicate the turn). */
+  const isUncertainFailure = isUncertainSendSettle;
 
   /** Restore the text into the composer when a send-path command fails. */
   const restoreDraft = useCallback((message: string) => {
@@ -714,6 +717,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         return t("desktop.sendReconnecting");
       }
     }
+    // An uncertain-delivery settle is NEVER "not sent": the turn may be
+    // admitted server-side. Dedicated copy; the draft is NOT restored.
+    if (isUncertainFailure(cause)) return t("desktop.sendUnconfirmed");
     return t("desktop.sendFailed");
   }, [t]);
 
@@ -800,10 +806,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             }
           })
           .catch((cause: unknown) => {
-            if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) {
+            if (!isCurrent()) return;
+            if (isActivationFailure(cause) || isDefiniteFailure(cause)) {
               restoreDraft(message);
               setSendError(describeSendFailure(cause));
+              return;
             }
+            // Uncertain-delivery settle: honest "unconfirmed" copy, NEVER
+            // "not sent" (the server may already be running this turn). The
+            // draft is NOT restored — re-sending it could duplicate the turn;
+            // reconciliation and the retained optimistic bubble keep the
+            // message visible in the conversation either way.
+            if (isUncertainFailure(cause)) setSendError(describeSendFailure(cause));
           });
         return sending;
       };
@@ -850,7 +864,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         });
       return false;
     },
-    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, isActivationFailure, isDefiniteFailure, describeSendFailure, stagedModel, stagedThinking, model, live, hasModelSet, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t],
+    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, hasModelSet, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t],
   );
 
   // Phase 3: the catalog refresh is deferred to COMMITTED/TERMINAL turn status

@@ -352,7 +352,7 @@ function liveRevision(service: SessiondService, sessionId: string, epoch: string
   return revision;
 }
 
-test("Phase 4A.0.1 submitTurn: a global running change never stales the create cursor; a conversation event does; same operation repairs once and dispatches once", async () => {
+test("Phase 4A.0.1 submitTurn: a global running change and a later conversation event both leave an append-only submit admitted; the ledger still answers duplicate", async () => {
   const { service, workers } = makeService({}, (input) => ({ snapshot: promptCapSnapshot(input.sessionId), commandDelayMs: 40 }));
   const createdA = await service.create({ createRequestId: "create-a", cwd: "/a", projectRoot: "/a" });
   const staleRevision = createdA.lastEventId;
@@ -364,8 +364,8 @@ test("Phase 4A.0.1 submitTurn: a global running change never stales the create c
   const currentRevision = liveRevision(service, createdA.sessionId, createdA.epoch);
   assert.ok(currentRevision > staleRevision, `expected B's running change to advance A (${staleRevision} -> ${currentRevision})`);
 
-  // The running-set broadcast is side-channel: A's fence stays valid at the
-  // pre-broadcast cursor, so the submit is admitted directly.
+  // The running-set broadcast is side-channel, so the pre-broadcast cursor is
+  // admitted exactly as before.
   const direct = await service.prepareSubmitTurn({
     sessionId: createdA.sessionId,
     expectedEpoch: createdA.epoch,
@@ -374,7 +374,7 @@ test("Phase 4A.0.1 submitTurn: a global running change never stales the create c
     operationId: "op-created-seed-repair",
     activationOverrides: { thinkingLevel: "high" as const },
   });
-  assert.equal(direct.result.status, "accepted", "a global running change must not stale A's revision fence");
+  assert.equal(direct.result.status, "accepted", "a global running change must not stale the submit");
   const terminal = deferred<void>();
   await direct.flushTo((push) => {
     if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve();
@@ -383,8 +383,10 @@ test("Phase 4A.0.1 submitTurn: a global running change never stales the create c
   direct.close();
   assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1);
 
-  // A CONVERSATION event on A (queue mutation) advances the fence floor: the
-  // pre-event cursor is now a genuine lost update and conflicts closed.
+  // A CONVERSATION event on A (queue mutation) advances the journal head. The
+  // submit only appends a turn, so a lagging cursor is still admitted — the
+  // revision fence that used to conflict closed here was removed for exactly
+  // this reason.
   const queuedRevision = liveRevision(service, createdA.sessionId, createdA.epoch);
   workers.workers[0]!.emitEvent({ type: "queue_update", sessionId: createdA.sessionId, steering: [], followUp: [] });
   const conversationRevision = liveRevision(service, createdA.sessionId, createdA.epoch);
@@ -394,26 +396,61 @@ test("Phase 4A.0.1 submitTurn: a global running change never stales the create c
     sessionId: createdA.sessionId,
     expectedEpoch: createdA.epoch,
     expectedRevision: queuedRevision,
-    prompt: "same payload",
+    prompt: "after a conversation event",
     operationId: "op-created-seed-repair-2",
     activationOverrides: { thinkingLevel: "high" as const },
   };
-  const stale = await service.submitTurn(request);
-  assert.equal(stale.status, "rejected");
-  if (stale.status === "rejected") {
-    assert.equal(stale.delivery, "not_delivered");
-    assert.equal(stale.error.code, "conflict");
-    assert.equal(stale.error.message, "session revision changed");
-    assert.equal(stale.epoch, createdA.epoch);
-    assert.equal(stale.revision, conversationRevision);
-  }
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "stale admission must not reach A's Worker");
+  const lagging = await service.submitTurn(request);
+  assert.equal(lagging.status, "accepted", "a lagging revision must not reject an append-only submit");
+  if (lagging.status === "accepted") assert.equal(lagging.epoch, createdA.epoch);
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "the lagging submit dispatches exactly once");
 
-  assert.equal(stale.status, "rejected");
-  if (stale.status !== "rejected" || stale.revision === undefined) throw new Error("expected authoritative repair revision");
-  const repaired = await service.submitTurn({ ...request, expectedRevision: stale.revision });
-  assert.equal(repaired.status, "accepted");
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "same operation/payload repair dispatches exactly once");
+  // The operation ledger is what prevents a duplicate turn, not the revision.
+  const replay = await service.submitTurn(request);
+  assert.equal(replay.status, "duplicate");
+  if (replay.status === "duplicate") assert.equal(replay.delivery, "accepted");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "a replay never dispatches again");
+  await service.shutdown();
+});
+
+test("Phase 4A.0.2 submitTurn: ordinary command completions (runtime_state_changed re-affirmation + session_title) never reject a racing submit", async () => {
+  // Regression for the false "message not sent" incident: a command such as
+  // set_model or auto title generation completes while the user is already
+  // sending. The completion appends session_title (already side-channel) plus
+  // the adapter's emitState() runtime_state_changed re-affirmation — which used
+  // to advance lastConversationEventId and reject the racing submit with
+  // "session revision changed" even though the message was never delivered.
+  // Submits no longer fence on the journal revision at all.
+  const { service, workers } = makeService({}, (input) => ({ snapshot: promptCapSnapshot(input.sessionId), commandDelayMs: 40 }));
+  const activated = await service.activate("s");
+  const cursor = liveRevision(service, "s", activated.epoch);
+
+  // Simulate the completion burst of one ordinary command: a title event plus
+  // a context re-affirmation (with a full context payload, exactly what the
+  // adapter's emitState sends after a command settles).
+  workers.workers[0]!.emitEvent({ type: "session_title", sessionId: "s", name: "t" });
+  workers.workers[0]!.emitEvent({
+    type: "runtime_state_changed",
+    sessionId: "s",
+    context: { model: { provider: "p", id: "m" }, leafId: "leaf-1", contextUsage: { percent: 10, contextWindow: 1000, tokens: 100 } },
+  });
+  workers.workers[0]!.emitEvent({ type: "session_title", sessionId: "s", name: "t2" });
+  const advanced = liveRevision(service, "s", activated.epoch);
+  assert.ok(advanced > cursor, "the completion burst must still advance the journal head");
+
+  // The pre-burst cursor is still accepted: the racing submit is admitted.
+  const prepared = await service.prepareSubmitTurn({
+    sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: cursor,
+    prompt: "racing the title command", operationId: "op-command-completion-race",
+  });
+  assert.equal(prepared.result.status, "accepted", "a command completion must not reject the racing submit");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1);
+  const terminal = deferred<void>();
+  await prepared.flushTo((push) => {
+    if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve();
+  });
+  await terminal.promise;
+  prepared.close();
   await service.shutdown();
 });
 
@@ -511,7 +548,7 @@ test("Phase 3 submitTurn: stale epoch / missing fence rejects without touching t
   await service.shutdown();
 });
 
-test("Phase 3 submitTurn: side-channel events never stale the revision fence; conversation events and future revisions still conflict", async () => {
+test("Phase 3 submitTurn: side-channel and conversation journal churn never reject a submit; the epoch fence still does", async () => {
   const { service, workers } = makeService({}, { commandDelayMs: 40, snapshot: promptCapSnapshot() });
   const activated = await service.activate("s");
   const worker = workers.workers[0]!;
@@ -529,7 +566,7 @@ test("Phase 3 submitTurn: side-channel events never stale the revision fence; co
     sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision,
     prompt: "through the churn", operationId: "op-side-channel-fence",
   });
-  assert.equal(accepted.result.status, "accepted", "a cursor staled only by side-channel events stays current");
+  assert.equal(accepted.result.status, "accepted", "journal churn must not reject an append-only submit");
   const terminal = deferred<void>();
   await accepted.flushTo((push) => {
     if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve();
@@ -537,31 +574,73 @@ test("Phase 3 submitTurn: side-channel events never stale the revision fence; co
   await terminal.promise;
   accepted.close();
 
-  // A conversation event (agent_start) advances the fence floor: the older
-  // cursor is a genuine lost update again.
+  // A CONVERSATION event (queue mutation) advances the journal head too. The
+  // pre-event cursor is still admitted: a submit appends, it does not
+  // compare-and-swap a revision.
   const conversationBase = liveRevision(service, "s", activated.epoch);
-  worker.emitEvent({ type: "agent_start", sessionId: "s" });
+  worker.emitEvent({ type: "queue_update", sessionId: "s", steering: [], followUp: [] });
   const afterConversation = liveRevision(service, "s", activated.epoch);
   assert.ok(afterConversation > conversationBase, "a conversation event must advance the journal");
-  const stale = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: conversationBase, prompt: "stale now", operationId: "op-stale-conversation" });
-  assert.equal(stale.status, "rejected");
-  if (stale.status === "rejected") {
-    assert.equal(stale.delivery, "not_delivered");
-    assert.equal(stale.error.code, "conflict");
-    assert.equal(stale.error.message, "session revision changed");
-    assert.equal(stale.epoch, activated.epoch);
-    assert.equal(stale.revision, afterConversation);
-  }
+  const lagging = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: conversationBase, prompt: "lagging now", operationId: "op-lagging-conversation" });
+  assert.equal(lagging.status, "accepted", "a lagging revision must not reject an append-only submit");
 
-  // A revision past the journal head is always a conflict.
-  const future = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: afterConversation + 1, prompt: "from the future", operationId: "op-future" });
-  assert.equal(future.status, "rejected");
-  if (future.status === "rejected") {
-    assert.equal(future.delivery, "not_delivered");
-    assert.equal(future.error.code, "conflict");
-    assert.equal(future.error.message, "session revision changed");
-  }
-  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "only the admitted turn ever dispatches");
+  // The epoch fence is the surviving authority guard.
+  const staleEpoch = await service.submitTurn({ sessionId: "s", expectedEpoch: "e-stale", expectedRevision: afterConversation, prompt: "wrong epoch", operationId: "op-stale-epoch-any" });
+  assert.equal(staleEpoch.status, "rejected");
+  if (staleEpoch.status === "rejected") assert.equal(staleEpoch.error.code, "epoch_changed");
+  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "the two admitted turns dispatch; the stale epoch never does");
+  await service.shutdown();
+});
+
+test("submitTurn ignores expectedRevision: a conversation event between capture and admission is not a lost update (epoch + operation ledger still fence)", async () => {
+  // Submitting appends to the end of the conversation, so a lagging revision
+  // cursor is not a concurrent-update hazard — sessiond's rejections at that
+  // step produced two production false "message not sent" incidents. The fence
+  // that matters is the epoch (rollover / rekey) plus the operation ledger.
+  const { service, workers } = makeService({}, { commandDelayMs: 40, snapshot: promptCapSnapshot() });
+  const activated = await service.activate("s");
+  const worker = workers.workers[0]!;
+  const staleRevision = liveRevision(service, "s", activated.epoch);
+  // A real conversation event (a queue mutation, NOT a running turn) lands
+  // between the client's capture and the submit.
+  worker.emitEvent({ type: "queue_update", sessionId: "s", steering: [], followUp: [] });
+  const advanced = liveRevision(service, "s", activated.epoch);
+  assert.ok(advanced > staleRevision, "the conversation event must advance the journal");
+
+  const accepted = await service.prepareSubmitTurn({
+    sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: staleRevision,
+    prompt: "appending anyway", operationId: "op-lagging-revision",
+  });
+  assert.equal(accepted.result.status, "accepted", "a lagging revision must not reject an append-only submit");
+  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 1);
+  const terminal = deferred<void>();
+  await accepted.flushTo((push) => {
+    if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve();
+  });
+  await terminal.promise;
+  accepted.close();
+
+  // A revision past the journal head is equally irrelevant to the append.
+  const future = await service.submitTurn({
+    sessionId: "s", expectedEpoch: activated.epoch,
+    expectedRevision: liveRevision(service, "s", activated.epoch) + 50,
+    prompt: "from the future", operationId: "op-future-revision",
+  });
+  assert.equal(future.status, "accepted", "an inflated revision must not reject an append-only submit");
+
+  // The epoch fence still rejects, and the ledger still answers duplicate.
+  const staleEpoch = await service.submitTurn({
+    sessionId: "s", expectedEpoch: "stale-epoch", expectedRevision: staleRevision,
+    prompt: "wrong epoch", operationId: "op-stale-epoch",
+  });
+  assert.equal(staleEpoch.status, "rejected");
+  if (staleEpoch.status === "rejected") assert.equal(staleEpoch.error.code, "epoch_changed");
+  const duplicate = await service.submitTurn({
+    sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: staleRevision,
+    prompt: "from the future", operationId: "op-future-revision",
+  });
+  assert.equal(duplicate.status, "duplicate");
+  if (duplicate.status === "duplicate") assert.equal(duplicate.delivery, "accepted");
   await service.shutdown();
 });
 

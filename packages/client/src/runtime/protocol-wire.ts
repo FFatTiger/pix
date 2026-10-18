@@ -1,6 +1,6 @@
 /**
  * Pure, browser-safe Runtime wire helpers: WS URL derivation, strict handshake
- * construction, protocol-error classification, and the reconnect backoff curve.
+ * construction, and the reconnect backoff curve.
  *
  * No IO, no globals read except the injected `location`-like object passed to
  * {@link buildRuntimeWsUrl}. Everything here is unit-testable without a socket.
@@ -9,13 +9,9 @@ import {
   PROTOCOL_VERSION,
   safeParseWsHostMessage,
   type ClientIdentity,
-  type HostLimits,
-  type HostMode,
-  type ProtocolError,
   type ProtocolHandshakeRequest,
   type WsHostMessage,
 } from "@fffattiger/pix-protocol";
-import { FATAL_HANDSHAKE_CODES } from "./lifecycle.js";
 
 /** Minimal same-origin location shape needed to derive the WS URL. */
 export interface RuntimeLocation {
@@ -46,16 +42,6 @@ export function buildHandshakeRequest(identity: ClientIdentity, features: readon
     client: identity,
     features: [...features],
   };
-}
-
-/** True when a ProtocolError code marks a handshake as fatal (non-retryable). */
-export function isFatalHandshakeError(error: ProtocolError): boolean {
-  return FATAL_HANDSHAKE_CODES.includes(error.code);
-}
-
-/** True when a ProtocolError is retryable (network/runtime hiccups). */
-export function isRetryableError(error: ProtocolError): boolean {
-  return error.retryable === true;
 }
 
 /**
@@ -92,12 +78,6 @@ export function parseHostFrame(raw: string): { ok: true; message: WsHostMessage 
   }
   const result = safeParseWsHostMessage(json);
   return result.success ? { ok: true, message: result.data } : { ok: false };
-}
-
-/** Resolve HostMode/Limits from a handshake ack payload (typed already). */
-export interface NegotiatedHost {
-  readonly mode: HostMode;
-  readonly limits: HostLimits;
 }
 
 export { safeParseWsHostMessage };

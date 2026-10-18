@@ -147,7 +147,6 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
     expect(result).toEqual({ sessionId: "B" });
     const b = h.registry.lookup("B")!;
     expect(b.getSnapshot()).toMatchObject({ sessionId: "B", epoch: "eB" });
-    expect(b.hasResumeAuthority).toBe(true);
     expect(h.registry.leaseSnapshot.holderSessionId).toBe("A");
     expect(ws.sent.filter((candidate) => (candidate as { type?: string }).type === "detach")).toHaveLength(0);
     h.dispose();

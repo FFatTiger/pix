@@ -5,7 +5,6 @@
  * lied to: a socket is only `attached` after a strictly correlated initial
  * snapshot, never merely after a successful handshake. See M2 C1 spec §B/C/D.
  */
-import type { ProtocolErrorCode } from "@fffattiger/pix-protocol";
 
 /**
  * Coarse runtime connection state. Transitions are driven by the socket; the
@@ -31,24 +30,6 @@ export type ConnectionState =
   | "reconnecting"
   | "unavailable"
   | "stopped";
-
-/**
- * Handshake reject codes that are FATAL: the connection can never recover by
- * retrying. Any other reject code is still terminal for this connection
- * (handshake cannot be retried with the same parameters), but these four are the
- * explicitly non-retryable ones called out by the protocol.
- */
-export const FATAL_HANDSHAKE_CODES: readonly ProtocolErrorCode[] = [
-  "protocol_mismatch",
-  "unauthorized",
-  "forbidden",
-  "invalid_request",
-];
-
-/** True when the socket may still reach `ready` (transitive/active states). */
-export function isActive(state: ConnectionState): boolean {
-  return state === "connecting" || state === "handshaking" || state === "ready" || state === "attaching" || state === "attached" || state === "reconnecting";
-}
 
 /** True when the runtime stream is usable for sending commands. */
 export function canSend(state: ConnectionState): boolean {

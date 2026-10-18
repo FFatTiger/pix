@@ -229,6 +229,45 @@ describe("RuntimeConnection — sole socket, binding and bounded attempts", () =
     expect(newer.frames).toHaveLength(1);
   });
 
+  it("a one-shot attempt queued while the transport is down settles honestly instead of being dropped forever", async () => {
+    const { connection, sockets } = makeConnection();
+    const binding = connection.registerController("s1", port(record()));
+    const ws = ready(connection, sockets);
+    ws.serverClose(1006); // → unavailable, backoff pending
+    const oneShot = { frames: [] as unknown[], failures: [] as unknown[], disconnects: [] as unknown[] };
+    const logical = { frames: [] as unknown[], failures: [] as unknown[], disconnects: [] as unknown[] };
+    // Both lanes register on the DOWN generation: queued, never written.
+    binding.sendAttempt({
+      buildMessage: (id) => ({ type: "getSnapshot", id, payload: { sessionId: "s1" } }),
+      expectation: { kind: "getSnapshot", sessionId: "s1" },
+      disconnectPolicy: "reject_on_disconnect",
+      onFrame: (frame) => oneShot.frames.push(frame),
+      onSendFailure: (error) => oneShot.failures.push(error),
+      onDisconnect: (error) => oneShot.disconnects.push(error),
+    });
+    binding.sendAttempt(commandSpec(logical, "queued-command"));
+    // The transport wakes on a NEW generation and flushes the queue.
+    vi.advanceTimersByTime(250);
+    const ws2 = sockets.at(-1)!;
+    expect(ws2).not.toBe(ws);
+    ws2.serverOpen();
+    ws2.serverSend(ack());
+    await flush();
+    // The one-shot could never be delivered on the superseded generation: it
+    // settles with its bounded honest error instead of hanging forever, and it
+    // is never written on the new socket.
+    expect(oneShot.disconnects).toHaveLength(1);
+    expect(oneShot.disconnects[0]).toMatchObject({ code: "unavailable", retryable: true });
+    expect(oneShot.frames).toHaveLength(0);
+    expect(oneShot.failures).toHaveLength(0);
+    expect(ws2.sent.filter((frame) => (frame as { type?: string }).type === "getSnapshot")).toHaveLength(0);
+    // A logical-retry record that reached the CURRENT generation still writes
+    // normally — the fix must not turn the flush into a blanket drop.
+    expect(ws2.sent.filter((frame) => (frame as { type?: string }).type === "command")).toHaveLength(1);
+    expect(logical.disconnects).toHaveLength(0);
+    expect(logical.failures).toHaveLength(0);
+  });
+
   it("disconnect rejects one-shot once while logical retry remains owner-held and re-registers fresh", () => {
     const { connection, sockets } = makeConnection();
     const binding = connection.registerController("s1", port(record()));

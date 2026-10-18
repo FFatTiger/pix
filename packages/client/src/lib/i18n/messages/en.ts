@@ -328,6 +328,7 @@ export const enLocale = {
     "desktop.textSizeDescription": "Adjust the size of text and interface elements.",
     "desktop.sendFailed": "The message was not sent. Your draft has been kept.",
     "desktop.sendReconnecting": "Connection lost — reconnecting. Your draft is kept; try again shortly.",
+    "desktop.sendUnconfirmed": "Delivery is still being confirmed. If the message was accepted, it will appear in the conversation — please don't resend it.",
     "desktop.theme": "Theme",
     "desktop.themeOptionsHint": "Dark, light, or follow the system.",
     "desktop.themeDark": "Dark",
