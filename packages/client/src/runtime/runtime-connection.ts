@@ -237,10 +237,6 @@ function notSendableTimeoutError(): ProtocolError {
   return { code: "timeout", message: "runtime not sendable in time", retryable: true };
 }
 
-function notReadyTimeoutError(): ProtocolError {
-  return { code: "timeout", message: "runtime not ready in time", retryable: true };
-}
-
 function responseSessionMatches(message: WsResponseMessage, expected: string): boolean {
   return message.payload.sessionId === undefined || message.payload.sessionId === expected;
 }
@@ -355,7 +351,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   private readonly turnOwners = new Map<string, symbol>();
   private attachmentRoute: AttachmentRouteRecord | null = null;
   private pendingCreate: CreatePending | null = null;
-  private readyWaiters: Waiter[] = [];
   private sendableWaiters: TimedWaiter[] = [];
   /** Attempts registered while the transport was unavailable/stale, waiting
    * for a PROVEN connection before their bytes are written (single gate). */
@@ -417,7 +412,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     this.pendingCreate?.reject(error);
     this.pendingCreate = null;
     this.wireQueue = [];
-    this.rejectReadyWaiters(error);
     this.rejectSendableWaiters(error);
     this.removeAllAttempts(error, true);
     for (const binding of [...this.bindingsBySessionId.values()]) this.unbindExact(binding);
@@ -480,71 +474,19 @@ export class RuntimeConnection implements RuntimeSocketHandler {
    * connection (idle page, proxy killed the socket without delivering a close)
    * is liveness-probed first; a dead one is force-reconnected and the wait
    * continues through the recovery — a create never races into a half-open
-   * socket. Without the negotiated liveness feature this is exactly the
-   * historical `whenReady`.
+   * socket. Same proven-transport gate as {@link whenSendable}.
    */
   whenReady(timeoutMs: number = DEFAULT_READY_GATE_TIMEOUT_MS): Promise<void> {
-    return this.awaitReadyWithFreshness(timeoutMs);
-  }
-
-  private async awaitReadyWithFreshness(timeoutMs: number): Promise<void> {
-    const deadline = this.nowFn() + timeoutMs;
-    for (;;) {
-      if (this.fatal || this.connectionState === "stopped") {
-        throw this.error ?? { code: "unavailable", message: "runtime not ready", retryable: false };
-      }
-      const remaining = deadline - this.nowFn();
-      if (remaining <= 0) throw notReadyTimeoutError();
-      if (this.connectionState === "ready") {
-        if (this.socket.isFresh()) return;
-        const alive = await this.socket.probe(Math.min(this.livenessProbeTimeoutMs, remaining));
-        const state = this.readConnectionState();
-        if (this.fatal || state === "stopped") continue;
-        if (alive) {
-          // The probe's inbound frame proves the transport (and freshness).
-          if (state === "ready") return;
-          continue;
-        }
-        if (state === "ready" && !this.socket.isFresh()) {
-          this.socket.forceReconnect("stale runtime connection at ready gate");
-        }
-        continue;
-      }
-      // Bounded ready wait: the deadline must hold even while parked on the
-      // waiter (a black-holed recovery can never hang the gate).
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        const timer = this.setTimeoutFn(() => {
-          if (settled) return;
-          settled = true;
-          this.readyWaiters = this.readyWaiters.filter((candidate) => candidate !== waiter);
-          reject(notReadyTimeoutError());
-        }, remaining);
-        const waiter: Waiter = {
-          resolve: () => {
-            if (settled) return;
-            settled = true;
-            this.clearTimeoutFn(timer);
-            resolve();
-          },
-          reject: (error) => {
-            if (settled) return;
-            settled = true;
-            this.clearTimeoutFn(timer);
-            reject(error);
-          },
-        };
-        this.readyWaiters.push(waiter);
-      });
-    }
+    return this.whenSendable(timeoutMs);
   }
 
   /**
    * Resolve when the transport is sendable AND provably fresh, within
-   * `timeoutMs`. A sendable-but-stale connection is probed first (bounded);
-   * a proven-dead one is force-reconnected and the remaining budget covers
-   * the recovery wait. This is the single send gate every lane flows through
-   * — no caller can submit into a half-open socket it cannot prove alive.
+   * `timeoutMs`. This is the single gate every lane flows through (create,
+   * attach, commands, the wire queue): no caller can submit into a half-open
+   * socket it cannot prove alive. A sendable-but-stale connection is probed
+   * (bounded); a proven-dead one is force-reconnected and the remaining budget
+   * covers the recovery wait.
    */
   async whenSendable(timeoutMs: number): Promise<void> {
     const deadline = this.nowFn() + timeoutMs;
@@ -556,22 +498,9 @@ export class RuntimeConnection implements RuntimeSocketHandler {
         throw this.error ?? { code: "unavailable", message: "runtime not sendable", retryable: false };
       }
       if (canSend(this.connectionState)) {
+        // Fast path: a proven-fresh connection resolves without yielding.
         if (this.socket.isFresh()) return;
-        const remaining = deadline - this.nowFn();
-        if (remaining <= 0) throw notSendableTimeoutError();
-        const alive = await this.socket.probe(Math.min(this.livenessProbeTimeoutMs, remaining));
-        // The await may have moved the machine — re-read raw state.
-        const state = this.readConnectionState();
-        if (this.fatal || state === "stopped") continue;
-        if (alive) {
-          if (canSend(state)) return;
-          continue;
-        }
-        // Proven dead — but only tear down a connection that is STILL the
-        // stale one (a concurrent recovery may already have reconnected).
-        if (canSend(state) && !this.socket.isFresh()) {
-          this.socket.forceReconnect("stale runtime connection at send gate");
-        }
+        if (await this.ensureFresh(deadline)) return;
         continue;
       }
       const remaining = deadline - this.nowFn();
@@ -584,6 +513,29 @@ export class RuntimeConnection implements RuntimeSocketHandler {
         this.sendableWaiters.push({ resolve, reject, handle });
       });
     }
+  }
+
+  /**
+   * The ONE freshness decision: a sendable connection that cannot prove inbound
+   * freshness is probed; a proven-dead one is force-reconnected so the caller's
+   * remaining budget covers the recovery. Resolves true only for a sendable AND
+   * provably fresh transport.
+   */
+  private async ensureFresh(deadline: number): Promise<boolean> {
+    if (this.socket.isFresh()) return true;
+    const remaining = deadline - this.nowFn();
+    if (remaining <= 0) throw notSendableTimeoutError();
+    const alive = await this.socket.probe(Math.min(this.livenessProbeTimeoutMs, remaining));
+    // The await may have moved the machine — re-read raw state.
+    const state = this.readConnectionState();
+    if (this.fatal || state === "stopped") return false;
+    if (alive) return canSend(state);
+    // Proven dead — but only tear down a connection that is STILL the stale one
+    // (a concurrent recovery may already have reconnected).
+    if (canSend(state) && !this.socket.isFresh()) {
+      this.socket.forceReconnect("stale runtime connection at send gate");
+    }
+    return false;
   }
 
   /** Browser identity-only create. No attach/detach/projection mutation. */
@@ -793,7 +745,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   onConnectionState(state: ConnectionState): void {
     if (this.attachmentRoute !== null) this.attachmentRoute.generation = this.currentGeneration;
     if (state === "ready") {
-      this.resolveReadyWaiters();
       if (this.pendingCreate !== null && this.pendingCreate.attempt === null) this.sendCreateAttempt(this.pendingCreate);
     } else if (state === "unavailable" || state === "reconnecting") {
       this.resetRunningAuthority();
@@ -804,7 +755,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       this.error = error;
       this.fatal = true;
       this.wireQueue = [];
-      this.rejectReadyWaiters(error);
       this.rejectSendableWaiters(error);
       this.pendingCreate?.reject(error);
       this.pendingCreate = null;
@@ -834,7 +784,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   onHandshakeReject(error: ProtocolError): void {
     this.error = error;
     this.fatal = true;
-    this.rejectReadyWaiters(error);
     this.rejectSendableWaiters(error);
     this.pendingCreate?.reject(error);
     this.pendingCreate = null;
@@ -1033,7 +982,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     }
     try {
       this.socket.send(message);
-      record.onSent?.();
     } catch (error) {
       // canDeliverNow was true and send still threw: the browser socket is
       // dead without a close (half-open). Structured rejects (frame too large,
@@ -1050,6 +998,10 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       if (this.removeExactAttempt(record)) record.onSendFailure(mapped);
       return null;
     }
+    // Bytes are on the wire only after send() returned successfully: a throw
+    // above means the frame was NOT delivered, so `onSent` (the delivery proof
+    // the submit lane's settle judgment relies on) must never fire for it.
+    record.onSent?.();
     return {
       envelopeId,
       generation,
@@ -1093,12 +1045,9 @@ export class RuntimeConnection implements RuntimeSocketHandler {
           if (this.canDeliverNow()) { this.flushWireQueue(); continue; }
           const remaining = deadline - this.nowFn();
           if (remaining <= 0) { this.failWireQueue(notSendableTimeoutError()); return; }
-          if (canSend(this.readConnectionState()) && !this.socket.isFresh()) {
+          if (canSend(this.readConnectionState())) {
             // Sendable but stale: prove it, or force the recovery on proof of death.
-            const alive = await this.socket.probe(Math.min(this.livenessProbeTimeoutMs, remaining));
-            if (!alive && canSend(this.readConnectionState()) && !this.socket.isFresh()) {
-              this.socket.forceReconnect("stale runtime connection at wire gate");
-            }
+            if (await this.ensureFresh(deadline)) { this.flushWireQueue(); continue; }
             continue;
           }
           try {
@@ -1139,12 +1088,13 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       if (message === undefined) continue;
       try {
         this.socket.send(message);
-        record.onSent?.();
       } catch (error) {
         const mapped = this.sendThrewError(error);
         if (mapped.code === "unavailable" && mapped.retryable) this.socket.noteOutboundDead();
         if (this.removeExactAttempt(record)) record.onSendFailure(mapped);
+        continue;
       }
+      record.onSent?.();
     }
   }
 
@@ -1287,18 +1237,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     this.runningAuthorityMode = "pending";
     this.runningWatchRevision = -1;
     this.assistantPresenceValue = null;
-  }
-
-  private resolveReadyWaiters(): void {
-    const waiters = this.readyWaiters;
-    this.readyWaiters = [];
-    for (const waiter of waiters) waiter.resolve();
-  }
-
-  private rejectReadyWaiters(error: unknown): void {
-    const waiters = this.readyWaiters;
-    this.readyWaiters = [];
-    for (const waiter of waiters) waiter.reject(error);
   }
 
   private resolveSendableWaiters(): void {

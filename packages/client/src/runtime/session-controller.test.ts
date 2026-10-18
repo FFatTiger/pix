@@ -241,6 +241,63 @@ describe("SessionController — immutable exact-session ownership", () => {
     controller.dispose();
     h.dispose();
   });
+
+  // LC-02: cancelObservationIntent clears the declared intent while the
+  // controller is still attached. A gap event afterwards must NOT produce a
+  // legacy/activating attach — a recovery of an already attached session can
+  // never cold-activate a Worker.
+  it("a gap event after cancelObservationIntent re-attaches observation-only, never legacy", async () => {
+    const h = createHarness();
+    const controller = new SessionController("A", h.connection);
+    h.connection.connect();
+    const ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack(["runtime.observe-existing.v1"]));
+    await attachExact(controller, h, "A");
+    controller.cancelObservationIntent({ code: "interrupted", message: "superseded", retryable: false });
+    expect(controller.getSnapshot().attached).toBe(true);
+    // A cursor gap forces a resume attach.
+    controller.onEvent({ type: "event", payload: { type: "agent_end", sessionId: "A", epoch: "e-A", eventId: 9 } }, h.connection.currentGeneration);
+    await flush();
+    const attach = lastFrame<{ type: "attach"; id: string; payload: Record<string, unknown> }>(ws, "attach")!;
+    expect(attach.payload.attachMode).toBe("existing_only");
+    expect(attach.payload.sessionId).toBe("A");
+    controller.dispose();
+    h.dispose();
+  });
+
+  // The reducer throws BEFORE the cursor advances, so a re-attach would replay
+  // the same event and throw again — a reconnect loop. The failure surfaces
+  // instead, and no attach is sent.
+  it("an event the shared reducer rejects is reported and never re-attaches", async () => {
+    const h = createHarness();
+    const controller = new SessionController("A", h.connection);
+    h.connection.connect();
+    const ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await attachExact(controller, h, "A");
+    const attachesBefore = ws.sent.filter((frame) => (frame as { type?: string }).type === "attach").length;
+    // A message_update for a stream that never started makes the shared
+    // reducer throw, and the cursor must NOT advance on a rejected event.
+    controller.onEvent({
+      type: "event",
+      payload: {
+        type: "message_update",
+        sessionId: "A",
+        epoch: "e-A",
+        eventId: 1,
+        streamId: "s-1",
+        messageId: "m-1",
+        delta: { role: "assistant", delta: { type: "text", text: "x" } },
+      },
+    }, h.connection.currentGeneration);
+    await flush();
+    expect(controller.getSnapshot().error).toMatchObject({ code: "internal", retryable: false });
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(attachesBefore);
+    controller.dispose();
+    h.dispose();
+  });
 });
 
 function assistantPartialText(partial: { role?: string; content?: unknown } | null | undefined): string | null {

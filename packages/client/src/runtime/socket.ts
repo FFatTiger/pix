@@ -80,13 +80,13 @@ export interface RuntimeSocketDeps {
   readonly identity: ClientIdentity;
   /** Subscribe to "network came back online"; return an unsubscribe. */
   readonly onOnline: (cb: () => void) => () => void;
-  /** Subscribe to "tab became visible"; return an unsubscribe. */
-  readonly onVisible: (cb: () => void) => () => void;
   /**
-   * Fine-grained visibility (both directions), used for wake-from-hidden
-   * liveness probing. Optional: without it the socket still heartbeats and
-   * probes on demand; it just cannot distinguish "briefly blurred" from
-   * "hidden long enough for the transport to have died".
+   * Page visibility in BOTH directions. This is the socket's only visibility
+   * hook: on show it reconnects when the transport is dead, otherwise runs the
+   * wake liveness probe, restarts the heartbeat and reports visibility; on hide
+   * it stops the heartbeat and reports. Optional: without it the socket still
+   * heartbeats and probes on demand; it just cannot distinguish "briefly
+   * blurred" from "hidden long enough for the transport to have died".
    */
   readonly onVisibility?: (cb: (visible: boolean) => void) => () => void;
   readonly features?: readonly string[];
@@ -179,6 +179,7 @@ function invalidImageBearingClientMessage(message: WsClientMessage): ProtocolErr
 
 interface ProbeWaiter {
   resolve: (alive: boolean) => void;
+  /** Only set when the CALLER's wait is shorter than the armed pong deadline. */
   handle: Timer | null;
 }
 
@@ -201,7 +202,6 @@ export class RuntimeSocket {
   private connectTimer: Timer | null = null;
   private reconnectAttempt = 0;
   private unsubOnline: (() => void) | null = null;
-  private unsubVisible: (() => void) | null = null;
   private unsubVisibility: (() => void) | null = null;
   /** Liveness (negotiated `runtime.liveness.v1`); disabled until acked. */
   private livenessNegotiated = false;
@@ -213,6 +213,8 @@ export class RuntimeSocket {
   private pageVisible = true;
   private heartbeatTimer: Timer | null = null;
   private pingDeadlineTimer: Timer | null = null;
+  /** Absolute deadline of the armed pong, i.e. the ONE liveness deadline. */
+  private pingDeadlineAt: number | null = null;
   private pingOutstanding = false;
   /** send() threw while the browser socket still said OPEN. */
   private outboundDead = false;
@@ -262,9 +264,12 @@ export class RuntimeSocket {
 
   /**
    * Probe transport liveness: send one ping (single-flight) and resolve true
-   * on ANY inbound frame within `timeoutMs`, false otherwise. Without the
-   * negotiated feature there is no honest probe — resolve true (the caller
-   * keeps pre-liveness behavior).
+   * on ANY inbound frame, false otherwise. The result is decided by the ONE
+   * liveness deadline — the ping's pong timeout (which proves the transport
+   * dead and forces the reconnect) — truncated by a SHORTER wait the caller
+   * asks for. There is no second probe clock. Without the negotiated feature
+   * there is no honest probe — resolve true (the caller keeps pre-liveness
+   * behavior).
    */
   probe(timeoutMs: number): Promise<boolean> {
     if (!this.livenessNegotiated) return Promise.resolve(true);
@@ -277,6 +282,15 @@ export class RuntimeSocket {
     // registered. This caller is not one of them yet, so a dead socket
     // answers here instead of waiting out a pong that will never arrive.
     if (this.outboundDead) return Promise.resolve(false);
+    // No armed pong (should not happen after sendPing): the caller timer below
+    // still bounds the wait, so a probe can never hang.
+    if (this.pingDeadlineAt !== null && this.deps.now() + timeoutMs >= this.pingDeadlineAt) {
+      // The armed pong deadline already answers this caller (true on any
+      // inbound frame, false when it fires and forces the reconnect).
+      return new Promise<boolean>((resolve) => {
+        this.probeWaiters.push({ resolve, handle: null });
+      });
+    }
     return new Promise<boolean>((resolve) => {
       const waiter: ProbeWaiter = { resolve, handle: null };
       waiter.handle = this.deps.setTimeout(() => {
@@ -558,6 +572,14 @@ export class RuntimeSocket {
    * sendable-but-stale connection is probed; a failed probe forces a
    * reconnect so the first user action lands on a PROVEN transport.
    */
+  /**
+   * Wake-from-hidden decision AND the page-visibility report: the browser
+   * fires `visibilitychange` once, and this is its ONLY subscriber (a second
+   * hidden "page is visible → reconnect" hook would race this one). Coming
+   * back runs, in order: an immediate reconnect when the transport is dead or
+   * absent; otherwise the wake liveness probe, the heartbeat restart and the
+   * negotiated visibility report on this same connection.
+   */
   private handleVisibilityChange(visible: boolean): void {
     this.pageVisible = visible;
     this.sendVisibility(visible);
@@ -575,6 +597,10 @@ export class RuntimeSocket {
     // the next inbound frame. isFresh() stays false across the wake, so a
     // send in the same turn cannot race into the half-open socket.
     if (!suspendedHeartbeat) this.hiddenAt = null;
+    // A dead or absent transport reconnects NOW instead of waiting out the
+    // backoff; the fresh connection reports visibility on its own ack. A
+    // sendable connection is NOT blindly reconnected — it is probed below.
+    this.tryImmediateReconnect();
     if (!this.livenessNegotiated || !canSend(this.state)) return;
     // Hiding stopped the chain (the browser suspends timers there). Coming back
     // restarts it on this same connection — otherwise an idle visible tab has
@@ -599,7 +625,6 @@ export class RuntimeSocket {
 
   private attachEnvironmentHooks(): void {
     if (this.unsubOnline === null) this.unsubOnline = this.deps.onOnline(() => this.tryImmediateReconnect());
-    if (this.unsubVisible === null) this.unsubVisible = this.deps.onVisible(() => this.tryImmediateReconnect());
     if (this.unsubVisibility === null && this.deps.onVisibility !== undefined) {
       this.unsubVisibility = this.deps.onVisibility((visible) => this.handleVisibilityChange(visible));
     }
@@ -607,10 +632,8 @@ export class RuntimeSocket {
 
   private detachEnvironmentHooks(): void {
     this.unsubOnline?.();
-    this.unsubVisible?.();
     this.unsubVisibility?.();
     this.unsubOnline = null;
-    this.unsubVisible = null;
     this.unsubVisibility = null;
   }
 
@@ -705,10 +728,12 @@ export class RuntimeSocket {
       return;
     }
     this.pingOutstanding = true;
+    this.pingDeadlineAt = this.deps.now() + this.liveness.pongTimeoutMs;
     this.pingDeadlineTimer = this.deps.setTimeout(() => {
       this.pingDeadlineTimer = null;
       if (!this.pingOutstanding) return;
       this.pingOutstanding = false;
+      this.pingDeadlineAt = null;
       this.forceReconnect("liveness pong timeout");
     }, this.liveness.pongTimeoutMs);
   }
@@ -716,6 +741,7 @@ export class RuntimeSocket {
   /** Any inbound frame proves liveness: retire the outstanding ping. */
   private clearPingState(): void {
     this.pingOutstanding = false;
+    this.pingDeadlineAt = null;
     if (this.pingDeadlineTimer !== null) {
       this.deps.clearTimeout(this.pingDeadlineTimer);
       this.pingDeadlineTimer = null;

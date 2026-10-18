@@ -35,7 +35,6 @@ function fakeDeps(): RuntimeSocketDeps {
     location: { href: "https://pix.local/app/" },
     identity: { shell: "web", platform: "mac" },
     onOnline: () => () => undefined,
-    onVisible: () => () => undefined,
     features: ["runtime.running-watch.v1", "runtime.submit-turn.v1", "runtime.read-rpc.v1", "runtime.observe-existing.v1"],
   };
 }

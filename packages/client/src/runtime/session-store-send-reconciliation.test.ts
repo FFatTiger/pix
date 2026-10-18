@@ -141,7 +141,8 @@ describe("SessionStore — attached-fence conflict repair (model-switch / auto-t
     expect(retry.id).not.toBe(first.id);
     expect(retry.payload.operationId).toBe(first.payload.operationId);
     expect(retry.payload.expectedEpoch).toBe("e1");
-    // Freshest same-epoch cursor: max(authority revision 43, local 43).
+    // The authority's journal head is the fence — never a locally maxed cursor
+    // (the attached event lane already replays the very events that advanced it).
     expect(retry.payload.expectedRevision).toBe(43);
     expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
 
@@ -153,8 +154,7 @@ describe("SessionStore — attached-fence conflict repair (model-switch / auto-t
     await expect(sendP).resolves.toBeTruthy();
   });
 
-  it("repair uses the authority revision when the local cursor is still behind", async () => {
-    const h = createHarness();
+  it("repair uses the authority revision when the local cursor is still behind", async () => {    const h = createHarness();
     const ws = await openAndAttach(h, "s1", "e1", 40);
     const sendP = h.store.sendPrompt("race without applied events");
     await flush();
@@ -328,6 +328,149 @@ describe("SessionStore — uncertain-delivery reconciliation (lost admission rec
   });
 });
 
+describe("SessionStore — one re-send budget, one deadline (SUBMIT_MAX_RESENDS)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("stops after three re-sends and settles by wire evidence", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1", "e1", 40);
+    const sendP = h.store.sendPrompt("budget");
+    const settled = sendP.then(
+      () => { throw new Error("expected a rejection"); },
+      (cause: unknown) => cause,
+    );
+    await flush();
+    // The longest reachable chain: drop the stale attached fence → repair the
+    // authority fence → reconcile an uncertain admission. ONE counter covers
+    // all three; a fourth re-send is refused and the authority-proved
+    // non-delivery settles as activation (bubble removed, draft restored).
+    const first = submitFrames(ws)[0]!;
+    expect(first.payload).toMatchObject({ expectedEpoch: "e1", expectedRevision: 40 });
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: first.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: first.payload.operationId, error: { code: "epoch_changed", message: "not active at expected epoch", retryable: false } },
+    });
+    await flush();
+    const unfenced = submitFrames(ws)[1]!;
+    expect("expectedEpoch" in unfenced.payload).toBe(false);
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: unfenced.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: unfenced.payload.operationId, epoch: "eLive", revision: 4, error: { code: "conflict", message: "live worker fence", retryable: false } },
+    });
+    await flush();
+    const fenced = submitFrames(ws)[2]!;
+    expect(fenced.payload).toMatchObject({ expectedEpoch: "eLive", expectedRevision: 4 });
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: fenced.id,
+      payload: { status: "rejected", delivery: "uncertain", sessionId: "s1", operationId: fenced.payload.operationId, error: { code: "timeout", message: "admission timed out", retryable: true } },
+    });
+    await flush();
+    expect(submitFrames(ws)).toHaveLength(4);
+    const reconciled = submitFrames(ws)[3]!;
+    expect(reconciled.payload.operationId).toBe(first.payload.operationId);
+    // Fourth failure: the shared quota is spent, so this settles instead of
+    // re-sending again. The authority proved non-delivery → activation.
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: reconciled.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: reconciled.payload.operationId, epoch: "eLive", revision: 5, error: { code: "conflict", message: "still racing", retryable: false } },
+    });
+    await expect(settled).resolves.toMatchObject({ code: "conflict", phase: "activation" });
+    expect(submitFrames(ws)).toHaveLength(4);
+    expect(new Set(submitFrames(ws).map((frame) => frame.payload.operationId)).size).toBe(1);
+    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
+    expect(h.store.getSnapshot().turnActive).toBe(false);
+  });
+
+  it("the one deadline settles a re-send that never comes back, by wire evidence", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const sendP = h.store.sendPrompt("no receipt ever");
+    const settled = sendP.then(
+      () => { throw new Error("expected a rejection"); },
+      (cause: unknown) => cause,
+    );
+    await flush();
+    const first = submitFrames(ws)[0]!;
+    // An uncertain admission starts the reconciliation re-send, whose deadline
+    // is the SAME 30s budget armed for the first failure — not a second timer.
+    ws.serverSend({ type: "submit_turn_result", id: first.id, payload: uncertainRejection("s1", first.payload.operationId as string) });
+    await flush();
+    expect(submitFrames(ws)).toHaveLength(2);
+    // The reconcile frame reaches the wire and nothing ever answers it. Without
+    // the shared deadline the pending slot would stay locked forever.
+    await vi.advanceTimersByTimeAsync(35_000);
+    await flush();
+    // Bytes were on the wire: uncertain delivery, bubble kept, never activation.
+    await expect(settled).resolves.toMatchObject({ code: "timeout", phase: "uncertain" });
+    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual({ role: "user", content: "no receipt ever" });
+    expect(h.store.getSnapshot().turnActive).toBe(false);
+  });
+
+  it("a first send that never fails gets no client-side settle timeout", async () => {
+    // A cold-started worker may legitimately take a long time to admit the very
+    // first turn; the deadline bounds re-sends, never the first attempt.
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const sendP = h.store.sendPrompt("slow cold worker");
+    let settled = false;
+    const outcome = sendP.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(submitFrames(ws)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(360_000);
+    await flush();
+    expect(settled).toBe(false);
+    expect(h.store.getSnapshot().turnActive).toBe(true);
+    const submitted = submitFrames(ws)[0]!;
+    ws.serverSend({ type: "submit_turn_result", id: submitted.id, payload: acceptedAdmission("s1", submitted.payload.operationId as string, "e1") });
+    await expect(sendP).resolves.toBeTruthy();
+    await outcome;
+  });
+
+  it("a same-epoch reconnect re-send does not consume the re-send budget", async () => {
+    const h = createHarness();
+    let ws = await openAndAttach(h, "s1", "e1", 40);
+    const sendP = h.store.sendPrompt("survives a reconnect");
+    await flush();
+    const operationId = submitFrames(ws)[0]!.payload.operationId;
+    // A plain transport drop moves the SAME attempt to a new socket; it is not
+    // a repair, so the three-repair budget must still be intact afterwards.
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend({
+      type: "handshake_ack",
+      payload: {
+        protocolVersion: 2,
+        host: { mode: "local", capabilities: ["agent"] },
+        limits: { maxUpload: 0, maxOpenSessions: 4 },
+        sessionSnapshotSupport: true,
+        acceptedFeatures: ["runtime.read-rpc.v1", "runtime.submit-turn.v1", "runtime.observe-existing.v1"],
+      },
+    });
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 40, resumeStatus: "snapshot" }) });
+    await flush();
+    const resent = submitFrames(ws);
+    expect(resent).toHaveLength(1);
+    expect(resent[0]!.payload.operationId).toBe(operationId);
+    // A genuine fence race after the reconnect still gets its repair.
+    ws.serverSend({ type: "submit_turn_result", id: resent[0]!.id, payload: conflictRejection("s1", operationId as string, "e1", 43) });
+    await flush();
+    const repaired = submitFrames(ws);
+    expect(repaired).toHaveLength(2);
+    expect(repaired[1]!.payload.expectedRevision).toBe(43);
+    ws.serverSend({ type: "submit_turn_result", id: repaired[1]!.id, payload: acceptedAdmission("s1", operationId as string, "e1", "turn-reconnect", 44) });
+    await expect(sendP).resolves.toBeTruthy();
+  });
+});
+
 describe("SessionStore — queued-turn uncertain reconciliation (steer / follow_up)", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
@@ -402,7 +545,44 @@ describe("SessionStore — queued-turn uncertain reconciliation (steer / follow_
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
   });
 
-  it("budget exhaustion settles retained-uncertain (resolve, bubble kept) — never a claimed non-delivery", async () => {
+  it("a same-epoch reconnect resync never double-sends the queued turn", async () => {
+    // The reconcile timer and a transport resync both want to re-send the SAME
+    // commandId. The re-send clears the pending timer first, so the idempotent
+    // command admission never sees two frames for one steer.
+    const h = createHarness();
+    let ws = await openAttachedWithSteer(h);
+    const settled = h.store.steer("only once").then(
+      (value) => ({ ok: true as const, value }),
+      (cause: unknown) => ({ ok: false as const, cause }),
+    );
+    await flush();
+    const first = commandFrames(ws).at(-1)!;
+    // An unresolved outcome arms the 1s reconcile backoff…
+    ws.serverSend({ type: "response", id: first.id, payload: { ok: false, error: { code: "timeout", message: "sessiond request failed", retryable: true } } });
+    await flush();
+    // …and the transport drops before that backoff fires. The resync re-send
+    // must consume the timer, not race it.
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ackSubmitTurn());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", capabilities: ["runtime.prompt", "runtime.steer"] }) });
+    await flush(8);
+    expect(commandFrames(ws)).toHaveLength(1);
+    // The stale reconcile timer is gone: no second frame appears later.
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    expect(commandFrames(ws)).toHaveLength(1);
+    expect(commandFrames(ws)[0]!.payload.command.commandId).toBe(first.payload.command.commandId);
+    ws.serverSend({ type: "response", id: commandFrames(ws)[0]!.id, payload: { ok: true, result: { commandId: first.payload.command.commandId, result: { ok: true, type: "steer", disposition: "queued" } } } });
+    const outcome = await settled;
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("budget exhaustion rejects retained-uncertain (bubble kept) — never a claimed non-delivery", async () => {
     const h = createHarness();
     const ws = await openAttachedWithSteer(h);
     const settled = h.store.steer("never resolves").then(
@@ -410,17 +590,26 @@ describe("SessionStore — queued-turn uncertain reconciliation (steer / follow_
       (cause: unknown) => ({ ok: false as const, cause }),
     );
     await flush();
-    const first = commandFrames(ws).at(-1)!;
-    ws.serverSend({ type: "response", id: first.id, payload: { ok: false, error: { code: "timeout", message: "sessiond request failed", retryable: true } } });
-    await vi.advanceTimersByTimeAsync(1_100);
-    await flush();
-    const retry = commandFrames(ws)[1]!;
-    ws.serverSend({ type: "response", id: retry.id, payload: { ok: false, error: { code: "unavailable", message: "sessiond request failed", retryable: false } } });
-    await flush();
+    // Every round answers with an unresolved outcome. The shared quota is three
+    // re-sends, so the fourth unresolved answer is the honest give-up.
+    for (let round = 0; round < 4; round += 1) {
+      const frames = commandFrames(ws);
+      const frame = frames.at(-1)!;
+      ws.serverSend({
+        type: "response",
+        id: frame.id,
+        payload: { ok: false, error: { code: round === 0 ? "timeout" : "unavailable", message: "sessiond request failed", retryable: true } },
+      });
+      await flush();
+      await vi.advanceTimersByTimeAsync(1_100);
+      await flush();
+      expect(commandFrames(ws).length).toBe(round + 1 < 4 ? round + 2 : 4);
+    }
     const outcome = await settled;
-    // Bounded give-up resolves (retained-uncertain): never rejected as proven
-    // non-delivery, so the Composer never restores the draft for it.
-    expect(outcome.ok).toBe(true);
+    // Bounded give-up REJECTS uncertain-tagged (never "not sent"), so the
+    // Composer shows "unconfirmed" and never restores the draft.
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.cause).toMatchObject({ phase: "uncertain" });
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
     // The optimistic bubble stays for the queue event stream to claim.
     expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual({ role: "user", content: "never resolves" });

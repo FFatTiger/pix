@@ -91,3 +91,21 @@ test("the same address is rate limited past the window budget", async () => {
   assert.equal(limited.status, 429);
   assert.equal(lines.filter((line) => line.message === "client send failure").length, 30);
 });
+
+test("an event-apply failure is one structured line and never carries the event", async () => {
+  const lines = [];
+  const app = appWith(lines);
+  const res = await post(app, {
+    ...report,
+    kind: "event_apply_failure",
+    code: "internal",
+    message: "runtime event could not be applied: stale or uncorrelated stream update",
+    retryable: false,
+    phase: "dispatch",
+  });
+  assert.equal(res.status, 200);
+  const diagnostic = lines.filter((line) => line.message === "client send failure");
+  assert.equal(diagnostic.length, 1);
+  assert.equal(diagnostic[0].fields.kind, "event_apply_failure");
+  assert.equal(diagnostic[0].fields.code, "internal");
+});

@@ -38,7 +38,6 @@ function makeConnection(options: RuntimeConnectionOptions = {}) {
     location: { href: "https://pix.local/app/" },
     identity: { shell: "web", platform: "mac" },
     onOnline: () => () => undefined,
-    onVisible: () => () => undefined,
   };
   return { connection: new RuntimeConnection(deps, options), sockets };
 }

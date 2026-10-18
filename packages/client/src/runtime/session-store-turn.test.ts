@@ -1291,6 +1291,79 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     expect(submitFrames(ws)).toHaveLength(1);
   });
 
+  it("handles all three fence sources through the SAME revision repair", async () => {
+    // created / none / attached conflict are one code path now: each re-arms the
+    // fence from the authority's exact (epoch, revision) exactly once, with the
+    // SAME operationId, and a second conflict on the repaired fence fails closed.
+    const cases = [
+      {
+        name: "created",
+        seed: { sessionId: "merged-created", epoch: "eN", revision: 1 },
+        firstRejection: { epoch: "eN", revision: 2 },
+        expectedFirstRevision: 1,
+        expectedRepairRevision: 2,
+      },
+      {
+        name: "none",
+        seed: null,
+        firstRejection: { epoch: "eN", revision: 9 },
+        expectedFirstRevision: undefined,
+        expectedRepairRevision: 9,
+      },
+      {
+        name: "attached",
+        seed: null,
+        firstRejection: { epoch: "e1", revision: 8 },
+        expectedFirstRevision: 0,
+        expectedRepairRevision: 8,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const h = createHarness();
+      h.store.connect();
+      const ws = h.lastSocket();
+      ws.serverOpen();
+      ws.serverSend(ackSubmitTurn());
+      await flush();
+      const sessionId = testCase.seed?.sessionId ?? "merged-attached";
+      if (testCase.seed) {
+        await createSeededSession(h, ws, testCase.seed);
+      } else if (testCase.name === "attached") {
+        const openP = h.store.openSession(sessionId);
+        await flush();
+        const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+        ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId, epoch: "e1", lastEventId: 0 }) });
+        await openP;
+      }
+
+      const sendP = h.store.sendPromptToSession(sessionId, testCase.name);
+      await flush();
+      const first = submitFrames(ws)[0]!;
+      expect(first.payload.expectedRevision, testCase.name).toBe(testCase.expectedFirstRevision);
+      ws.serverSend({
+        type: "submit_turn_result",
+        id: first.id,
+        payload: { status: "rejected", delivery: "not_delivered", sessionId, operationId: first.payload.operationId, epoch: testCase.firstRejection.epoch, revision: testCase.firstRejection.revision, error: { code: "conflict", message: "race", retryable: false } },
+      });
+      await flush();
+      const repaired = submitFrames(ws)[1]!;
+      expect(repaired.payload.operationId, testCase.name).toBe(first.payload.operationId);
+      expect(repaired.payload.expectedEpoch, testCase.name).toBe(testCase.firstRejection.epoch);
+      expect(repaired.payload.expectedRevision, testCase.name).toBe(testCase.expectedRepairRevision);
+
+      // A second conflict proves the repair cannot converge: settle, no third frame.
+      ws.serverSend({
+        type: "submit_turn_result",
+        id: repaired.id,
+        payload: { status: "rejected", delivery: "not_delivered", sessionId, operationId: repaired.payload.operationId, epoch: testCase.firstRejection.epoch, revision: testCase.expectedRepairRevision + 1, error: { code: "conflict", message: "still racing", retryable: false } },
+      });
+      await expect(sendP, testCase.name).rejects.toMatchObject({ code: "conflict", phase: "activation" });
+      expect(submitFrames(ws), testCase.name).toHaveLength(2);
+      expect(h.store.getSnapshot().optimisticEntries, testCase.name).toEqual([]);
+    }
+  });
+
   it("uses the created snapshot leaf as the first prompt's optimistic base and never treats admission as final", async () => {
     const h = createHarness();
     h.store.connect();
