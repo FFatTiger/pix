@@ -500,7 +500,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     ws.serverSend({ type: "snapshot", id: resumeA.id, payload: snapshotPayload({ sessionId: "resume-a", epoch: "eA", resumeStatus: "snapshot" }) });
     await flush();
     expect(submitFrames(ws)).toHaveLength(0);
-    expect(h.controller("pending-b-reconnect")?.evictionProtection.turnInFlight).toBe(true);
+    expect(h.controller("pending-b-reconnect")?.getSnapshot().turnActive).toBe(true);
 
     const openB = h.store.openSession("pending-b-reconnect");
     await flush();
@@ -685,8 +685,8 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await flush();
     const submitA = submitFrames(ws).find((frame) => frame.payload.sessionId === "A")!;
     expect(submitA).toBeTruthy();
-    expect(h.controller("A")?.evictionProtection.turnInFlight).toBe(true);
-    expect(controllerB.evictionProtection.turnInFlight).toBe(true);
+    expect(h.controller("A")?.getSnapshot().turnActive).toBe(true);
+    expect(controllerB.getSnapshot().turnActive).toBe(true);
     ws.serverSend({ type: "submit_turn_result", id: submitA.id, payload: acceptedAdmissionFor("A", submitA.payload.operationId as string, "eA", "turn-A", 0) });
     await expect(sendA).resolves.toBeTruthy();
 
@@ -886,7 +886,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     expect(attachB.payload.sessionId).toBe("target-b");
     ws.serverSend({ type: "snapshot", id: attachB.id, payload: snapshotPayload({ sessionId: "target-b", epoch: "eB", lastEventId: 2 }) });
     await openB;
-    expect(h.controller("target-b")?.evictionProtection.turnInFlight).toBe(true);
+    expect(h.controller("target-b")?.getSnapshot().turnActive).toBe(true);
 
     ws.serverSend({ type: "submit_turn_result", id: first.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "target-b", operationId: first.payload.operationId, epoch: "eB", revision: 2, error: { code: "conflict", message: "stale create cursor", retryable: false } } });
     await flush();
@@ -917,7 +917,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     ws.serverSend({ type: "snapshot", id: attachC.id, payload: snapshotPayload({ sessionId: "unrelated-c", epoch: "eC" }) });
     await openC;
     expect(settlements).toBe(0);
-    expect(h.controller("pending-b")?.evictionProtection.turnInFlight).toBe(true);
+    expect(h.controller("pending-b")?.getSnapshot().turnActive).toBe(true);
 
     ws.serverSend({ type: "submit_turn_result", id: first.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "pending-b", operationId: first.payload.operationId, error: { code: "not_found", message: "B rejected", retryable: false } } });
     await expect(sendP).rejects.toMatchObject({ code: "not_found" });

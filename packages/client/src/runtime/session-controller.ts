@@ -667,9 +667,6 @@ interface TurnPending {
    * (bytes may be in flight or already admitted server-side), never proven
    * pre-wire non-delivery. */
   wireSeen: boolean;
-  /** Exact fence identity submitted on the current wire attempt. */
-  submittedExpectedEpoch: string | null;
-  submittedExpectedRevision: number | null;
   /** Monotonic send-attempt generation for this logical pending; late waiters must match. */
   dispatchRevision: number;
   /** Transport generation of the current wire attempt, or null until this logical operation has touched the wire since the last proven not_delivered. */
@@ -703,9 +700,6 @@ export interface ControllerEvictionProtection {
   readonly pendingQueuedTurn: boolean;
   readonly pendingExtensionResponse: boolean;
   readonly pendingExtensionInput: boolean;
-  readonly turnInFlight: boolean;
-  readonly turnAccepted: boolean;
-  readonly turnUncertain: boolean;
   readonly optimisticTransaction: boolean;
   readonly optimisticEntries: boolean;
   readonly runningOverlay: boolean;
@@ -755,6 +749,13 @@ const QUEUED_TURN_UNCERTAIN_LIMIT = 1;
 
 function isUserSendRejection(error: ProtocolError): boolean {
   return USER_SEND_REJECTION_CODES.has(error.code);
+}
+
+/** Diagnostic phase for a settled send: a `phase: "uncertain"` rejection had
+ *  bytes on the wire or an unresolved admission, everything else is a proven
+ *  pre-dispatch failure. */
+function sendDiagnosticPhase(error: ProtocolError): "activation" | "dispatch" {
+  return (error as { phase?: unknown }).phase === "uncertain" ? "dispatch" : "activation";
 }
 
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
@@ -879,7 +880,6 @@ export class SessionController implements RuntimeControllerPort {
   private attach: AttachDeferred | null = null;
   private attachAttempt: AttachAttempt | null = null;
   private attachGen: number | null = null;
-  private awaitingSnapshot = false;
   /** Identity of the current observation; a later attach of the same session mints a new one. */
   private observationId = 0;
   /** Last observation identity that already completed local release. */
@@ -903,8 +903,6 @@ export class SessionController implements RuntimeControllerPort {
   private readonly pendingReads = new Map<string, ReadPending>();
   /** Phase 3 single PendingTurn slot (never shares {@link pendingCommand}). */
   private pendingTurn: TurnPending | null = null;
-  /** Uncertain delivery remains eviction-protected until authority reconciles its optimism. */
-  private retainedUncertainDelivery = false;
   /** Phase 3 terminal-turn listeners (committed/terminal catalog refresh). */
   private readonly turnTerminalListeners = new Set<(terminal: TurnTerminalInfo) => void>();
   /** At most ONE stop in flight (LOW: concurrent stops merge into one frame). */
@@ -986,8 +984,9 @@ export class SessionController implements RuntimeControllerPort {
    * FINITE Protocol-v2 compatibility shim (LC-02): this is the legacy
    * activating attach — the Browser cannot prove `existing_only`, so the Host
    * may cold-activate a missing Worker. Production observation callers use
-   * {@link observeExisting}; production cold-explicit callers use
-   * {@link activateAndObserve}; ordinary sends stay atomic via `submitTurn`.
+   * {@link observeExisting}; production cold-explicit callers go through the
+   * Registry's activate→observe path; ordinary sends stay atomic via
+   * `submitTurn`.
    * Removal condition: Protocol v3 first becomes the minimum supported
    * version AND every remaining caller is migrated to the negotiated
    * observe/activate seams (tracked in the migration ledger).
@@ -1085,10 +1084,6 @@ export class SessionController implements RuntimeControllerPort {
       .finally(() => { this.explicitActivationPending = false; });
   }
 
-  activateAndObserve(): Promise<void> {
-    return this.activate().then(() => this.observeExisting());
-  }
-
   /**
    * LC-02 coherent provenance transfer: when the Registry promotes the
    * initiating draft/home presentation key to this session's created identity
@@ -1133,11 +1128,6 @@ export class SessionController implements RuntimeControllerPort {
       this.detachSessionId = null;
     });
     return this.detachPromise;
-  }
-
-  /** Refresh the connection-global running-session baseline without activating workers. */
-  refreshRunningSessions(): Promise<readonly string[]> {
-    return this.runtimeConnection.refreshRunningSessions();
   }
 
   /**
@@ -1190,7 +1180,6 @@ export class SessionController implements RuntimeControllerPort {
         throw error;
       }
       this.attached = false;
-      this.awaitingSnapshot = false;
       this.sessionStopped = true;
       this.intendedSession = null;
       // A confirmed stop closes created submit-fence authority. Retained
@@ -1825,8 +1814,6 @@ export class SessionController implements RuntimeControllerPort {
         wireSeen: false,
         transportRecoveryCount: 0,
         transportRecoveryDeadline: null,
-        submittedExpectedEpoch: expectedEpoch ?? null,
-        submittedExpectedRevision: expectedRevision ?? null,
         dispatchRevision: 0,
         wireGeneration: null,
         optimisticId: tx.optimisticId,
@@ -2879,11 +2866,7 @@ export class SessionController implements RuntimeControllerPort {
   get hasDetachInFlight(): boolean { return this.detachPromise !== null; }
   get hasPendingInterrupt(): boolean { return this.pendingInterrupt !== null; }
   get hasRetainedOptimism(): boolean { return this.optimisticUserEntries.length > 0 || this.optimisticPromptRunning; }
-  get hasResumeAuthority(): boolean { return this.authorityCursorKnown && this.epoch !== null; }
   get evictionProtection(): ControllerEvictionProtection {
-    const turnInFlight = this.pendingTurn?.delivery === "in_flight";
-    const turnAccepted = this.pendingTurn?.delivery === "accepted";
-    const turnUncertain = this.pendingTurn?.delivery === "uncertain" || this.retainedUncertainDelivery;
     const pendingExtensionInput = this.extensionUiInputInFlight !== null || this.extensionUiInputQueue.length > 0;
     const optimisticEntries = this.optimisticUserEntries.length > 0;
     const optimisticTransaction = this.promptTransaction !== null;
@@ -2908,9 +2891,6 @@ export class SessionController implements RuntimeControllerPort {
       pendingQueuedTurn: this.pendingQueuedTurn !== null,
       pendingExtensionResponse: this.pendingExtensionUiCommand !== null,
       pendingExtensionInput,
-      turnInFlight,
-      turnAccepted,
-      turnUncertain,
       optimisticTransaction,
       optimisticEntries,
       runningOverlay: this.optimisticPromptRunning,
@@ -2920,12 +2900,10 @@ export class SessionController implements RuntimeControllerPort {
       quiescent,
     };
   }
-  get isQuiescent(): boolean { return this.evictionProtection.quiescent; }
 
   /** Cancel a superseded acquisition locally. Never detach or stop. */
   cancelObservationIntent(error: ProtocolError): void {
     this.intendedSession = null;
-    this.awaitingSnapshot = false;
     this.rejectAttach(error);
     if (!this.attached) this.setConnection(this.runtimeConnection.connectionState === "stopped" ? "stopped" : "ready");
     this.notify();
@@ -2948,7 +2926,6 @@ export class SessionController implements RuntimeControllerPort {
     this.admittedSnapshot = null;
     this.attachedFenceRevision = null;
     this.attached = false;
-    this.awaitingSnapshot = false;
     this.intendedSession = null;
     this.attachGeneration += 1;
     this.attachGen = (this.attachGen ?? 0) + 1;
@@ -3009,12 +2986,8 @@ export class SessionController implements RuntimeControllerPort {
     if (!this.attached || generation !== this.attachGen) return;
     const event = message.payload;
     const decision: EventApplyDecision = decideEvent(event, {
-      sessionId: this.sessionId,
       epoch: this.epoch,
       lastEventId: this.lastEventId,
-      snapshotReceived: !this.awaitingSnapshot,
-      generation,
-      activeGeneration: this.attachGen ?? -1,
     });
     if (decision.decision === "apply") {
       if (this.snapshot === null) return;
@@ -3185,7 +3158,6 @@ export class SessionController implements RuntimeControllerPort {
       this.applySnapshot(message.payload, applyMode, applyMode === "same-epoch" && attemptMode === "resume");
     }
     this.attachGen = generation;
-    this.awaitingSnapshot = false;
     this.attached = true;
     this.observationId += 1;
     this.error = null;
@@ -3197,7 +3169,6 @@ export class SessionController implements RuntimeControllerPort {
 
   private failAttachResponse(message: WsResponseMessage, sessionId: string): void {
     this.attachAttempt = null;
-    this.awaitingSnapshot = false;
     const error: ProtocolError = message.payload.ok
       ? { code: "internal", message: "attach response without snapshot", retryable: false }
       : message.payload.error;
@@ -3345,7 +3316,6 @@ export class SessionController implements RuntimeControllerPort {
       pending.reject(this.activationTagged(admission.error));
     } else {
       this.reportSendDiagnostic("send_failure", pending, admission.error);
-      this.retainedUncertainDelivery = true;
       this.settlePromptTransaction(pending.tx, { removeBubble: false });
       pending.reject(this.uncertainTagged(admission.error));
     }
@@ -3369,8 +3339,8 @@ export class SessionController implements RuntimeControllerPort {
   ): boolean {
     if (admission.delivery !== "not_delivered") return false;
 
-    const submittedEpoch = pending.submittedExpectedEpoch;
-    const submittedRevision = pending.submittedExpectedRevision;
+    const submittedEpoch = pending.request.expectedEpoch ?? null;
+    const submittedRevision = pending.request.expectedRevision ?? null;
     const originalFenceSource = pending.fenceSource;
     const currentFenceSource: SubmitTurnFenceSource =
       submittedEpoch === null && submittedRevision === null ? "none" : originalFenceSource;
@@ -3389,8 +3359,6 @@ export class SessionController implements RuntimeControllerPort {
       // semantics apply until it reaches the wire again).
       pending.wireSeen = false;
       pending.fenceSource = "none";
-      pending.submittedExpectedEpoch = null;
-      pending.submittedExpectedRevision = null;
       pending.epoch = null;
       const { expectedEpoch: _expectedEpoch, expectedRevision: _expectedRevision, ...unfenced } = pending.request;
       pending.request = unfenced;
@@ -3428,8 +3396,6 @@ export class SessionController implements RuntimeControllerPort {
       pending.wireSeen = false;
       const localCursor = this.attached && this.epoch === admission.epoch ? this.lastEventId : -1;
       const revision = Math.max(admission.revision, localCursor);
-      pending.submittedExpectedEpoch = admission.epoch;
-      pending.submittedExpectedRevision = revision;
       pending.epoch = admission.epoch;
       pending.request = {
         ...pending.request,
@@ -3481,8 +3447,6 @@ export class SessionController implements RuntimeControllerPort {
     // The conflict PROVED the previous frame was not delivered: the repair
     // re-send is a fresh pre-wire attempt (sendTurnAttempt re-arms wireSeen).
     pending.wireSeen = false;
-    pending.submittedExpectedEpoch = admission.epoch;
-    pending.submittedExpectedRevision = admission.revision;
     pending.epoch = admission.epoch;
     pending.request = {
       ...pending.request,
@@ -3554,10 +3518,10 @@ export class SessionController implements RuntimeControllerPort {
    * User-side rejections, a second failure, and a blown 30s budget surface
    * instead. Returns true when the resend was started.
    *
-   * Two proven-dead shapes share this one retry:
-   *  - the socket threw while still OPEN: the connection already forced the
-   *    reconnect (see registerAttempt). Resend the SAME operationId on the
-   *    new socket. Do not force a second reconnect.
+   * Two dead-transport shapes share this one retry:
+   *  - the socket threw while still OPEN: the connection only marks the socket
+   *    dead (`noteOutboundDead`) and fails the attempt — it does NOT reconnect
+   *    or resend. This retry reconnects and resends the SAME operationId.
    *  - any other non-user failure (stale epoch, conflict, a gate that gave
    *    up while the socket still looked sendable): force one reconnect +
    *    re-attach, then resend that same operationId. sessiond's duplicate
@@ -3651,7 +3615,6 @@ export class SessionController implements RuntimeControllerPort {
     pending.attempt?.cancel();
     this.binding.unregisterTurn(pending.operationId);
     this.pendingTurn = null;
-    this.retainedUncertainDelivery = true;
     this.settlePromptTransaction(pending.tx, { removeBubble: false });
     this.notify();
     pending.reject(error);
@@ -3671,7 +3634,7 @@ export class SessionController implements RuntimeControllerPort {
       report({
         kind,
         code: error.code,
-        phase: "activation",
+        phase: sendDiagnosticPhase(error),
         message: error.message.slice(0, 200),
         retryable: error.retryable,
         connectionState: this.runtimeConnection.connectionState,
@@ -3697,16 +3660,14 @@ export class SessionController implements RuntimeControllerPort {
   private refreshNoneSourceFenceFromAttached(pending: TurnPending): void {
     if (
       pending.fenceSource !== "none"
-      || pending.submittedExpectedEpoch !== null
-      || pending.submittedExpectedRevision !== null
+      || pending.request.expectedEpoch !== undefined
+      || pending.request.expectedRevision !== undefined
       || pending.staleAttachedRepairCount !== 0
       || !this.attached
       || this.sessionId !== pending.sessionId
       || this.epoch === null
     ) return;
     pending.fenceSource = "attached";
-    pending.submittedExpectedEpoch = this.epoch;
-    pending.submittedExpectedRevision = this.lastEventId;
     pending.epoch = this.epoch;
     pending.request = {
       ...pending.request,
@@ -3831,7 +3792,6 @@ export class SessionController implements RuntimeControllerPort {
       // kept and the Composer never restores the draft. Only a proven pre-wire
       // pending settles as fixed interruption with the bubble removed.
       if (pending.wireSeen) {
-        this.retainedUncertainDelivery = true;
         this.settlePromptTransaction(pending.tx, { removeBubble: false });
         pending.reject(this.uncertainTagged(error));
       } else {
@@ -3907,7 +3867,6 @@ export class SessionController implements RuntimeControllerPort {
     }
     this.attached = false;
     this.attachedFenceRevision = null;
-    this.awaitingSnapshot = true;
     if (this.attach && this.attach.sessionId === sessionId) {
       // Reuse the in-flight deferred (reconnect handoff) and send a new attempt.
       this.sendAttachAttempt(sessionId, mode, intent);
@@ -3975,7 +3934,6 @@ export class SessionController implements RuntimeControllerPort {
     if (!this.sessionId) return;
     this.attached = false;
     this.attachedFenceRevision = null;
-    this.awaitingSnapshot = true;
     void this.startAttach(this.sessionId, "resume", this.intendedSession?.intent ?? "legacy").catch(() => undefined);
   }
 
@@ -4111,7 +4069,6 @@ export class SessionController implements RuntimeControllerPort {
         this.pendingTurn = null;
         if (pending.delivery === "in_flight") {
           const err = this.uncertainTagged({ code: "epoch_changed", message: "turn epoch changed; delivery uncertain", retryable: true } satisfies ProtocolError);
-          this.retainedUncertainDelivery = true;
           this.settlePromptTransaction(pending.tx, { removeBubble: false });
           pending.reject(err);
           this.setError(err);
@@ -4353,19 +4310,12 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
-   * Record committed live entries from a message_end / terminal bash_update.
-   * Runs AFTER the shared projection reduced the event, so the terminal bash
-   * entry is built from the authoritative cumulative snapshot bash state.
-   */
-  /**
-   * Phase 5A: remove one optimistic bubble by its local id and clear the
-   * uncertain-delivery retention once the LAST bubble reconciled.
+   * Phase 5A: remove one optimistic bubble by its local id.
    */
   private removeOptimisticEntry(optimisticId: string): void {
     this.optimisticUserEntries = this.optimisticUserEntries.filter(
       (candidate) => candidate.entry.entryId !== optimisticId,
     );
-    if (this.optimisticUserEntries.length === 0) this.retainedUncertainDelivery = false;
   }
 
   private recordCommittedLiveEntries(event: RuntimeEventData & { readonly eventId: number; readonly epoch: string }): void {
@@ -4569,7 +4519,7 @@ export class SessionController implements RuntimeControllerPort {
       if (attached || this.pendingQueuedTurn !== pending) return;
       this.pendingQueuedTurn = null;
       const error = { code: "unavailable", message: "session did not reconnect in time", retryable: false } satisfies ProtocolError;
-      this.reportQueuedSendFailure(pending, error);
+      this.reportQueuedSendFailure(pending, error, "activation");
       pending.reject(error);
       this.notify();
     });
@@ -4597,15 +4547,21 @@ export class SessionController implements RuntimeControllerPort {
     });
   }
 
-  /** Fire-and-forget diagnostic for a steer / follow-up that never reached the wire. */
-  private reportQueuedSendFailure(pending: QueuedTurnPending, error: ProtocolError): void {
+  /** Fire-and-forget diagnostic for a steer / follow-up send. `phase` is the
+   *  real outcome: a frame that never reached the wire is `activation`, an
+   *  unresolved admission is `dispatch`. */
+  private reportQueuedSendFailure(
+    pending: QueuedTurnPending,
+    error: ProtocolError,
+    phase: "activation" | "dispatch",
+  ): void {
     const report = this.runtimeConnection.reportSendFailure;
     if (!report) return;
     try {
       report({
         kind: "send_failure",
         code: error.code,
-        phase: "activation",
+        phase,
         message: `${pending.type}: ${error.message}`.slice(0, 200),
         retryable: error.retryable,
         connectionState: this.runtimeConnection.connectionState,
@@ -4652,7 +4608,7 @@ export class SessionController implements RuntimeControllerPort {
           }
           // Budget exhausted: settle honestly WITHOUT claiming non-delivery —
           // the optimistic bubble stays (queue events take over if it landed).
-          this.reportQueuedSendFailure(pending, error);
+          this.reportQueuedSendFailure(pending, error, "dispatch");
           this.pendingQueuedTurn = null;
           pending.attempt = null;
           this.notify();
@@ -5025,7 +4981,6 @@ export class SessionController implements RuntimeControllerPort {
     this.optimisticPromptRunning = false;
     this.optimisticPromptSessionId = null;
     this.promptTransaction = null;
-    this.retainedUncertainDelivery = false;
     this.pendingLeafRebase = null;
   }
 

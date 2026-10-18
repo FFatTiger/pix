@@ -4,10 +4,7 @@ import {
   buildHandshakeRequest,
   computeBackoffDelay,
   parseHostFrame,
-  isFatalHandshakeError,
-  isRetryableError,
 } from "./protocol-wire";
-import { FATAL_HANDSHAKE_CODES } from "./lifecycle";
 
 describe("buildRuntimeWsUrl", () => {
   it("derives wss from https at the root /v1/runtime route", () => {
@@ -44,19 +41,6 @@ describe("backoff (full-jitter exponential)", () => {
     expect(computeBackoffDelay(2, half)).toBe(500); // 0.5*1000
     expect(computeBackoffDelay(3, half)).toBe(1000); // 0.5*2000
     expect(computeBackoffDelay(7, () => 1)).toBe(30_000); // capped at upper=30000
-  });
-});
-
-describe("error classification", () => {
-  it("flags fatal handshake codes", () => {
-    for (const code of FATAL_HANDSHAKE_CODES) {
-      expect(isFatalHandshakeError({ code, message: "x", retryable: false })).toBe(true);
-    }
-    expect(isFatalHandshakeError({ code: "timeout", message: "x", retryable: true })).toBe(false);
-  });
-  it("reports retryable errors", () => {
-    expect(isRetryableError({ code: "runtime_unavailable", message: "x", retryable: true })).toBe(true);
-    expect(isRetryableError({ code: "forbidden", message: "x", retryable: false })).toBe(false);
   });
 });
 

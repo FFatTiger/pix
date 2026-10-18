@@ -216,10 +216,6 @@ export class RuntimeSocket {
   private pingOutstanding = false;
   /** send() threw while the browser socket still said OPEN. */
   private outboundDead = false;
-  /** Woke from a hide that outlasted one heartbeat, and no inbound frame has
-   * proved the socket since. A backgrounded phone freezes timers, so the
-   * last inbound timestamp is not evidence. */
-  private wakeUnproven = false;
   private probeWaiters: ProbeWaiter[] = [];
 
   constructor(deps: RuntimeSocketDeps, handler: RuntimeSocketHandler) {
@@ -247,7 +243,7 @@ export class RuntimeSocket {
    */
   isFresh(): boolean {
     if (!this.livenessNegotiated) return true;
-    if (this.outboundDead || this.wakeUnproven) return false;
+    if (this.outboundDead) return false;
     if (this.hiddenPastUnprovenHeartbeat()) return false;
     return this.deps.now() - this.lastInboundAt <= this.liveness.freshnessMs;
   }
@@ -384,9 +380,8 @@ export class RuntimeSocket {
       return;
     }
     this.outboundDead = false;
-    this.wakeUnproven = false;
     this.ws = ws;
-    this.setState(this.state === "idle" || this.state === "stopped" ? "connecting" : "connecting");
+    this.setState("connecting");
     ws.onopen = () => this.onOpen(gen);
     ws.onmessage = (data) => this.onMessage(gen, data);
     ws.onclose = (info) => this.onClose(gen, info);
@@ -445,7 +440,6 @@ export class RuntimeSocket {
     // across a wake from a hide that outlasted the heartbeat.
     this.lastInboundAt = this.deps.now();
     this.hiddenAt = null;
-    this.wakeUnproven = false;
     this.clearPingState();
     this.resolveProbes(true);
     if (message.type === "handshake_ack") {
@@ -581,7 +575,6 @@ export class RuntimeSocket {
     // the next inbound frame. isFresh() stays false across the wake, so a
     // send in the same turn cannot race into the half-open socket.
     if (!suspendedHeartbeat) this.hiddenAt = null;
-    if (suspendedHeartbeat) this.wakeUnproven = true;
     if (!this.livenessNegotiated || !canSend(this.state)) return;
     // Hiding stopped the chain (the browser suspends timers there). Coming back
     // restarts it on this same connection — otherwise an idle visible tab has

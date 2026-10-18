@@ -420,11 +420,11 @@ export class SessionControllerRegistry {
    * Latest-intent-wins acquisition of the one Browser observation lease.
    *
    * FINITE Protocol-v2 compatibility shim (LC-02): this drives the LEGACY
-   * activating attach (`SessionController.openSession`). Production
-   * observation callers use {@link observeExisting}; cold-explicit callers use
-   * {@link activateAndObserve}. Remaining production caller: the
-   * legacy v2 send chain (no negotiated submit-turn). Removal condition:
-   * Protocol v3 minimum + all callers migrated (migration ledger).
+   * activating attach (`SessionController.openSession`). No production caller
+   * remains — the exact-action surface exposes it only as the legacy attach
+   * fallback; the `existing_only` observation path is {@link observeExisting}
+   * and the cold-explicit path is {@link activateAndObserve}. Removal
+   * condition: Protocol v3 minimum + all callers migrated (migration ledger).
    */
   acquire(sessionId: string): Promise<void> {
     return this.beginLeaseIntent(sessionId, "legacy", this.capturePresentation());
@@ -800,11 +800,6 @@ export class SessionControllerRegistry {
   }
 
   private cleanupStaleAcquire(intent: LeaseIntent): void {
-    if (this.lease.holderSessionId === intent.sessionId
-      && this.records.get(intent.sessionId)?.controller.attachedNow === true) {
-      this.records.get(intent.sessionId)?.controller.cancelObservationIntent(interruptedAcquireError());
-      return;
-    }
     const route = this.route;
     const exactOldRoute = route !== null
       && route.sessionId === intent.sessionId

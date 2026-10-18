@@ -373,7 +373,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   private runningProjectionRevision = 0;
   private runningRefreshGeneration = 0;
   private runningAuthorityMode: "pending" | "watch" | "legacy" = "pending";
-  private runningWatchGeneration = -1;
   private runningWatchRevision = -1;
   private sessionsChangedRevision = 0;
   private assistantPresenceValue: AssistantPresence | null = null;
@@ -760,8 +759,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     const requestGeneration = ++this.runningRefreshGeneration;
     const revisionAtRequest = this.runningProjectionRevision;
     return this.whenReady().then(() => new Promise<readonly string[]>((resolve, reject) => {
-      let handle: RuntimeAttemptHandle | null = null;
-      handle = this.registerGlobalAttempt({
+      this.registerGlobalAttempt({
         buildMessage: (id) => ({ type: "listRunning", id, payload: {} }),
         expectation: { kind: "listRunning" },
         disconnectPolicy: "reject_on_disconnect",
@@ -787,7 +785,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
         onSendFailure: (cause) => { this.failRunningRefresh(requestGeneration, revisionAtRequest); reject(cause); },
         onDisconnect: (cause) => { this.failRunningRefresh(requestGeneration, revisionAtRequest); reject(cause); },
       });
-      void handle;
     }));
   }
 
@@ -797,7 +794,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     if (this.attachmentRoute !== null) this.attachmentRoute.generation = this.currentGeneration;
     if (state === "ready") {
       this.resolveReadyWaiters();
-      this.resolveSendableWaiters();
       if (this.pendingCreate !== null && this.pendingCreate.attempt === null) this.sendCreateAttempt(this.pendingCreate);
     } else if (state === "unavailable" || state === "reconnecting") {
       this.resetRunningAuthority();
@@ -827,7 +823,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     if (this.hasFeature(RUNTIME_RUNNING_WATCH_FEATURE)) {
       this.runningAuthorityMode = "watch";
       this.liveSessionStateKnown = false;
-      this.runningWatchGeneration = this.currentGeneration;
       this.runningWatchRevision = -1;
     } else {
       this.runningAuthorityMode = "legacy";
@@ -859,14 +854,15 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     if (message.type === "assistant_state") {
       // Negotiated presence push (always-on Pixie). Outside the negotiated
       // feature the Host never sends the frame; a stale value from a previous
-      // generation never survives — the flag is cleared per generation.
-      if (generation !== this.currentGeneration || !this.hasFeature(RUNTIME_ASSISTANT_PRESENCE_FEATURE)) return;
+      // generation never survives — the flag is cleared per generation, and a
+      // frame from a stale socket generation never reaches here.
+      if (!this.hasFeature(RUNTIME_ASSISTANT_PRESENCE_FEATURE)) return;
       this.assistantPresenceValue = message.payload;
       this.publish();
       return;
     }
     if (message.type === "running_state") {
-      if (this.runningAuthorityMode !== "watch" || generation !== this.runningWatchGeneration) return;
+      if (this.runningAuthorityMode !== "watch") return;
       if (message.payload.revision <= this.runningWatchRevision) return;
       this.runningWatchRevision = message.payload.revision;
       this.applyRunningState(message.payload.sessionIds, message.payload.busySessionIds, message.payload.waitingSessionIds ?? []);
@@ -1040,17 +1036,15 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       record.onSent?.();
     } catch (error) {
       // canDeliverNow was true and send still threw: the browser socket is
-      // dead without a close (half-open). Structured rejects (frame too
-      // large, invalid images) fail this attempt. A raw throw is transport
-      // loss: mark the socket dead and force ONE reconnect. The controller
-      // resends the same operationId on the new socket. Calling onSendFailure
-      // here would start a second resend on top of that reconnect.
+      // dead without a close (half-open). Structured rejects (frame too large,
+      // invalid images) fail this attempt. A raw throw is transport loss:
+      // remember the dead socket WITHOUT reconnecting here, then fail this
+      // attempt so its owner settles honestly — a logical-retry lane (the
+      // submit owner) reconnects once and resends the same operationId.
       const mapped = this.sendThrewError(error);
       if (mapped.code === "unavailable" && mapped.retryable) {
-        // The browser socket is dead and still says OPEN. Remember that
-        // without reconnecting here: a logical-retry lane (the submit
-        // owner) reconnects once and resends the same id. Reconnecting in
-        // this catch as well writes that id a second time.
+        // The browser socket is dead and still says OPEN. Reconnecting in this
+        // catch as well would write that id a second time.
         this.socket.noteOutboundDead();
       }
       if (this.removeExactAttempt(record)) record.onSendFailure(mapped);
@@ -1291,7 +1285,6 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     this.liveSessionStateKnown = false;
     this.runningProjectionRevision += 1;
     this.runningAuthorityMode = "pending";
-    this.runningWatchGeneration = -1;
     this.runningWatchRevision = -1;
     this.assistantPresenceValue = null;
   }

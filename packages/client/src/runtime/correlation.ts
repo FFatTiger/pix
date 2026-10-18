@@ -37,51 +37,28 @@ export function createDefaultIdFactory(random: () => number = Math.random): IdFa
   };
 }
 
-export type RequestKind =
-  | "create"
-  | "attach"
-  | "detach"
-  | "command"
-  | "interrupt"
-  | "getSnapshot"
-  | "stop";
-
-/** A pending request promise, bound to the generation it was issued under. */
-export interface PendingRequest<T = unknown> {
-  readonly kind: RequestKind;
-  readonly generation: number;
-  readonly envelopeId: string;
-  resolve(value: T): void;
-  reject(error: unknown): void;
-}
-
 /** Result of applying cursor gating to an incoming event. */
 export type EventApplyDecision =
   | { readonly decision: "apply" }
-  | { readonly decision: "drop"; readonly reason: "duplicate" | "stale-generation" | "awaiting-snapshot" }
-  | { readonly decision: "reattach"; readonly reason: "gap" | "epoch" | "session" };
+  | { readonly decision: "drop"; readonly reason: "duplicate" }
+  | { readonly decision: "reattach"; readonly reason: "gap" | "epoch" };
 
 /**
  * Decide whether an event may be applied given the current cursor. Pure.
  *
- *  - eventId === lastEventId + 1 (and matching epoch/session) → apply
- *  - eventId <= lastEventId                                   → duplicate drop
- *  - eventId > lastEventId + 1                                → gap → reattach
- *  - epoch mismatch                                           → reattach
- *  - sessionId mismatch                                       → reattach
- *  - awaiting the generation's initial snapshot               → drop
+ * Only this exact controller's attached session lane reaches here: the
+ * RuntimeConnection already dropped frames from a foreign session or socket
+ * generation, and `attached` implies the initial snapshot was applied.
+ *
+ *  - eventId === lastEventId + 1 (and matching epoch) → apply
+ *  - eventId <= lastEventId                           → duplicate drop
+ *  - eventId > lastEventId + 1                        → gap → reattach
+ *  - epoch mismatch                                   → reattach
  */
 export function decideEvent(
   event: RuntimeEventData & { readonly eventId: number; readonly epoch: string },
-  cursor: { readonly sessionId: string | null; readonly epoch: string | null; readonly lastEventId: number; readonly snapshotReceived: boolean; readonly generation: number; readonly activeGeneration: number },
+  cursor: { readonly epoch: string | null; readonly lastEventId: number },
 ): EventApplyDecision {
-  if (cursor.generation !== cursor.activeGeneration || !cursor.snapshotReceived) {
-    return { decision: "drop", reason: "awaiting-snapshot" };
-  }
-  if (cursor.sessionId === null || cursor.epoch === null) {
-    return { decision: "drop", reason: "awaiting-snapshot" };
-  }
-  if (event.sessionId !== cursor.sessionId) return { decision: "reattach", reason: "session" };
   if (event.epoch !== cursor.epoch) return { decision: "reattach", reason: "epoch" };
   if (event.eventId <= cursor.lastEventId) return { decision: "drop", reason: "duplicate" };
   if (event.eventId > cursor.lastEventId + 1) return { decision: "reattach", reason: "gap" };

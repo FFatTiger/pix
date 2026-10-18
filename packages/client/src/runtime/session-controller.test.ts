@@ -183,7 +183,7 @@ describe("SessionController — immutable exact-session ownership", () => {
     h.dispose();
   });
 
-  it("activateAndObserve sends a correlated activate then existing_only attach", async () => {
+  it("activate then observeExisting sends a correlated activate then existing_only attach", async () => {
     const h = createHarness();
     const controller = new SessionController("A", h.connection);
     h.connection.connect();
@@ -191,7 +191,7 @@ describe("SessionController — immutable exact-session ownership", () => {
     ws.serverOpen();
     ws.serverSend(ack(["runtime.explicit-activate.v1", "runtime.observe-existing.v1"]));
     h.connection.replaceAttachmentRoute("A");
-    const pending = controller.activateAndObserve();
+    const pending = controller.activate().then(() => controller.observeExisting());
     await flush();
     const activate = lastFrame<{ type: "activate"; id: string; payload: { sessionId: string } }>(ws, "activate")!;
     expect(activate.payload).toEqual({ sessionId: "A" });

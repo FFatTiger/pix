@@ -52,13 +52,13 @@ export type {
   ExactSubmitTurnInput,
   RuntimeConnectionApi,
 } from "./exact-runtime.js";
-export { buildRuntimeWsUrl, buildHandshakeRequest, computeBackoffDelay, parseHostFrame, isFatalHandshakeError, isRetryableError } from "./protocol-wire.js";
+export { buildRuntimeWsUrl, buildHandshakeRequest, computeBackoffDelay, parseHostFrame } from "./protocol-wire.js";
 export type { RuntimeLocation, BackoffOptions } from "./protocol-wire.js";
 export { assistantPresentationKey, homePresentationKey, sessionPresentationKey } from "./session-controller-registry.js";
 export type { PresentationProvenance } from "./session-controller.js";
 export { describeRuntimeObservationError, runtimeObservationMessageKind, RUNTIME_OBSERVATION_MESSAGE_KEYS } from "./observation-errors.js";
-export { FATAL_HANDSHAKE_CODES, isActive, canSend } from "./lifecycle.js";
+export { canSend } from "./lifecycle.js";
 export type { ConnectionState } from "./lifecycle.js";
 export { createDefaultIdFactory, decideEvent, decideCommandRetry } from "./correlation.js";
 export { useResumeRefetch, ResumeRefetch } from "./use-resume-refetch.js";
-export type { IdFactory, PendingRequest, EventApplyDecision, CommandRetryDecision, RequestKind } from "./correlation.js";
+export type { IdFactory, EventApplyDecision, CommandRetryDecision } from "./correlation.js";
