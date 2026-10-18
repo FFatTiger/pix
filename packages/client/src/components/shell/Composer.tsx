@@ -45,6 +45,7 @@ import {
   type ContextCatalogModel,
 } from "@/components/chat/chat-runtime-view";
 import type { BuiltinSlashCommandResult, QueuedMessages as QueuedMessagesView } from "@/lib/chat-view-model";
+import { useAutoEnablePush } from "@/lib/push-subscription";
 
 export interface ComposerHandle {
   /** Clear the queue and put every queued message back into the input. */
@@ -232,6 +233,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const { t } = useI18n();
 
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
+  // First-message push auto-enable (device-once). The returned trigger is
+  // SYNCHRONOUS and must be called from the send handlers before any await:
+  // the browser only shows the notification permission prompt inside a user
+  // gesture. It is fire-and-forget and never affects the send path.
+  const autoEnablePush = useAutoEnablePush(can("push"));
   const inputRef = useRef<ChatInputHandle | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   /** Phase 3: last message sent to each session, for the terminal-driven catalog refresh. */
@@ -745,6 +751,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         setSendError(describeWorkspaceAccess(workspaceDecision, t));
         return false;
       }
+      // Synchronous, before ANY await in this handler (user gesture).
+      autoEnablePush();
       const wireImages = toImageAttachments(images);
       // The model displayed IMMEDIATELY BEFORE this send is what the turn must
       // run with, carried on the SAME atomic submit activation overrides
@@ -867,7 +875,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         });
       return false;
     },
-    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, hasModelSet, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t],
+    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, hasModelSet, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t, autoEnablePush],
   );
 
   // Phase 3: the catalog refresh is deferred to COMMITTED/TERMINAL turn status
@@ -934,17 +942,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const handleSteer = useCallback(
     (message: string, images?: AttachedImage[]) => {
       if (!liveWorkspaceEnabled || !hasSteer || !exact) return;
+      autoEnablePush();
       exact.steer(message, toImageAttachments(images)).catch((cause: unknown) => settleQueuedSend(message, cause));
     },
-    [liveWorkspaceEnabled, hasSteer, exact, settleQueuedSend],
+    [liveWorkspaceEnabled, hasSteer, exact, settleQueuedSend, autoEnablePush],
   );
 
   const handleFollowUp = useCallback(
     (message: string, images?: AttachedImage[]) => {
       if (!liveWorkspaceEnabled || !hasFollowUp || !exact) return;
+      autoEnablePush();
       exact.followUp(message, toImageAttachments(images)).catch((cause: unknown) => settleQueuedSend(message, cause));
     },
-    [liveWorkspaceEnabled, hasFollowUp, exact, settleQueuedSend],
+    [liveWorkspaceEnabled, hasFollowUp, exact, settleQueuedSend, autoEnablePush],
   );
 
   const handlePromptWithStreamingBehavior = useCallback(

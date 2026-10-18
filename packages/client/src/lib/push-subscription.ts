@@ -1,14 +1,18 @@
+import { useCallback, useMemo } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PushSubscriptionPayload } from "@fffattiger/pix-protocol";
+import { createMutationOptions, createPushApi } from "@/api";
+import { useHttpClient } from "@/app/http-context";
 
 /**
  * Browser-side Web Push registration core (D-PUSH).
  *
  * Owns exactly the browser half: support detection, the permission request
- * (always triggered from a user gesture by the settings page), the
- * pushManager subscription with the Host's VAPID key, and the typed
- * registration/unregistration calls. Every browser surface is injected so the
- * logic is deterministically testable; HTTP goes through the typed transport
- * the caller wires in.
+ * (always triggered from a user gesture — the settings switch or the first
+ * message send), the pushManager subscription with the Host's VAPID key, and
+ * the typed registration/unregistration calls. Every browser surface is
+ * injected so the logic is deterministically testable; HTTP goes through the
+ * typed transport the caller wires in.
  */
 
 export interface PushSubscriptionLike {
@@ -52,6 +56,26 @@ export function detectPushCapability(env: PushBrowserEnv): PushCapability {
     return { state: "unsupported" };
   }
   return { state: "supported", permission: env.notification.permission };
+}
+
+/** Collect the (nullable) browser surfaces once per mount, guarded for SSR. */
+export function readPushBrowserEnv(globalish: {
+  navigator?: { userAgent?: string; serviceWorker?: unknown } | undefined;
+  Notification?: unknown | undefined;
+  matchMedia?: ((q: string) => { matches: boolean }) | undefined;
+  window?: { PushManager?: unknown } | undefined;
+}): { env: PushBrowserEnv; iosWithoutStandalone: boolean } {
+  const serviceWorker = globalish.navigator?.serviceWorker ?? null;
+  const hasPushManager = typeof globalish.window !== "undefined" && "PushManager" in globalish.window;
+  const env: PushBrowserEnv = {
+    serviceWorker: (serviceWorker ?? null) as ServiceWorkerContainerLike | null,
+    notification: (globalish.Notification ?? null) as NotificationStaticLike | null,
+    hasPushManager,
+  };
+  const userAgent = globalish.navigator?.userAgent ?? "";
+  const platform = /iPhone|iPad|iPod/i.test(userAgent) ? "ios" : "other";
+  const standalone = globalish.matchMedia?.("(display-mode: standalone)")?.matches === true;
+  return { env, iosWithoutStandalone: isIosWithoutStandalone(platform, standalone) };
 }
 
 /**
@@ -168,4 +192,121 @@ export async function currentPushEndpoint(env: PushBrowserEnv): Promise<string |
   const registration = await env.serviceWorker!.ready;
   const subscription = await registration.pushManager.getSubscription();
   return subscription?.endpoint ?? null;
+}
+
+/**
+ * Per-DEVICE marker: this browser already spent its one automatic push-enable
+ * attempt. Device-local on purpose (never synced through the Host preference
+ * map — each browser must attempt its own permission prompt once), and set by
+ * a manual settings toggle too, so a deliberate "off" is never silently
+ * re-enabled by a later first message.
+ */
+export const PUSH_AUTO_ENABLE_MARKER_KEY = "pi-push-auto-enable-attempted";
+
+function markerStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** True when this browser already attempted the automatic enable. */
+export function hasPushAutoEnableMarker(): boolean {
+  const storage = markerStorage();
+  if (storage === null) return false;
+  try {
+    return storage.getItem(PUSH_AUTO_ENABLE_MARKER_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Record the attempt. Written BEFORE the permission request so a second send
+ * (or a second composer mount) never prompts again; when storage is
+ * unavailable the browser itself still pins the decided permission.
+ */
+export function markPushAutoEnableAttempted(): void {
+  const storage = markerStorage();
+  if (storage === null) return;
+  try {
+    storage.setItem(PUSH_AUTO_ENABLE_MARKER_KEY, "1");
+  } catch {
+    // Storage unavailable: degrade to the browser's own permission state.
+  }
+}
+
+export interface AutoEnablePushDeps {
+  readonly env: PushBrowserEnv;
+  /** iPhone not installed as a home-screen PWA can never receive push. */
+  readonly iosWithoutStandalone: boolean;
+  /** The Host advertises the `push` capability (its seam is wired). */
+  readonly hostSupportsPush: boolean;
+  readonly isMarked: () => boolean;
+  readonly mark: () => void;
+  readonly getConfig: () => Promise<{ supported: boolean; publicKey: string }>;
+  readonly subscribe: (payload: PushSubscriptionPayload) => Promise<unknown>;
+}
+
+/**
+ * The ONE automatic push-enable attempt a device gets, fired from the first
+ * message send.
+ *
+ * Browsers only show the notification permission prompt inside a user
+ * gesture, so this must run synchronously inside the send handler: the marker
+ * is written first (at most one attempt per device), then
+ * {@link registerDevicePush} starts — its `requestPermission()` call lands on
+ * this same synchronous stack. The outcome (granted / dismissed / denied /
+ * transport failure) is never surfaced and never awaited: enabling
+ * notifications must not block, delay or fail a send.
+ *
+ * Returns true when the attempt was started (marker written).
+ */
+export function autoEnablePushOnce(deps: AutoEnablePushDeps): boolean {
+  if (!deps.hostSupportsPush || deps.iosWithoutStandalone) return false;
+  const capability = detectPushCapability(deps.env);
+  if (capability.state !== "supported" || capability.permission === "denied") return false;
+  if (deps.isMarked()) return false;
+  deps.mark();
+  void registerDevicePush({ env: deps.env, getConfig: deps.getConfig, subscribe: deps.subscribe })
+    .catch(() => undefined);
+  return true;
+}
+
+/**
+ * Composer-facing wrapper: assembles the browser env, the Host push transport
+ * and the same subscribe mutation the settings page uses, and returns a
+ * SYNCHRONOUS trigger to call from the send handler (before any await).
+ *
+ * `hostSupportsPush` is the caller's capability answer (`can("push")`) so this
+ * module stays free of feature-layer imports.
+ */
+export function useAutoEnablePush(hostSupportsPush: boolean): () => void {
+  const http = useHttpClient();
+  const queryClient = useQueryClient();
+  const { env, iosWithoutStandalone } = useMemo(
+    () => readPushBrowserEnv({
+      navigator: typeof navigator === "undefined" ? undefined : navigator,
+      Notification: typeof Notification === "undefined" ? undefined : Notification,
+      matchMedia: typeof matchMedia === "function" ? matchMedia.bind(window) : undefined,
+      window: typeof window === "undefined" ? undefined : window,
+    }),
+    [],
+  );
+  const pushApi = useMemo(() => createPushApi(http), [http]);
+  const mutations = useMemo(() => createMutationOptions(http, queryClient).push, [http, queryClient]);
+  const subscribeMutation = useMutation(mutations.subscribe());
+  return useCallback(() => {
+    autoEnablePushOnce({
+      env,
+      iosWithoutStandalone,
+      hostSupportsPush,
+      isMarked: hasPushAutoEnableMarker,
+      mark: markPushAutoEnableAttempted,
+      getConfig: () => pushApi.config(),
+      subscribe: (payload) => subscribeMutation.mutateAsync(payload),
+    });
+  }, [env, iosWithoutStandalone, hostSupportsPush, pushApi, subscribeMutation]);
 }

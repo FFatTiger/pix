@@ -6,6 +6,7 @@ import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
 import { NotificationsConfig, describePushError } from "./NotificationsConfig";
 import { HttpError } from "@/api/http-client";
+import { PUSH_AUTO_ENABLE_MARKER_KEY } from "@/lib/push-subscription";
 
 function json(value: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" }, ...init });
@@ -131,7 +132,7 @@ describe("NotificationsConfig — toggle + test", () => {
     expect(screen.getByTestId("push-test-button").hasAttribute("disabled")).toBe(false);
   });
 
-  it("switching off unsubscribes the browser and unregisters the endpoint", async () => {
+  it("switching off unsubscribes the browser, unregisters the endpoint and records the auto-enable marker", async () => {
     const world: FakePushWorld = { permission: "granted", existingEndpoint: ENDPOINT, subscribeCalls: 0 };
     stubPushBrowser(world);
     const bodies: unknown[] = [];
@@ -151,6 +152,8 @@ describe("NotificationsConfig — toggle + test", () => {
     fireEvent.click(toggle);
     await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
     expect(bodies).toEqual([{ endpoint: ENDPOINT }]);
+    // A deliberate manual "off" also ends the automatic first-send attempt.
+    expect(localStorage.getItem(PUSH_AUTO_ENABLE_MARKER_KEY)).toBe("1");
   });
 
   it("dismissed permission prompt shows honest copy and leaves notifications off", async () => {

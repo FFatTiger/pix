@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  autoEnablePushOnce,
   base64UrlToBytes,
   currentPushEndpoint,
   detectPushCapability,
@@ -7,6 +8,7 @@ import {
   registerDevicePush,
   toSubscriptionPayload,
   unregisterDevicePush,
+  type AutoEnablePushDeps,
   type PushBrowserEnv,
   type PushSubscriptionLike,
 } from "./push-subscription";
@@ -80,7 +82,6 @@ describe("registerDevicePush", () => {
   const config = async () => ({ supported: true, publicKey: "B".repeat(87) });
 
   it("granted → subscribes with the VAPID key and registers with the host", async () => {
-    const subscribed: unknown[] = [];
     const registered: unknown[] = [];
     const outcome = await registerDevicePush({
       env: env(),
@@ -90,7 +91,6 @@ describe("registerDevicePush", () => {
       },
     });
     // subscribe options captured via a custom env
-    void subscribed;
     expect(outcome).toEqual({ state: "registered", endpoint: "https://fcm.googleapis.com/fcm/send/abc" });
     expect(registered).toHaveLength(1);
   });
@@ -180,6 +180,95 @@ describe("registerDevicePush", () => {
       getConfig: config,
       subscribe: async () => undefined,
     })).rejects.toThrow(/missing endpoint or keys/);
+  });
+});
+
+describe("autoEnablePushOnce", () => {
+  function harness(options: {
+    marked?: boolean;
+    permission?: NotificationPermission;
+    requestPermission?: () => Promise<NotificationPermission>;
+    subscribeThrows?: boolean;
+  } = {}) {
+    const state = {
+      marked: options.marked ?? false,
+      markCalls: 0,
+      permissionCalls: 0,
+      subscribed: 0,
+    };
+    const deps: AutoEnablePushDeps = {
+      env: env({
+        notification: {
+          permission: options.permission ?? "default",
+          requestPermission: async () => {
+            state.permissionCalls += 1;
+            return options.requestPermission ? options.requestPermission() : "granted";
+          },
+        },
+      }),
+      iosWithoutStandalone: false,
+      hostSupportsPush: true,
+      isMarked: () => state.marked,
+      mark: () => {
+        state.marked = true;
+        state.markCalls += 1;
+      },
+      getConfig: async () => ({ supported: true, publicKey: "B".repeat(87) }),
+      subscribe: async () => {
+        state.subscribed += 1;
+        if (options.subscribeThrows === true) throw new Error("host rejected the subscription");
+      },
+    };
+    return { state, deps };
+  }
+
+  /** Let the fire-and-forget registration chain run to completion. */
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  }
+
+  it("first eligible device requests permission, registers and writes the marker", async () => {
+    const { state, deps } = harness();
+    expect(autoEnablePushOnce(deps)).toBe(true);
+    // Permission is requested on the synchronous (user-gesture) stack.
+    expect(state.permissionCalls).toBe(1);
+    await settle();
+    expect(state.markCalls).toBe(1);
+    expect(state.marked).toBe(true);
+    expect(state.subscribed).toBe(1);
+  });
+
+  it("an already-marked device never prompts again", () => {
+    const { state, deps } = harness({ marked: true });
+    expect(autoEnablePushOnce(deps)).toBe(false);
+    expect(state.permissionCalls).toBe(0);
+    expect(state.subscribed).toBe(0);
+  });
+
+  it("denied permission never prompts, never registers, never marks", async () => {
+    const { state, deps } = harness({ permission: "denied" });
+    expect(autoEnablePushOnce(deps)).toBe(false);
+    await settle();
+    expect(state.permissionCalls).toBe(0);
+    expect(state.subscribed).toBe(0);
+    expect(state.markCalls).toBe(0);
+  });
+
+  it("unsupported browsers / iOS non-PWA / host without the push capability are skipped", () => {
+    const unsupported = harness();
+    expect(autoEnablePushOnce({ ...unsupported.deps, env: env({ serviceWorker: null }) })).toBe(false);
+    expect(autoEnablePushOnce({ ...unsupported.deps, iosWithoutStandalone: true })).toBe(false);
+    expect(autoEnablePushOnce({ ...unsupported.deps, hostSupportsPush: false })).toBe(false);
+    expect(unsupported.state.permissionCalls).toBe(0);
+    expect(unsupported.state.markCalls).toBe(0);
+  });
+
+  it("a registration failure is swallowed (marker already written, nothing thrown)", async () => {
+    const { state, deps } = harness({ subscribeThrows: true });
+    expect(autoEnablePushOnce(deps)).toBe(true);
+    await settle();
+    expect(state.marked).toBe(true);
+    expect(state.subscribed).toBe(1);
   });
 });
 

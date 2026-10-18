@@ -16,6 +16,7 @@ import type { RuntimeSocketDeps } from "./socket";
 import type { HostInfo } from "@fffattiger/pix-protocol";
 import { useState, type ReactNode } from "react";
 import { clearDraft } from "@/lib/draft-store";
+import { PUSH_AUTO_ENABLE_MARKER_KEY } from "@/lib/push-subscription";
 import { queryKeys } from "@/api/query-keys";
 import type { SessionHeader } from "@fffattiger/pix-protocol";
 
@@ -516,6 +517,41 @@ describe("Composer — capability honesty + send/abort", () => {
     expect(textarea.disabled).toBe(false);
     expect(screen.queryByLabelText("Stop agent")).toBeNull();
     expect(screen.queryByText(/selected session is not live|detached|continue live|session stopped/i)).toBeNull();
+  });
+
+  it("the first send starts the one-time push auto-enable synchronously and leaves the send untouched", async () => {
+    // A supported browser where the user has not decided yet: the automatic
+    // attempt must ask for permission ON the send gesture's stack, then get
+    // out of the way.
+    const requestPermission = vi.fn(async () => "default" as NotificationPermission);
+    Object.assign(window, { PushManager: class {} });
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (Macintosh)",
+      languages: ["en-US"],
+      serviceWorker: { ready: Promise.resolve({ pushManager: { getSubscription: async () => null, subscribe: async () => null } }) },
+    });
+    vi.stubGlobal("Notification", { permission: "default", requestPermission });
+    try {
+      mount(<Composer sessionId="s1" live />, { mode: "local", capabilities: ["agent", "push"] });
+      const ws = await driveReady();
+      await driveAttach(ws);
+      const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "hello push" } });
+      fireEvent.click(screen.getByLabelText("Send message"));
+      // Synchronous (same user-gesture stack), before the send resolves…
+      expect(requestPermission).toHaveBeenCalledTimes(1);
+      // …and the device-once marker is written first.
+      expect(window.localStorage.getItem(PUSH_AUTO_ENABLE_MARKER_KEY)).toBe("1");
+      // The send itself is unaffected: exactly the same prompt command.
+      await flush();
+      const cmd = lastFrame<{ type: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
+      expect(cmd.payload.command.message).toBe("hello push");
+      expect(screen.queryByRole("alert")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      delete (window as { PushManager?: unknown }).PushManager;
+      window.localStorage.removeItem(PUSH_AUTO_ENABLE_MARKER_KEY);
+    }
   });
 });
 

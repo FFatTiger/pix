@@ -10,13 +10,11 @@ import { SettingsBadge, SettingsButton, SettingsRow, SettingsSection, SettingsWa
 import {
   currentPushEndpoint,
   detectPushCapability,
-  isIosWithoutStandalone,
+  markPushAutoEnableAttempted,
+  readPushBrowserEnv,
   registerDevicePush,
   unregisterDevicePush,
-  type NotificationStaticLike,
-  type PushBrowserEnv,
   type PushCapability,
-  type ServiceWorkerContainerLike,
 } from "@/lib/push-subscription";
 
 /**
@@ -33,30 +31,13 @@ export function describePushError(error: unknown, t: (key: string) => string): s
   return t("desktop.pushGenericFailure");
 }
 
-/** Collect the (nullable) browser surfaces once per mount, guarded for SSR. */
-export function readPushBrowserEnv(globalish: {
-  navigator?: { userAgent?: string; serviceWorker?: unknown } | undefined;
-  Notification?: unknown | undefined;
-  matchMedia?: ((q: string) => { matches: boolean }) | undefined;
-  window?: { PushManager?: unknown } | undefined;
-}): { env: PushBrowserEnv; iosWithoutStandalone: boolean } {
-  const serviceWorker = globalish.navigator?.serviceWorker ?? null;
-  const hasPushManager = typeof globalish.window !== "undefined" && "PushManager" in globalish.window;
-  const env: PushBrowserEnv = {
-    serviceWorker: (serviceWorker ?? null) as ServiceWorkerContainerLike | null,
-    notification: (globalish.Notification ?? null) as NotificationStaticLike | null,
-    hasPushManager,
-  };
-  const userAgent = globalish.navigator?.userAgent ?? "";
-  const platform = /iPhone|iPad|iPod/i.test(userAgent) ? "ios" : "other";
-  const standalone = globalish.matchMedia?.("(display-mode: standalone)")?.matches === true;
-  return { env, iosWithoutStandalone: isIosWithoutStandalone(platform, standalone) };
-}
-
 /**
  * Notifications settings (this device): the Web Push subscription switch, the
  * test button and honest state copy (unsupported / denied by the browser / iOS
- * home-screen hint). The permission request fires only from the switch click.
+ * home-screen hint). The permission request fires only from a user gesture:
+ * this switch, or the one automatic attempt on the first message send
+ * (`autoEnablePushOnce`). Switching OFF records that marker too, so a
+ * deliberate choice is never re-enabled behind the user's back.
  */
 export function NotificationsConfig() {
   const { t } = useI18n();
@@ -124,6 +105,8 @@ export function NotificationsConfig() {
             setMessage(t("desktop.pushEnabled"));
           }
         } else {
+          // A manual decision (either direction) ends the automatic attempt.
+          markPushAutoEnableAttempted();
           await unregisterDevicePush({
             env,
             unsubscribe: (target) => unsubscribeMutation.mutateAsync(target),
