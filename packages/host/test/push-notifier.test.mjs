@@ -14,7 +14,7 @@ import {
 } from "../dist/index.js";
 
 const wait = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
-const KEYS = { publicKey: "B".repeat(87), privateKey: "A".repeat(120) };
+const KEYS = { publicKey: "B".repeat(87), privateKey: "A".repeat(43) };
 
 /** The notifier serializes candidates through an internal promise chain; tests await this to observe settled state deterministically. */
 async function queueIdle() {

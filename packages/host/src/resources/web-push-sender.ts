@@ -6,7 +6,7 @@
  * subscriptions (404/410) without a retry storm — everything else is logged
  * by the caller, never retried here.
  */
-import * as webPush from "web-push";
+import webPush from "web-push";
 import type { PushNotificationPayload } from "@fffattiger/pix-protocol/push";
 import type { WebPushSubscriptionRecord, WebPushVapidKeys } from "./web-push-store.js";
 

@@ -22,7 +22,7 @@ afterEach(() => {
   }
 });
 
-const KEYS = { publicKey: "B".repeat(87), privateKey: "A".repeat(120) };
+const KEYS = { publicKey: "B".repeat(87), privateKey: "A".repeat(43) };
 const SUB_BODY = {
   endpoint: "https://fcm.googleapis.com/fcm/send/abc",
   keys: { p256dh: "K".repeat(87), auth: "a".repeat(16) },

@@ -41,7 +41,8 @@ export const WEB_PUSH_FILE_NAME = "web-push.json";
 export const MAX_PUSH_SUBSCRIPTIONS = 32;
 
 const MAX_DOCUMENT_BYTES = 262_144;
-const VAPID_PRIVATE_KEY_PATTERN = /^[A-Za-z0-9_-]{80,240}$/;
+// A VAPID private key is a 32-byte P-256 scalar: 43 unpadded base64url chars.
+const VAPID_PRIVATE_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 /** Fixed warning / error codes — never embed endpoints or raw payloads. */
 export type WebPushStoreCode =

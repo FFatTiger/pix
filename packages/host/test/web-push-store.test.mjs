@@ -31,7 +31,7 @@ afterEach(() => {
   }
 });
 
-const KEYS = { publicKey: "B".repeat(87), privateKey: "A".repeat(120) };
+const KEYS = { publicKey: "B".repeat(87), privateKey: "A".repeat(43) };
 const SUB = (overrides = {}) => ({
   endpoint: overrides.endpoint ?? "https://fcm.googleapis.com/fcm/send/abc",
   p256dh: overrides.p256dh ?? "K".repeat(87),
@@ -106,14 +106,14 @@ test("push store: missing document reads empty; keys generate once and persist; 
     const generated = [];
     const keys = await store.getOrCreateVapidKeys(() => {
       generated.push(1);
-      return { publicKey: "B".repeat(87), privateKey: "A".repeat(120) };
+      return { publicKey: "B".repeat(87), privateKey: "A".repeat(43) };
     });
     assert.equal(generated.length, 1);
     assert.equal(keys.publicKey, "B".repeat(87));
     // second call returns the persisted pair without invoking the generator
     const again = await store.getOrCreateVapidKeys(() => {
       generated.push(1);
-      return { publicKey: "C".repeat(87), privateKey: "D".repeat(120) };
+      return { publicKey: "C".repeat(87), privateKey: "D".repeat(43) };
     });
     assert.equal(generated.length, 1);
     assert.deepEqual(again, keys);
