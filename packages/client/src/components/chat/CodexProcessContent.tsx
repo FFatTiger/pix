@@ -4,6 +4,7 @@ import { BookOpenIcon } from "@phosphor-icons/react/BookOpen";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CopySimpleIcon } from "@phosphor-icons/react/CopySimple";
 import { DownloadSimpleIcon } from "@phosphor-icons/react/DownloadSimple";
+import { KeyIcon } from "@phosphor-icons/react/Key";
 import { FilePlusIcon } from "@phosphor-icons/react/FilePlus";
 import { FolderIcon } from "@phosphor-icons/react/Folder";
 import { ImageIcon } from "@phosphor-icons/react/Image";
@@ -386,6 +387,16 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
           target,
         };
       }
+      if (shell.kind === "secret") {
+        return {
+          action: t("desktop.codexProcessGroupSecret"),
+          completedAction: t("desktop.codexProcessCompletedSecret"),
+          detail: t("desktop.codexProcessToolSecret", { target: shellTarget ?? shell.binary }),
+          iconName: "key",
+          tone,
+          target,
+        };
+      }
       if (shell.kind === "delete") {
         return {
           action: t("desktop.codexProcessGroupDeletedFiles"),
@@ -457,6 +468,7 @@ function iconFor(name: StepIconName, size = 16): ReactNode {
     case "trash": return <TrashIcon size={size} />;
     case "folder": return <FolderIcon size={size} />;
     case "download": return <DownloadSimpleIcon size={size} />;
+    case "key": return <KeyIcon size={size} />;
     case "copy": return <CopySimpleIcon size={size} />;
     case "terminal": return <TerminalIcon size={size} />;
     case "image": return <ImageIcon size={size} />;

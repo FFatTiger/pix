@@ -14,7 +14,7 @@ const FACTS = {
   arch: "arm64",
   plugins: [
     { id: "subagents", name: "pi-claude-subagents", version: "0.3.9" },
-    { id: "lore", name: "@local/lore-pi-extension", version: "1.5.1" },
+    { id: "lore", name: "@local/lore-pi-extension", version: "1.10.0" },
   ],
 };
 
@@ -54,7 +54,7 @@ test("GET /v1/about returns the strict facts body from the composed seam", async
     arch: "arm64",
     plugins: [
       { id: "subagents", name: "pi-claude-subagents", version: "0.3.9" },
-      { id: "lore", name: "@local/lore-pi-extension", version: "1.5.1" },
+      { id: "lore", name: "@local/lore-pi-extension", version: "1.10.0" },
     ],
   });
 });

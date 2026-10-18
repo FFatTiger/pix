@@ -5,7 +5,7 @@
  * Pix NEVER installs or updates the Lore extension or CLI — it only manages
  * the shared connection settings so the user's other Lore clients see the
  * same server. File format and precedence mirror the official Lore Pi
- * extension (pinned 1.5.1): `~/.lore/config.json` `{ base_url, api_token }`
+ * extension (pinned 1.10.0): `~/.lore/config.json` `{ base_url, api_token }`
  * first, then `LORE_BASE_URL` / `LORE_API_TOKEN`; `LORE_HOME` overrides the
  * state directory. Writes preserve unknown sibling keys (installed_version,
  * docker_managed, …) and publish atomically with mode 0600. The API token is

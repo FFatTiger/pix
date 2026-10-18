@@ -301,7 +301,16 @@ export function basenameResourcePath(filePath: string): string {
 // Shell command subclassification
 // ---------------------------------------------------------------------------
 
-export type ShellCommandKind = "list" | "search" | "find" | "read" | "fetch" | "delete" | "copy" | "run";
+export type ShellCommandKind =
+  | "list"
+  | "search"
+  | "find"
+  | "read"
+  | "fetch"
+  | "secret"
+  | "delete"
+  | "copy"
+  | "run";
 
 export interface ShellCommandInfo {
   kind: ShellCommandKind;
@@ -339,6 +348,29 @@ const COPY_COMMANDS = new Set(["cp", "mv", "copy", "move", "rename", "ren"]);
 
 function shellWords(command: string): string[] {
   return command.match(/"[^"]+"|'[^']+'|\S+/g)?.map((w) => w.replace(/^(["'])(.*)\1$/, "$2")) ?? [];
+}
+
+/**
+ * Credential retrieval inside a command string: `npx -y @loremem/cli secret
+ * get NAME`, `lore secret get NAME` — including the `$(…)` substitution form
+ * and any number of occurrences (one command may fetch several credentials).
+ */
+const SECRET_GET_PATTERN = /(?:@loremem\/cli|\blore)\s+secret\s+get\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+
+/**
+ * Detect credential retrieval on the WHOLE raw command, before any segment
+ * splitting: the substitution sits inside a larger command (`curl -H
+ * "Authorization: Bearer $(npx -y @loremem/cli secret get CF_TOKEN)" …`), so a
+ * per-segment scan would classify it as a plain command run. Returns the
+ * de-duplicated credential names in first-appearance order.
+ */
+function secretNamesInCommand(raw: string): string[] {
+  const names: string[] = [];
+  for (const match of raw.matchAll(SECRET_GET_PATTERN)) {
+    const name = match[1]!;
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 const EMPTY_FLAG_SET: ReadonlySet<string> = new Set();
@@ -541,8 +573,16 @@ function flagConsumesNextToken(flag: string, valueFlags: ReadonlySet<string>): b
  * Skips `cd`, `export`, `echo` etc. to find the real work command, and skips
  * option VALUES (`--max-time 60`) so they are never mistaken for the target
  * argument. `bash -c '…'` / `eval '…'` wrappers are unwrapped and re-parsed.
+ *
+ * Credential retrieval is matched against the whole raw command first, because
+ * it usually appears as a `$(…)` substitution inside another command.
  */
 export function classifyShellCommand(raw: string, depth = 0): ShellCommandInfo {
+  const secretNames = secretNamesInCommand(raw);
+  if (secretNames.length > 0) {
+    return { kind: "secret", binary: "lore", argument: secretNames.join(", ") };
+  }
+
   const segments = raw.split(/&&|\n|;(?!;)|(?<!\|)\|(?!\|)/);
   const firstWord = raw.split(/\s+/)[0]?.replace(/^[.\\/]+/, "") || "sh";
   const defaultResult: ShellCommandInfo = {

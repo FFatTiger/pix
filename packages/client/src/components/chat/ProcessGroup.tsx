@@ -29,6 +29,7 @@ import { DownloadSimpleIcon } from "@phosphor-icons/react/DownloadSimple";
 import { FilePlusIcon } from "@phosphor-icons/react/FilePlus";
 import { FolderIcon } from "@phosphor-icons/react/Folder";
 import { ImageIcon } from "@phosphor-icons/react/Image";
+import { KeyIcon } from "@phosphor-icons/react/Key";
 import { ListBulletsIcon } from "@phosphor-icons/react/ListBullets";
 import { MagnifyingGlassIcon } from "@phosphor-icons/react/MagnifyingGlass";
 import { PencilSimpleLineIcon } from "@phosphor-icons/react/PencilSimpleLine";
@@ -76,7 +77,7 @@ type BuildLabelFn = (key: string, params?: Record<string, string>) => string;
 function enrichedToolLabel(
   block: Extract<ProcessContentBlock, { type: "toolCall" }>,
   ts: BuildLabelFn,
-): { displayLabel: string; iconName: StepIconName; target?: string | undefined; tone?: StepTone | undefined; typeLabel?: string | undefined; mcpServer?: string | undefined } {
+): { displayLabel: string; iconName: StepIconName; target?: string | undefined; tone?: StepTone | undefined; typeLabel?: string | undefined; mcpServer?: string | undefined; groupKey?: string | undefined } {
   const fallback = toolFallbackLabel(block);
   const isError = block.status === "error" || Boolean(block.sharedBatch?.result.isError);
   if (block.status === "unfinished") return { displayLabel: `${fallback} · ${ts("desktop.nestedToolCallUnfinished")}`, iconName: "toolbox" };
@@ -247,6 +248,15 @@ function enrichedToolLabel(
         const preview = shell.argument ? ` ${shell.argument.slice(0, 80)}` : "";
         return { displayLabel: `${typeLabel}${preview}`, iconName, tone, typeLabel };
       }
+      if (shell.kind === "secret") {
+        iconName = "key";
+        const typeLabel = ts("desktop.processStepSecret");
+        const target = shell.argument ? ` ${shell.argument}` : "";
+        // Credential retrieval never merges into a surrounding command group:
+        // it is its own semantic step even when adjacent commands share the
+        // command_execution tone.
+        return { displayLabel: `${typeLabel}${target}`, iconName, tone, typeLabel, groupKey: "secret" };
+      }
       if (shell.kind === "delete") {
         iconName = "trash";
         const typeLabel = ts("desktop.processStepDelete");
@@ -376,6 +386,7 @@ function mergeConsecutiveToolSteps(
     // Determine the tone of the current step
     const currentEnriched = enrichedToolLabel(toolStep.block, ts);
     const currentTone = currentEnriched.tone;
+    const currentGroupKey = currentEnriched.groupKey ?? currentTone;
 
     // No defined tone — can't merge, push directly
     if (!currentTone) {
@@ -384,13 +395,15 @@ function mergeConsecutiveToolSteps(
       continue;
     }
 
-    // Collect consecutive non-error tool steps with the SAME tone.
+    // Collect consecutive non-error tool steps with the SAME tone (and the
+    // same merge key — a credential step keeps its own group).
     let j = i + 1;
     while (j < steps.length && steps[j]!.kind === "tool") {
       const nextStep = steps[j]! as Extract<Step, { kind: "tool" }>;
       if (nextStep.block.status === "error" || nextStep.block.sharedBatch?.result.isError) break;
       const nextEnriched = enrichedToolLabel(nextStep.block, ts);
       if (nextEnriched.tone !== currentTone) break;
+      if ((nextEnriched.groupKey ?? nextEnriched.tone) !== currentGroupKey) break;
       j++;
     }
 
@@ -562,6 +575,7 @@ function stepIconElement(iconName: StepIconName, size: number = 14) {
     case "trash": return <TrashIcon size={size} />;
     case "folder": return <FolderIcon size={size} />;
     case "download": return <DownloadSimpleIcon size={size} />;
+    case "key": return <KeyIcon size={size} />;
     case "copy": return <CopySimpleIcon size={size} />;
     case "terminal": return <TerminalIcon size={size} />;
     case "toolbox": return <ToolboxIcon size={size} />;
