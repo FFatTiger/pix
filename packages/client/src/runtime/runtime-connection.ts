@@ -119,6 +119,10 @@ export interface RuntimeAttemptSpec {
   readonly onFrame: (frame: RuntimeAttemptFrame) => void;
   readonly onSendFailure: (error: unknown) => void;
   readonly onDisconnect: (error: ProtocolError) => void;
+  /** Optional: fired exactly when the attempt's bytes were actually written
+   *  to the wire (immediate send or a later wire-queue flush). From that
+   *  moment a failure of this attempt means UNCERTAIN delivery. */
+  readonly onSent?: () => void;
 }
 
 export interface RuntimeAttemptHandle {
@@ -180,6 +184,8 @@ interface AttemptRecord {
   readonly onFrame: (frame: RuntimeAttemptFrame) => void;
   readonly onSendFailure: (error: unknown) => void;
   readonly onDisconnect: (error: ProtocolError) => void;
+  /** Fired exactly when the attempt's bytes are actually written to the wire. */
+  readonly onSent?: () => void;
   /** Serialized message captured at registration (the wire queue sends later). */
   message?: WsClientMessage;
 }
@@ -999,6 +1005,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       onFrame: spec.onFrame,
       onSendFailure: spec.onSendFailure,
       onDisconnect: spec.onDisconnect,
+      ...(spec.onSent === undefined ? {} : { onSent: spec.onSent }),
       message,
     };
     if (bindingToken !== Symbol.for("runtime-connection-global")) {
@@ -1030,6 +1037,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     }
     try {
       this.socket.send(message);
+      record.onSent?.();
     } catch (error) {
       // canDeliverNow was true and send still threw: the browser socket is
       // dead without a close (half-open). Structured rejects (frame too
@@ -1134,6 +1142,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       if (message === undefined) continue;
       try {
         this.socket.send(message);
+        record.onSent?.();
       } catch (error) {
         const mapped = this.sendThrewError(error);
         if (mapped.code === "unavailable" && mapped.retryable) this.socket.noteOutboundDead();

@@ -417,6 +417,47 @@ test("Phase 4A.0.1 submitTurn: a global running change never stales the create c
   await service.shutdown();
 });
 
+test("Phase 4A.0.2 submitTurn: ordinary command completions (runtime_state_changed re-affirmation + session_title) never stale the conversation fence", async () => {
+  // Regression for the false "message not sent" incident: a command such as
+  // set_model or auto title generation completes while the user is already
+  // sending. The completion appends session_title (already side-channel) plus
+  // the adapter's emitState() runtime_state_changed re-affirmation — which used
+  // to advance lastConversationEventId and reject the racing submit with
+  // "session revision changed" even though the message was never delivered.
+  const { service, workers } = makeService({}, (input) => ({ snapshot: promptCapSnapshot(input.sessionId), commandDelayMs: 40 }));
+  const activated = await service.activate("s");
+  const cursor = liveRevision(service, "s", activated.epoch);
+
+  // Simulate the completion burst of one ordinary command: a title event plus
+  // a context re-affirmation (with a full context payload, exactly what the
+  // adapter's emitState sends after a command settles).
+  workers.workers[0]!.emitEvent({ type: "session_title", sessionId: "s", name: "t" });
+  workers.workers[0]!.emitEvent({
+    type: "runtime_state_changed",
+    sessionId: "s",
+    context: { model: { provider: "p", id: "m" }, leafId: "leaf-1", contextUsage: { percent: 10, contextWindow: 1000, tokens: 100 } },
+  });
+  workers.workers[0]!.emitEvent({ type: "session_title", sessionId: "s", name: "t2" });
+  const advanced = liveRevision(service, "s", activated.epoch);
+  assert.ok(advanced > cursor, "the completion burst must still advance the journal head");
+
+  // The pre-burst cursor is still current: side-channel re-affirmations must
+  // never invalidate the fence, so the racing submit is admitted directly.
+  const prepared = await service.prepareSubmitTurn({
+    sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: cursor,
+    prompt: "racing the title command", operationId: "op-command-completion-race",
+  });
+  assert.equal(prepared.result.status, "accepted", "a command completion re-affirmation must not stale the submit fence");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1);
+  const terminal = deferred<void>();
+  await prepared.flushTo((push) => {
+    if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve();
+  });
+  await terminal.promise;
+  prepared.close();
+  await service.shutdown();
+});
+
 test("Phase 3 submitTurn: quick accepted admission while the prompt runs deferred; terminal status via subscriber", async () => {
   const { service } = makeService({}, { commandDelayMs: 40, snapshot: promptCapSnapshot() });
   const activated = await service.activate("s");

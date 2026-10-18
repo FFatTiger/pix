@@ -191,7 +191,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
   });
 
-  it("uncertain retains the bubble and rejects retryable (never overwrites a newer draft)", async () => {
+  it("uncertain delivery reconciles once (same operationId) and settles uncertain-tagged, never activation", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
     const sendP = h.store.sendPrompt("hello");
@@ -203,7 +203,19 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
       payload: { status: "rejected", delivery: "uncertain", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "timeout", message: "admission timed out", retryable: true } },
     });
     await flush();
-    await expect(sendP).rejects.toMatchObject({ code: "timeout", retryable: true });
+    // UNCERTAIN delivery re-sends the SAME operationId (idempotent admission
+    // reconciliation) instead of surfacing an immediate rejection.
+    const reconcile = submitFrames(ws)[1]!;
+    expect(reconcile.payload.operationId).toBe(submit.payload.operationId);
+    // A second uncertainty settles honestly: retryable + uncertain-tagged
+    // (the Composer shows the unconfirmed state, never "not sent").
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: reconcile.id,
+      payload: { status: "rejected", delivery: "uncertain", sessionId: "s1", operationId: reconcile.payload.operationId, error: { code: "timeout", message: "admission timed out", retryable: true } },
+    });
+    await flush();
+    await expect(sendP).rejects.toMatchObject({ code: "timeout", retryable: true, phase: "uncertain" });
     expect(h.store.getSnapshot().turnActive).toBe(false);
     expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual({ role: "user", content: "hello" });
   });
@@ -967,14 +979,13 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await expect(manualP).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("does not repair created seeds for malformed/stale authority, non-conflict, or uncertain rejection", async () => {
+  it("does not repair created seeds for malformed/stale authority or non-conflict rejection", async () => {
     const cases: Array<{ name: string; admission: Record<string, unknown> }> = [
       { name: "missing revision", admission: { delivery: "not_delivered", epoch: "eN", error: { code: "conflict", message: "x", retryable: false } } },
       { name: "wrong epoch", admission: { delivery: "not_delivered", epoch: "other", revision: 6, error: { code: "conflict", message: "x", retryable: false } } },
       { name: "equal revision", admission: { delivery: "not_delivered", epoch: "eN", revision: 5, error: { code: "conflict", message: "x", retryable: false } } },
       { name: "older revision", admission: { delivery: "not_delivered", epoch: "eN", revision: 4, error: { code: "conflict", message: "x", retryable: false } } },
       { name: "non-conflict", admission: { delivery: "not_delivered", epoch: "eN", revision: 6, error: { code: "session_busy", message: "x", retryable: true } } },
-      { name: "uncertain", admission: { delivery: "uncertain", epoch: "eN", revision: 6, error: { code: "conflict", message: "x", retryable: true } } },
     ];
 
     for (const testCase of cases) {
@@ -1007,6 +1018,37 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
         payload: { status: "rejected", delivery: "not_delivered", sessionId: `seed-${testCase.name}`, operationId: manual.payload.operationId, error: { code: "not_found", message: "cleanup", retryable: false } },
       });
       await expect(manualP).rejects.toBeTruthy();
+    }
+
+    // An UNCERTAIN rejection is not a fence repair, but it now RECONCILES:
+    // the same operationId is re-sent once (idempotent admission check) and a
+    // second uncertainty settles uncertain-tagged — never "not sent".
+    {
+      const h = createHarness();
+      h.store.connect();
+      const ws = h.lastSocket();
+      ws.serverOpen();
+      ws.serverSend(ackSubmitTurn());
+      await flush();
+      await createSeededSession(h, ws, { sessionId: "seed-uncertain", epoch: "eN", revision: 5 });
+      const sendP = h.store.sendPromptToSession("seed-uncertain", "uncertain");
+      await flush();
+      const first = submitFrames(ws)[0]!;
+      ws.serverSend({
+        type: "submit_turn_result",
+        id: first.id,
+        payload: { status: "rejected", delivery: "uncertain", sessionId: "seed-uncertain", operationId: first.payload.operationId, error: { code: "timeout", message: "x", retryable: true } },
+      });
+      await flush();
+      expect(submitFrames(ws)).toHaveLength(2);
+      const reconcile = submitFrames(ws)[1]!;
+      expect(reconcile.payload.operationId).toBe(first.payload.operationId);
+      ws.serverSend({
+        type: "submit_turn_result",
+        id: reconcile.id,
+        payload: { status: "rejected", delivery: "uncertain", sessionId: "seed-uncertain", operationId: reconcile.payload.operationId, error: { code: "timeout", message: "x", retryable: true } },
+      });
+      await expect(sendP).rejects.toMatchObject({ code: "timeout", phase: "uncertain" });
     }
   });
 
@@ -1053,19 +1095,34 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
       const attached = submitFrames(ws)[0]!;
       expect(attached.payload.expectedRevision).toBe(7);
       ws.serverSend({ type: "submit_turn_result", id: attached.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "attached-seed", operationId: attached.payload.operationId, epoch: "eN", revision: 8, error: { code: "conflict", message: "x", retryable: false } } });
-      await expect(attachedP).rejects.toBeTruthy();
-      expect(submitFrames(ws)).toHaveLength(1);
-      // Explicit/attached conflict still never auto-drops the fence (stale-attached
-      // recovery is epoch_changed-only).
+      await flush();
+      // An ATTACHED conflict from a concurrent ordinary command is repaired
+      // ONCE at the authority cursor (max(authority 8, local 7)) with the SAME
+      // operationId — the root fix for the false "not sent" race.
+      const repaired = submitFrames(ws)[1]!;
+      expect(repaired.payload.operationId).toBe(attached.payload.operationId);
+      expect(repaired.payload.expectedRevision).toBe(8);
+      ws.serverSend({ type: "submit_turn_result", id: repaired.id, payload: acceptedAdmissionFor("attached-seed", attached.payload.operationId as string, "eN", "turn-attached", 8) });
+      await expect(attachedP).resolves.toBeTruthy();
+      // Explicit/attached conflict never auto-DROPS the fence (stale-attached
+      // recovery is epoch_changed-only). Detach while the accepted turn is
+      // still server-side.
       const detachP = h.store.detach();
       await flush();
       const detach = lastFrame<{ type: string; id: string }>(ws, "detach")!;
       ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "attached-seed", detached: true } } });
       await detachP;
+      // The accepted turn's terminal status releases the pending slot so the
+      // next manual send can start.
+      ws.serverSend({ type: "turn_status", authority: authoritySnapshot("attached-seed", "eN"), payload: { sessionId: "attached-seed", epoch: "eN", operationId: attached.payload.operationId, turnId: "turn-attached", revision: 1, state: "completed", userEntryId: "u9", finalLeafId: "u9" } });
+      await flush();
       const manualP = h.store.sendPromptToSession("attached-seed", "manual");
       await flush();
-      const manual = submitFrames(ws)[1]!;
-      expect(manual.payload.expectedRevision).toBe(5);
+      const manual = submitFrames(ws)[2]!;
+      // The repair's ACCEPTED admission consumed the one-shot created seed
+      // (retained exact authority), so the next manual send is unfenced —
+      // never a stale fence 5.
+      expect(manual.payload.expectedRevision).toBeUndefined();
       ws.serverSend({ type: "submit_turn_result", id: manual.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "attached-seed", operationId: manual.payload.operationId, error: { code: "not_found", message: "cleanup", retryable: false } } });
       await expect(manualP).rejects.toBeTruthy();
     }
@@ -1346,7 +1403,13 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await flush();
     expect(controller.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u1", "a1"]);
     const second = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    ws.serverSend({ type: "submit_turn_result", id: second.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "two-turn", operationId: second.payload.operationId, epoch: "eN", revision: 3, error: { code: "conflict", message: "cleanup", retryable: false } } });
+    ws.serverSend({ type: "submit_turn_result", id: second.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "two-turn", operationId: second.payload.operationId, epoch: "eN", revision: 6, error: { code: "conflict", message: "cleanup", retryable: false } } });
+    await flush();
+    // The attached conflict is repaired once at the authority cursor; a
+    // SECOND conflict stays bounded and settles as the honest definite rejection.
+    const repair = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    expect(repair.payload.operationId).toBe(second.payload.operationId);
+    ws.serverSend({ type: "submit_turn_result", id: repair.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "two-turn", operationId: repair.payload.operationId, epoch: "eN", revision: 7, error: { code: "conflict", message: "cleanup again", retryable: false } } });
     await expect(secondP).rejects.toMatchObject({ code: "conflict" });
   });
 

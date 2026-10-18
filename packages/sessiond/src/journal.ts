@@ -29,6 +29,17 @@ const encoder = new TextEncoder();
  * Anything NOT in this set — including unknown or future wire types — counts
  * as a conversation event, so a new event type fails closed until it is
  * proven side-channel here against the reducer.
+ *
+ * `runtime_state_changed` (with or without its optional `context` payload)
+ * is verified side-channel as well: the reducer only re-affirms the projected
+ * `model` / `leafId` / `contextUsage` hint from ONE driver read — it never
+ * mutates messages, turn-running state, the steering/follow-up queue, or a
+ * pending extension UI question, and a REAL leaf advance always arrives as a
+ * conversation event first. Treating it as conversation made ordinary
+ * command completions (set_model from the picker, auto title generation, queue
+ * writes — each followed by an `emitState()` re-affirmation) advance the
+ * submit fence and reject a user message that raced them ("session revision
+ * changed" while the message was never delivered).
  */
 export const SIDE_CHANNEL_EVENT_TYPES: ReadonlySet<string> = new Set([
   "subagent_delta",
@@ -44,6 +55,7 @@ export const SIDE_CHANNEL_EVENT_TYPES: ReadonlySet<string> = new Set([
   "session_title",
   "built_ins_changed",
   "runtime_capabilities_changed",
+  "runtime_state_changed",
 ]);
 
 export interface JournalAppendResult {
