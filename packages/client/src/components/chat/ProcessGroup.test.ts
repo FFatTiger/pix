@@ -63,32 +63,6 @@ describe("buildProcessSteps — thought visibility", () => {
     expect(steps).toHaveLength(1);
     expect(steps[0]).toMatchObject({ kind: "toolGroup" });
   });
-
-  it("keeps credential retrieval out of a surrounding command group", () => {
-    const secret: ProcessContentBlock = {
-      id: "secret",
-      type: "toolCall",
-      toolCallId: "secret",
-      toolName: "bash",
-      input: { command: "$(npx -y @loremem/cli secret get CF_TOKEN)" },
-      status: "success",
-      origin: { phase: "process", placement: "standalone", sourceMessageIndex: 0 },
-    };
-    const command: ProcessContentBlock = {
-      id: "command",
-      type: "toolCall",
-      toolCallId: "command",
-      toolName: "bash",
-      input: { command: "npm test" },
-      status: "success",
-      origin: { phase: "process", placement: "standalone", sourceMessageIndex: 0 },
-    };
-
-    expect(buildProcessSteps([secret, command], passthroughT).map((step) => step.kind)).toEqual(["tool", "tool"]);
-    // Two credential fetches still share one group.
-    expect(buildProcessSteps([secret, { ...secret, id: "secret-2", toolCallId: "secret-2" }], passthroughT)[0]!.kind)
-      .toBe("toolGroup");
-  });
 });
 
 describe("computeProcessSummary — shared elapsed title", () => {

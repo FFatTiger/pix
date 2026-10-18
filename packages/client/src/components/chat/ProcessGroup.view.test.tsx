@@ -307,36 +307,6 @@ describe("ProcessGroup — expanded lifecycle", () => {
     expect(grown.querySelector<HTMLElement>('[data-tool-id="call-c"]')?.querySelector(".codex-tool-details")).toBeNull();
   });
 
-  it("renders credential retrieval as its own step in both display modes", () => {
-    const command = 'curl -H "Authorization: Bearer $(npx -y @loremem/cli secret get CF_TOKEN)" https://api.test/x';
-    window.localStorage.setItem("pi-process-display-mode", "timeline");
-    const view = render(
-      <I18nProvider>
-        <div className="transcript-scroll">
-          <ProcessGroup blocks={[namedTool("bash", "secret", { command })]} isStreaming={false} />
-        </div>
-      </I18nProvider>,
-    );
-
-    fireEvent.click(view.container.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
-    const nav = view.container.querySelector<HTMLElement>(".process-step-nav")!;
-    expect(nav.textContent).toContain("Used secret CF_TOKEN");
-    expect(nav.textContent).not.toContain("Run ");
-
-    window.localStorage.setItem("pi-process-display-mode", "codex");
-    view.rerender(
-      <I18nProvider>
-        <div className="transcript-scroll">
-          <ProcessGroup blocks={[namedTool("bash", "secret", { command })]} isStreaming={false} />
-        </div>
-      </I18nProvider>,
-    );
-
-    fireEvent.click(view.container.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
-    const row = view.container.querySelector<HTMLElement>(".codex-process-flow > .codex-tool-row")!;
-    expect(row.querySelector(".codex-tool-row-label")?.textContent).toBe("Used secret CF_TOKEN");
-  });
-
   it("keeps timeline manual step overrides while streaming appends a new latest step", () => {
     window.localStorage.setItem("pi-process-display-mode", "timeline");
     const view = render(

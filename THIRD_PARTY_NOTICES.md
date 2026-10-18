@@ -212,9 +212,9 @@ behavior; no postinstall patch step exists anymore.
 
 The bundled Lore Pi extension `node_modules/@local/lore-pi-extension` is the
 official GitHub Release artifact `lore-pi.zip` from
-[FFatTiger/lore](https://github.com/FFatTiger/lore) at `v1.10.0` (the same
+[FFatTiger/lore](https://github.com/FFatTiger/lore) at `v1.8.0` (the same
 artifact the official `@loremem/cli` installer's `pi` channel distributes),
-repacked verbatim as `vendor/lore-pi-extension-1.10.0.tgz` for npm file:
+repacked verbatim as `vendor/lore-pi-extension-1.8.0.tgz` for npm file:
 installation and distributed inside the pix CLI bundle. The upstream package
 declares no license field; it is the user's own product (Lore) and is vendored
 with the release artifact's contents unchanged (including its README).

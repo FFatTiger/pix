@@ -580,7 +580,7 @@ packages/
 
 - 记忆是全局设置（settings.json `pixMemoryProvider`：`local` | `lore` | `off`），
   归「设置 → Agent → 记忆」页，不是 pix-builtins 能力开关；两个后端均为 vendor tgz
-  捆绑（pi-memory 0.4.2、@local/lore-pi-extension 1.10.0 = GitHub Release lore-pi.zip），
+  捆绑（pi-memory 0.4.2、@local/lore-pi-extension 1.5.1 = GitHub Release lore-pi.zip），
   统一 curated 加载与防重复加载（同 smart_compact 规则；记忆插件另按家族工具面识别，
   覆盖用户自装的 ~/.lore/pi 软链副本）。互斥出结构保证：`memoryEnabledPlugins(provider)`
   只启用其一，bindExtensions 后另有启动期断言（memory_read 与 lore_get_node 不得同时
