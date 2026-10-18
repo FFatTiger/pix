@@ -24,12 +24,13 @@
  *      no Worker is spawned.
  *   9. Session mutation contracts at the correct layer. D4 delete is exercised
  *      through the REAL HTTP route (DELETE /v1/sessions/:id) with the production
- *      mutation seam: stopped/history delete succeeds and removes the file; a
- *      live delete is 409 SESSION_IN_USE with the worker and file retained;
- *      after an explicit runtime.stop the delete succeeds; a request body is
- *      rejected 400; an unauthenticated LAN delete is gated 401 before the
- *      guard/RPC; and while sessiond is down the capability is retracted and
- *      the delete 503s before touching the file. D4 rename is exercised through
+ *      mutation seam: a RUNNING turn is 409 SESSION_IN_USE with the worker and
+ *      file retained (a delete never stops a live turn); an IDLE live session
+ *      is stopped by sessiond itself and then deleted; stopped/history delete
+ *      succeeds and removes the file; a request body is rejected 400; an
+ *      unauthenticated LAN delete is gated 401 before the guard/RPC; and while
+ *      sessiond is down the capability is retracted and the delete 503s before
+ *      touching the file. D4 rename is exercised through
  *      the REAL HTTP route (PATCH /v1/sessions/:id) with the production rename
  *      seam: a live attached rename succeeds (sessiond supports live
  *      set_session_name — never busy) and an offline JSONL rename succeeds,
@@ -670,10 +671,12 @@ async function main() {
     }
     assert.ok(runningAfterAttach.sessions.some((s) => s.sessionId === sessionId), "continue live must start a worker");
 
-    // 5b. D4 session-history delete (HTTP, real Host→sessiond→adapter). The
-    //     delete route is sessiond-guarded: live ⇒ 409 SESSION_IN_USE (never
-    //     stop-then-delete), stopped/history ⇒ success + file removed, and the
-    //     sessiond `system.ping` mutation guard runs before any RPC.
+    // 5b. D4 session delete (HTTP, real Host→sessiond→adapter). The delete route
+    //     is sessiond-guarded: a RUNNING session ⇒ 409 SESSION_IN_USE (a delete
+    //     never stops a live turn); an IDLE live session ⇒ sessiond stops that
+    //     resident Worker through the same path runtime.stop uses and then
+    //     deletes; stopped/history ⇒ success + file removed. The sessiond
+    //     `system.ping` mutation guard runs before any RPC.
     const del = (path, init = {}) =>
       fetch(`${stack.origin}${path}`, { method: "DELETE", ...init }).then(async (r) => ({ status: r.status, body: r.status === 204 ? null : await r.json().catch(() => null) }));
     const patch = (path, init = {}) =>
@@ -687,17 +690,41 @@ async function main() {
     assert.ok(boot.body.capabilities.includes("session.delete"), `full caps must include session.delete: ${JSON.stringify(boot.body.capabilities)}`);
     assert.ok(boot.body.capabilities.includes("session.write"), `full caps must include session.write: ${JSON.stringify(boot.body.capabilities)}`);
 
-    // 5b-1. Live session delete ⇒ 409 SESSION_IN_USE; worker + file retained.
+    // 5b-1. RUNNING session delete ⇒ 409 SESSION_IN_USE; worker + file retained.
+    //       A __block__ prompt holds the turn open deterministically until it is
+    //       aborted, so the delete really races a running turn.
     const liveDetail = await get(`/v1/sessions/${sessionId}`);
     assert.equal(liveDetail.status, 200);
     const liveFile = liveDetail.body.session.sessionFile;
     assert.equal(existsSync(liveFile), true, "live session file must exist before delete");
+    // The __block__ prompt stays in flight until aborted, so the RPC itself
+    // only settles on abort — fire it without awaiting the command result.
+    const heldTurn = rpc.call("runtime.command", {
+      sessionId,
+      command: { commandId: `e2e-block-${Date.now()}`, type: "prompt", message: "__block__ delete-race" },
+    }).catch(() => undefined);
+    let runningBusy = await rpc.call("runtime.listRunning", {});
+    for (let i = 0; i < 40; i += 1) {
+      const row = runningBusy.sessions.find((s) => s.sessionId === sessionId);
+      if (row?.workerStatus === "busy") break;
+      await delay(50);
+      runningBusy = await rpc.call("runtime.listRunning", {});
+    }
+    assert.equal(runningBusy.sessions.find((s) => s.sessionId === sessionId)?.workerStatus, "busy", "precondition: the fixture turn must be running");
     const liveDelete = await del(`/v1/sessions/${sessionId}`);
-    assert.equal(liveDelete.status, 409, "live session delete must be 409");
+    assert.equal(liveDelete.status, 409, "a RUNNING session delete must be 409");
     assert.equal(liveDelete.body.code, "SESSION_IN_USE");
     const runningAfterLiveDelete = await rpc.call("runtime.listRunning", {});
-    assert.ok(runningAfterLiveDelete.sessions.some((s) => s.sessionId === sessionId), "live delete must not stop the worker");
-    assert.equal(existsSync(liveFile), true, "live delete must retain the file");
+    assert.ok(runningAfterLiveDelete.sessions.some((s) => s.sessionId === sessionId), "a running delete must not stop the worker");
+    assert.equal(existsSync(liveFile), true, "a running delete must retain the file");
+    // Abort the held turn so the later idle-delete step sees a quiescent session.
+    await rpc.call("runtime.interrupt", { sessionId, commandId: `e2e-abort-${Date.now()}`, interrupt: { type: "abort" } });
+    await heldTurn;
+    for (let i = 0; i < 40; i += 1) {
+      const row = (await rpc.call("runtime.listRunning", {})).sessions.find((s) => s.sessionId === sessionId);
+      if (row !== undefined && row.workerStatus !== "busy") break;
+      await delay(50);
+    }
 
     // 5c-1. LIVE attached HTTP PATCH rename succeeds (sessiond supports live
     //         rename via set_session_name — never a busy/409), returns strict
@@ -716,18 +743,16 @@ async function main() {
     assert.ok(runningAfterLiveRename.sessions.some((s) => s.sessionId === sessionId), "live rename must not stop the worker");
     assert.equal(runningAfterLiveRename.sessions.find((s) => s.sessionId === sessionId)?.sessionId, sessionId, "running worker identity stays honest after live rename");
 
-    // 5b-2. After an explicit runtime.stop, delete succeeds and removes the file.
-    const stopped = await rpc.call("runtime.stop", { sessionId, reason: "user" });
-    assert.equal(stopped.stopped, true);
-    for (let i = 0; i < 40; i++) {
-      const running = await rpc.call("runtime.listRunning", {});
-      if (!running.sessions.some((s) => s.sessionId === sessionId)) break;
-      await delay(50);
-    }
-    const stoppedDelete = await del(`/v1/sessions/${sessionId}`);
-    assert.equal(stoppedDelete.status, 200, "delete after explicit stop must succeed");
-    assert.deepEqual(stoppedDelete.body, { success: true });
-    assert.equal(existsSync(liveFile), false, "delete must remove the file after stop");
+    // 5b-2. An IDLE live session deletes without any explicit stop: sessiond
+    //       stops the resident Worker itself through the same path runtime.stop
+    //       uses, then removes the file. A second session proves the same for a
+    //       live-idle Worker that is not the attached one.
+    const idleDelete = await del(`/v1/sessions/${sessionId}`);
+    assert.equal(idleDelete.status, 200, "an idle live session delete must succeed");
+    assert.deepEqual(idleDelete.body, { success: true });
+    assert.equal(existsSync(liveFile), false, "idle live delete must remove the file");
+    const runningAfterIdleDelete = await rpc.call("runtime.listRunning", {});
+    assert.ok(!runningAfterIdleDelete.sessions.some((s) => s.sessionId === sessionId), "the idle Worker must be stopped by the delete");
     const sessionAfterDelete = await get(`/v1/sessions/${sessionId}`);
     assert.equal(sessionAfterDelete.status, 404, "deleted session read must be 404");
 
@@ -921,7 +946,7 @@ async function main() {
     assert.equal(downRename.body.code, "MUTATION_UNAVAILABLE");
     assert.equal(existsSync(p3FileBeforeDown), true, "a down 503 rename must never touch the file");
 
-    log(`PASS — session ${sessionId.slice(0, 8)} read-only with zero workers; continue live started a worker; D4 delete (live 409 / stop-then-delete / stopped HTTP / body 400 / LAN auth / down 503) verified; D4 rename (live + offline HTTP PATCH / invalid + query + method fail-closed / LAN auth / down retraction + 503) verified; down retraction + 503 verified`);
+    log(`PASS — session ${sessionId.slice(0, 8)} read-only with zero workers; continue live started a worker; D4 delete (running 409 / idle-live stop-then-delete / stopped HTTP / body 400 / LAN auth / down 503) verified; D4 rename (live + offline HTTP PATCH / invalid + query + method fail-closed / LAN auth / down retraction + 503) verified; down retraction + 503 verified`);
   } catch (error) {
     exitCode = 1;
     log("FAIL", error?.stack ?? error);

@@ -316,6 +316,29 @@ test("POST /v1/models/discover projects metadataSource and per-model catalog fie
   });
 });
 
+test("POST /v1/models/discover forwards a built-in provider discovery with no baseUrl/api", async () => {
+  const root = temp("pix-cat-discover-builtin-");
+  const roots = await rootsFor(root);
+  let seen;
+  const app = appWithCatalogs({
+    roots,
+    modelsMutation: fakeModelsMutation({
+      discoverModels: async (input) => { seen = input; return [{ id: "gpt-5", metadataSource: null }]; },
+    }),
+  });
+  const revision = "0".repeat(64);
+  const res = await app.request("http://localhost/v1/models/discover", {
+    method: "POST",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: revision, sourceId: null, providerId: "openai" }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { models: [{ id: "gpt-5", metadataSource: null }] });
+  // The Host forwards exactly what it received: it never invents a Base URL or
+  // api for a built-in provider — resolving the SDK default is adapter work.
+  assert.deepEqual(seen, { expectedRevision: revision, sourceId: null, providerId: "openai" });
+});
+
 // ---------------------------------------------------------------------------
 // happy path + no-store + canonical cwd
 // ---------------------------------------------------------------------------

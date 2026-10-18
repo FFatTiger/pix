@@ -83,8 +83,14 @@ export interface ModelDiscoveryInput {
   expectedRevision: string;
   sourceId: string | null;
   providerId: string;
-  baseUrl: string;
-  api: ModelConfigApi;
+  /**
+   * Endpoint to probe. Omitted for a Pi built-in provider: the adapter resolves
+   * that provider's own default Base URL from the SDK catalog. A provider that
+   * is not built in must supply one (`invalid_input` otherwise).
+   */
+  baseUrl?: string;
+  /** Explicit api type; omitted means the built-in provider's own default. */
+  api?: ModelConfigApi;
   /** Optional newly typed key; persisted keys are resolved server-side. */
   apiKey?: string;
 }

@@ -404,9 +404,9 @@ Pi 1.0 的原生 MCP/codemode/tool-search factory 只在 Adapter 装配，项目
 
 - GET 返回 SHA-256 revision、Provider/显式模型编辑投影和内置 Provider 目录；API Key 只投影 `apiKeyConfigured`，绝不返回 key/header 值。
 - PUT 使用 expectedRevision compare-and-swap；API Key 只能 `preserve/remove/replace` 单向输入。Adapter 按 `sourceId/sourceIndex` 合并，保留 UI 未编辑且可能含敏感值的 headers/compat/modelOverrides/sampling 等 Pi 字段；候选文件先通过离线 ModelRuntime 验证，再以 owner-only bounded atomic document 写入。
-- discovery 是认证后的显式网络动作：20 秒有界、2 MiB 响应上限、只接受 http/https；已有 key 仅在 Provider identity 与 Base URL 都未改变时可内部复用，改 endpoint 必须重新输入 key，shell-command key 不执行。Anthropic（`has_more`/`last_id`）与 Google（`nextPageToken`）分页最多 10 页。响应只返回去重后的模型 id/name 及可选的 models.dev 补全参数（`metadataSource`）。
+- discovery 是认证后的显式网络动作：20 秒有界、2 MiB 响应上限、只接受 http/https；`baseUrl`/`api` 在 wire 上都是可选的：Pi **内置服务商**（`GET /v1/models/config` 的 `availableProviders` 目录中列出的 id）缺省时由 adapter 从 SDK 内置 provider 目录直接取该服务商的默认 Base URL 与该 provider 模型实际使用的 api（不维护第二份地址表）；不是内置服务商又没填地址 → `invalid_input`，Host 只透传、不代猜地址。已有 key 仅在 Provider identity 与 Base URL 都未改变时可内部复用（缺省时以解析出的内置默认地址参与比较），改 endpoint 必须重新输入 key，shell-command key 不执行。Anthropic（`has_more`/`last_id`）与 Google（`nextPageToken`）分页最多 10 页。响应只返回去重后的模型 id/name 及可选的 models.dev 补全参数（`metadataSource`）。
 - models.dev 参数补全在 adapter（`internal/models-dev-catalog.ts`）：api.json 拉取 10 秒有界、redirect 拒绝、16 MiB 上限，缓存于 `<agentDir>/pix/models-dev-cache.json`（24 小时新鲜，过期后台刷新，失败沿用旧缓存，无缓存且拉取失败=无参数，绝不伪造）。匹配仅精确 id → 一轮规范化（小写、去 `models/`、去首段 `provider/`），多候选按 api 类型偏好与原厂优先级排序；不做模糊匹配。cost 单位两处一致（每百万 token 美元），原值透传；0 或缺失字段不填。
-- Client 使用 typed transport/TanStack mutation；无裸 fetch。Models 页为独立 Provider/模型树、Provider/模型表单、密钥遮罩、手动增删与保存/取消；拉取模型列表在内联选择区勾选后进入草稿（带补全参数），已有模型可一键「从 models.dev 填参数」填入草稿，均由保存条统一落盘；Add Provider 目录为离线内置元数据，按自定义、订阅、API Key 分组。OAuth 订阅卡在 OAuth mutation seam 未交付前诚实 disabled，不伪造登录成功。
+- Client 使用 typed transport/TanStack mutation；无裸 fetch。Models 页为独立 Provider/模型树、Provider/模型表单、密钥遮罩、手动增删与保存/取消；拉取模型列表在内联选择区勾选后进入草稿（带补全参数），已有模型可一键「从 models.dev 填参数」填入草稿，均由保存条统一落盘；Add Provider 目录为离线内置元数据，按自定义、订阅、API Key 分组。OAuth 订阅卡在 OAuth mutation seam 未交付前诚实 disabled，不伪造登录成功。拉取按钮的可用性：Provider id 出现在 `availableProviders`（内置）时不需要手填 Base URL，否则必须有 endpoint，否则 disabled 并给出固定原因。
 
 ### 只读主题目录（D3B-R6）
 
@@ -659,6 +659,11 @@ packages/
   置顶集合与分页解耦（不再靠排序 hack）。
 - **迁移**：首次加载把 localStorage 里旧的会话+项目置顶/归档一次性 additive 上传
   （server-wins），成功后剥离本地四个数组（只留 expandedProjects）。
+
+### 会话删除（D4，含闲置 live 会话）
+
+- **唯一权威在 sessiond**：`sessions.delete` 在 per-session identity lane 内执行。live record 是否可删只看权威“在跑”判定（projection 的 streaming/prompt/bash/compact、queued/pending message、pending extension UI，加 pendingCommands/authorityFinalizations）；**在跑** → 固定 `session_busy`（Host 409），**永不** stop 运行中的会话。**闲置** live record（早前打开后仍驻留的 Worker）由 sessiond 自己走 `runtime.stop` 同一条内部路径（`stopRecord`，在 record lifecycle mutex 内）停掉，确实停下后再同一 lane 里删除；停后若仍有 live record（并发被激活/被重新占用）→ 仍 fail-closed `session_busy`。激活中的 reservation（in-flight 或 lane 内排队）无条件拒绝。Host 暴露 `DELETE /v1/sessions/:id`（无 query/body/force）；没有客户端侧或 Host 侧的第二步 stop 逻辑。
+- **Client**：删除菜单项只看 `session.delete` 能力；运行中的会话仍显示该项但 disabled 且带固定原因（与 smart rename 同一 disabled+title 机制），这样“为什么不能删”在 UI 上诚实可见。侧栏会话行悬停的更多按钮与右键/长按打开同一个 `openSessionMenu`。删除当前选中会话后的导航仍由 `AppShell` 的 `onSessionDeleted` 唯一拥有。
 
 ### Web Push 系统通知（feat/web-push）
 

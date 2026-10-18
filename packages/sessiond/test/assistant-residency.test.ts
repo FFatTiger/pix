@@ -243,6 +243,39 @@ test("supervisor: a rekey of the tracked conversation moves the tracked id; fore
   supervisor.dispose();
 });
 
+test("supervisor: a deleted tracked conversation re-resolves instead of advertising or retrying a dead record", async () => {
+  let latest: { sessionId: string } | null = { sessionId: "a1" };
+  const activateCalls: string[] = [];
+  const supervisor = new AssistantResidencySupervisor({
+    findLatestAssistantSession: async () => latest,
+    activate: async (sessionId: string) => { activateCalls.push(sessionId); },
+    isLiveSession: () => true,
+    isShuttingDown: () => false,
+    publishPresenceChanged: () => {},
+    log: () => {},
+  }, { homedir: homedir(), retryBaseMs: 5, retryCapMs: 20 });
+  supervisor.start();
+  await wait(10);
+  assert.deepEqual(supervisor.presence(), { sessionId: "a1", status: "online" });
+
+  // The session delete committed: the conversation is gone. The supervisor
+  // must not keep advertising it and must not retry it into not_found.
+  latest = null;
+  supervisor.onSessionDeleted("a1");
+  await wait(20);
+  assert.deepEqual(supervisor.presence(), { sessionId: null, status: "armed" });
+  assert.deepEqual(activateCalls, ["a1"], "the deleted id is never re-activated");
+  assert.equal(supervisor.isResident("a1"), false, "the deleted session loses the idle exemption");
+
+  // A different conversation's delete never disturbs the tracked record.
+  latest = { sessionId: "a2" };
+  supervisor.onSessionDeleted("a2");
+  await wait(20);
+  supervisor.onSessionDeleted("unrelated");
+  assert.equal(supervisor.presence()?.status, "armed");
+  supervisor.dispose();
+});
+
 test("supervisor: the backoff ladder resets only after a stable online period, never on a ready blip", async () => {
   let clock = 10_000;
   const lines: string[] = [];

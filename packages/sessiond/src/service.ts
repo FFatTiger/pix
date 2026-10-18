@@ -3368,6 +3368,18 @@ export class SessiondService {
     return this.isTurnRunning(record) || this.isSideChatActive(record) || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
   }
 
+  /**
+   * A live record a delete may stop first: an exactly `ready` record whose
+   * projection is idle (no streaming / prompt / bash / compact, no queued or
+   * pending messages, no unanswered extension UI) and whose business slots are
+   * all empty (no pending command / authority finalization). Anything else —
+   * running turn, side chat, starting, stopping, crashed — is a live session in
+   * use and stays `session_busy`.
+   */
+  private isStoppableForDelete(record: RecordState): boolean {
+    return record.status === "ready" && this.isProjectionIdle(record) && !this.isBusy(record);
+  }
+
   // ---------------------------------------------------------------------
   // Phase 5B safe idle whole-epoch rollover
   // ---------------------------------------------------------------------
@@ -3811,35 +3823,58 @@ export class SessiondService {
   }
 
   /**
-   * D4 session-history delete (stopped/history only). A live/crashed record (any
-   * `records` entry — idle, prompt, bash, compact, crashed or stopping) or an
-   * earlier activation reservation (in-flight or queued ahead in the identity
-   * lane) fails closed PROMPTLY with a fixed `session_busy` — no wait/stop/
-   * delete, no `force`. The catalog I/O runs INSIDE the per-session lane (never
-   * under the global mutex), so a delete admitted first lets a later activation
-   * queue behind it and fail not_found with zero Workers, and a rename admitted
-   * first commits before the delete removes the file. Concurrent delete/delete
-   * serialize on the lane; the adapter is ENOENT-idempotent, so the second
-   * delete surfaces a fixed `not_found` (or an idempotent success) with no
-   * wrong-file risk.
+   * D4 session delete. A live record whose turn is actually running (prompt /
+   * bash / compact / streaming / side chat, a pending command or authority
+   * finalization, an unanswered extension UI question, or queued steering /
+   * follow-up messages) fails closed PROMPTLY with a fixed `session_busy` —
+   * never a running-session delete, no `force`. An IDLE live record (a Worker
+   * still resident from an earlier open) is stopped first through the same
+   * internal path `runtime.stop` uses ({@link stopRecord}, under the record's
+   * lifecycle mutex) and only then deleted. An earlier activation reservation
+   * (in-flight or queued ahead in the identity lane) keeps failing closed with
+   * `session_busy`.
+   *
+   * The stop + catalog I/O run INSIDE the per-session lane (never under the
+   * global mutex), so every later lane operation — submit / activate / rename —
+   * queues BEHIND the delete and either observes the stopped record or fails
+   * `not_found` with zero Workers. The record lifecycle mutex serializes the
+   * stop with any concurrently admitted non-lane operation (a command, a
+   * snapshot rollover, an idle check); the post-stop re-checks below turn any
+   * surviving/new live record into `session_busy` instead of deleting a file
+   * under a running Worker. A delete admitted first lets a later activation
+   * queue behind it and fail `not_found`, and a rename admitted first commits
+   * before the delete removes the file. Concurrent delete/delete serialize on
+   * the lane; the adapter is ENOENT-idempotent, so the second delete surfaces a
+   * fixed `not_found` (or an idempotent success) with no wrong-file risk.
    */
   async deleteSession(sessionId: string): Promise<void> {
     if (!this.deps.sessionCatalog) throw new SessiondError("unavailable", "session catalog is unavailable", false);
     const failClosedBusy = (): never => { throw new SessiondError("session_busy", "session is running", false); };
-    // Prompt checks BEFORE enqueue (never wait for a worker).
-    if (this.records.has(sessionId)) failClosedBusy();
-    if (this.activations.has(sessionId)) failClosedBusy();
+    // Prompt checks BEFORE enqueue (never wait for a turn or a worker).
+    const promptCanonical = this.coordinator.resolveCanonical(sessionId) ?? sessionId;
+    const promptRecord = this.records.get(sessionId) ?? this.records.get(promptCanonical);
+    if (promptRecord !== undefined && !this.isStoppableForDelete(promptRecord)) failClosedBusy();
+    if (this.activations.has(sessionId) || this.activations.has(promptCanonical)) failClosedBusy();
     if (this.coordinator.hasPendingKind(sessionId, "activate")) failClosedBusy();
     await this.coordinator.admit(sessionId, "delete", async (ctx) => {
       if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
       if (ctx.isStale()) throw new SessiondError("conflict", "session identity changed during delete", false);
-      // Defensive record check inside the lane: an activation ahead of a delete
-      // would already have made the prompt admission fail closed, and any
-      // activation admitted after this delete queues BEHIND it (never runs
-      // ahead) — so no live record can exist here; stay fail-closed anyway.
       const canonical = ctx.canonicalId;
-      if (this.records.has(canonical)) failClosedBusy();
+      const record = this.records.get(canonical);
+      if (record !== undefined) {
+        // Running work (or an in-flight stop/crash/start reservation) is never
+        // stopped by a delete: the caller must stop it explicitly first.
+        if (!this.isStoppableForDelete(record)) failClosedBusy();
+        await record.lifecycle.runExclusive(() => this.stopRecord(record, "session_deleted"));
+        // The stop must have actually happened: a record that survived (or a
+        // new live record for the same identity) keeps the delete fail-closed.
+        if (this.records.has(canonical)) failClosedBusy();
+      }
       await this.deps.sessionCatalog!.deleteSession(canonical);
+      // Always-on residency: if the deleted conversation was the resident one,
+      // re-resolve so presence never advertises a deleted session and no
+      // restart ladder loops on not_found.
+      this.assistantResidency.onSessionDeleted(canonical);
       this.titleOverlay.remove(canonical);
       // Cleanup is best-effort: the catalog delete already committed, so a
       // missing or unreadable attachment scope must not fail the session delete.

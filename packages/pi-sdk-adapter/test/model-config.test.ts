@@ -203,6 +203,101 @@ describe("writable models.json config store", () => {
   });
 });
 
+describe("model discovery for built-in providers (blank Base URL)", () => {
+  /** Stub global fetch for exactly one discovery and record every requested URL. */
+  async function withStubbedFetch<T>(body: unknown, run: (urls: URL[]) => Promise<T>): Promise<T> {
+    const urls: URL[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      urls.push(new URL(String(input)));
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      return await run(urls);
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  it("probes the built-in provider default endpoint when no Base URL is given", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pix-model-config-builtin-"));
+    try {
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const snapshot = await store.readConfig();
+      const models = await withStubbedFetch({ data: [{ id: "gpt-5" }] }, async (urls) => {
+        const discovered = await store.discoverModels({
+          expectedRevision: snapshot.revision,
+          sourceId: null,
+          providerId: "openai",
+        });
+        assert.equal(urls.length, 1, "exactly one request for one page");
+        return discovered;
+      });
+      assert.deepEqual(models, [{ id: "gpt-5", metadataSource: null }]);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the built-in default endpoint AND api of the requested provider", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pix-model-config-builtin-"));
+    try {
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const snapshot = await store.readConfig();
+      const seen: { origin: string; pathname: string }[] = [];
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        seen.push({ origin: url.origin, pathname: url.pathname });
+        return new Response(JSON.stringify({ data: [{ id: "claude-x" }] }), { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+      try {
+        const models = await store.discoverModels({
+          expectedRevision: snapshot.revision,
+          sourceId: null,
+          providerId: "anthropic",
+        });
+        assert.deepEqual(models.map((model) => model.id), ["claude-x"]);
+      } finally {
+        globalThis.fetch = original;
+      }
+      // The api type came from the built-in catalog: an anthropic-messages
+      // request appends the /v1/models path to the SDK's own default host,
+      // never a hand-written table.
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0]!.pathname, "/v1/models", "anthropic default api must drive the /v1/models path");
+      assert.ok(seen[0]!.origin.startsWith("https://"), `built-in endpoint must be the SDK default, got ${seen[0]!.origin}`);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a discovery without a Base URL when the provider is not built in", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pix-model-config-builtin-"));
+    const original = globalThis.fetch;
+    let fetched = 0;
+    globalThis.fetch = (async () => {
+      fetched += 1;
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const snapshot = await store.readConfig();
+      for (const providerId of ["my-custom-endpoint", "openai-typo"]) {
+        await assert.rejects(
+          store.discoverModels({ expectedRevision: snapshot.revision, sourceId: null, providerId }),
+          (error: unknown) => (error as { code?: string }).code === "invalid_input",
+          `${providerId}: a non-built-in provider without a Base URL must fail closed`,
+        );
+      }
+      assert.equal(fetched, 0, "no network request may be made without a resolved endpoint");
+    } finally {
+      globalThis.fetch = original;
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+});
+
 function listen(server: Server): Promise<string> {
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {

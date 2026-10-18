@@ -65,9 +65,11 @@ export interface SidebarProps {
   /** The currently selected session id (the URL-selected session, AppShell-owned). */
   selectedSessionId: string | null;
   /**
-   * The currently attached/live runtime session id. The running indicator
-   * renders for this row while the runtime streams; the D4 delete control is
-   * never shown for it (the server rejects live deletes with 409 anyway).
+   * The currently attached/live runtime session id for THIS row (the global
+   * live baseline id when the row has a Worker, otherwise the attached id).
+   * It drives smart-rename availability and the live-export lock; it no longer
+   * hides delete — an idle live Worker is stopped by sessiond as part of the
+   * delete, while a RUNNING row shows the delete action disabled.
    */
   liveSessionId: string | null;
   /** All session ids with a live Worker (busy OR idle) from sessiond. */
@@ -559,9 +561,9 @@ export function Sidebar({
       selectedSessionId={selectedSessionId}
       runningSessionIds={runningSessionIds}
       waitingSessionIds={waitingSessionIds}
-      // Per-node destructive-action gating from GLOBAL live membership (no
-      // guessed selected/holder id): ANY id in liveSessionIds, including a
-      // background live holder, stays protected from delete/export.
+      // Per-node live id from GLOBAL live membership (no guessed selected/
+      // holder id): smart rename and live-branch export stay bound to the
+      // authoritative liveness baseline. Delete is capability-gated only.
       liveSessionId={liveSessionIds.has(node.session.sessionId) ? node.session.sessionId : liveSessionId}
       liveSessionIds={liveSessionIds}
       liveKnown={liveKnown}
@@ -1255,6 +1257,7 @@ function SessionItem({
   const [renameError, setRenameError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [titleGenerating, setTitleGenerating] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
@@ -1312,12 +1315,14 @@ function SessionItem({
 
   const handleDeleteClick = useCallback((e?: React.MouseEvent) => {
     e?.stopPropagation();
+    setDeleteError(null);
     setConfirmDelete(true);
   }, []);
 
   const handleDeleteConfirm = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     setConfirmDelete(false);
+    setDeleteError(null);
     setDeleting(true);
     void removeMutation
       .mutateAsync(session.sessionId)
@@ -1325,7 +1330,10 @@ function SessionItem({
         onSessionDeleted?.(session.sessionId);
       })
       .catch(() => {
+        // A delete can lose a race with another tab's turn: surface the fixed
+        // reason instead of silently keeping the row (never a fake success).
         setDeleting(false);
+        setDeleteError(describeSessionDeleteError(removeMutation.error ?? "delete failed"));
       });
   }, [session.sessionId, removeMutation, onSessionDeleted]);
 
@@ -1442,19 +1450,26 @@ function SessionItem({
         onSelect: () => exportVisibleBranch(),
       });
     }
-    // D4 delete: capability-gated, hidden for the attached/live session.
-    if (canDelete && session.sessionId !== liveSessionId) {
+    // D4 delete: capability-gated. An idle live Worker is stopped by sessiond
+    // as part of the delete; a RUNNING (or user-input-waiting) row keeps the
+    // action visible but disabled with the fixed reason (same disabled+title
+    // mechanism as smart rename), because sessiond never stops a live turn.
+    // Touch/mouse both reach it through this one menu.
+    if (canDelete) {
       if (items.length > 0) items.push({ type: "separator" });
+      const deleteUnavailableReason = isRunning || isWaiting ? t("desktop.deleteRequiresStop") : undefined;
       items.push({
         label: t("desktop.delete"),
         icon: <Trash size={13} weight="regular" aria-hidden="true" />,
         danger: true,
+        disabled: deleteUnavailableReason !== undefined,
+        ...(deleteUnavailableReason === undefined ? {} : { title: deleteUnavailableReason }),
         onSelect: () => handleDeleteClick(),
       });
     }
     if (items.length === 0) return;
     openMenu(x, y, items, options);
-  }, [confirmDelete, renaming, deleting, openMenu, session.sessionId, liveSessionId, canRename, canAutoName, canDelete, canExport, titleGenerating, startRename, handleSmartRename, handleDeleteClick, exportVisibleBranch, pinned, archived, onPin, onArchive, t]);
+  }, [confirmDelete, renaming, deleting, openMenu, session.sessionId, liveSessionId, canRename, canAutoName, canDelete, canExport, titleGenerating, isRunning, isWaiting, startRename, handleSmartRename, handleDeleteClick, exportVisibleBranch, pinned, archived, onPin, onArchive, t]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -1611,6 +1626,20 @@ function SessionItem({
           </span>
           {!busy && (
             <div className="sidebar-row-actions">
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                data-testid={`session-more-${session.sessionId}`}
+                title={t("desktop.moreOptions")}
+                aria-label={t("desktop.moreOptions")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+                  openSessionMenu(rect.left, rect.bottom + 4);
+                }}
+              >
+                <DotsThree size={14} weight="bold" aria-hidden="true" />
+              </button>
               <button type="button" className="sidebar-icon-btn" onClick={(event) => { event.stopPropagation(); onPin(!pinned); }} title={pinned ? t("desktop.unpin") : t("desktop.pin")} aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}>
                 <PushPin size={14} weight={pinned ? "fill" : "regular"} aria-hidden="true" />
               </button>
@@ -1620,6 +1649,11 @@ function SessionItem({
             </div>
           )}
         </>
+      )}
+      {deleteError !== null && (
+        <p className="session-delete-error" role="alert" style={{ position: "absolute", left: 14, right: 8, bottom: 2, margin: 0, fontSize: 11, color: "var(--danger)", overflowWrap: "anywhere" }}>
+          {deleteError}
+        </p>
       )}
       {renameError !== null && (
         <p className="session-rename-error" role="alert" style={{ position: "absolute", left: 14, right: 8, bottom: 2, margin: 0, fontSize: 11, color: "var(--danger)", overflowWrap: "anywhere" }}>

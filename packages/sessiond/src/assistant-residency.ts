@@ -169,6 +169,26 @@ export class AssistantResidencySupervisor {
     this.scheduleRestart("assistant worker was stopped");
   }
 
+  /**
+   * The tracked conversation was DELETED (the session file is gone). Staying
+   * "online" would advertise a presence for a record that no longer exists, and
+   * a restart ladder would loop on not_found. Re-resolve instead: the next
+   * newest assistant conversation (or armed with none). Called by the service
+   * AFTER the catalog delete committed, so the lookup cannot resurrect the
+   * deleted id.
+   */
+  onSessionDeleted(sessionId: string): void {
+    if (!this.started) return;
+    if (this.surface.isShuttingDown()) return;
+    if (sessionId !== this.trackedId) return;
+    this.clearTimer();
+    this.trackedId = null;
+    this.attempt = 0;
+    this.onlineSince = undefined;
+    this.phase = "armed";
+    void this.resolveLatest();
+  }
+
   /** The tracked conversation rekeyed to its real session id: follow it. */
   onRekeyed(oldId: string, newId: string): void {
     if (!this.started || oldId !== this.trackedId || newId === oldId) return;

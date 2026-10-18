@@ -810,15 +810,18 @@ function parseModelDiscoveryInput(body: Record<string, unknown>): Record<string,
   if (typeof body.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(body.expectedRevision)) invalidModelsConfigBody();
   if (body.sourceId !== null && (typeof body.sourceId !== "string" || !body.sourceId.trim())) invalidModelsConfigBody();
   if (typeof body.providerId !== "string" || !body.providerId.trim()) invalidModelsConfigBody();
-  if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) invalidModelsConfigBody();
-  if (typeof body.api !== "string" || !body.api.length) invalidModelsConfigBody();
+  // `baseUrl`/`api` are OPTIONAL: omitting them asks sessiond-side discovery to
+  // use the Pi BUILT-IN provider's default endpoint/api. A custom provider
+  // without a Base URL is rejected by the adapter (invalid_input), never here.
+  if (body.baseUrl !== undefined && (typeof body.baseUrl !== "string" || !body.baseUrl.trim())) invalidModelsConfigBody();
+  if (body.api !== undefined && (typeof body.api !== "string" || !body.api.length)) invalidModelsConfigBody();
   if (body.apiKey !== undefined && (typeof body.apiKey !== "string" || !body.apiKey.trim())) invalidModelsConfigBody();
   return {
     expectedRevision: body.expectedRevision,
     sourceId: body.sourceId,
     providerId: body.providerId,
-    baseUrl: body.baseUrl,
-    api: body.api,
+    ...(body.baseUrl === undefined ? {} : { baseUrl: body.baseUrl }),
+    ...(body.api === undefined ? {} : { api: body.api }),
     ...(body.apiKey === undefined ? {} : { apiKey: body.apiKey }),
   };
 }

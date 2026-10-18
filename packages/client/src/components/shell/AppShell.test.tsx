@@ -553,7 +553,7 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(screen.getAllByTestId("session-select-B")[0]!.closest('.sidebar-list-row')?.getAttribute("data-dead")).toBeNull();
   });
 
-  it("disables destructive sidebar actions for ANY global live id, including a background holder", async () => {
+  it("keeps delete available for idle live sessions, disables it with a fixed reason while running, and opens the menu from the row more button", async () => {
     globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
     const { rerender } = mountApp(
       { cwd: "/x", session: "A" },
@@ -576,20 +576,36 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(countType(ws, "detach")).toBe(0);
     expect(capturedStore!.registry.leaseSnapshot.holderSessionId).toBe("A");
 
+    // A is live AND running: delete stays visible but disabled with the fixed
+    // reason (sessiond never stops a running turn).
     fireEvent.contextMenu(screen.getAllByTestId("session-select-A")[0]!);
-    expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
+    const deleteA = screen.getByRole("menuitem", { name: "Delete" });
+    expect(deleteA.getAttribute("aria-disabled")).toBe("true");
+    expect(deleteA.getAttribute("title")).toBe("Running — stop it before deleting");
     const exportA = screen.getByRole("menuitem", { name: /export/i });
     expect(exportA.getAttribute("aria-disabled")).toBe("true");
     fireEvent.keyDown(document, { key: "Escape" });
 
+    // B is live but idle (a background resident Worker): delete is offered —
+    // sessiond stops that idle Worker as part of the delete.
     fireEvent.contextMenu(screen.getAllByTestId("session-select-B")[0]!);
-    expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
+    const deleteB = screen.getByRole("menuitem", { name: "Delete" });
+    expect(deleteB.getAttribute("aria-disabled")).not.toBe("true");
+    expect(deleteB.getAttribute("title")).toBeNull();
     const exportB = screen.getByRole("menuitem", { name: /export/i });
     expect(exportB.getAttribute("aria-disabled")).toBe("true");
     fireEvent.keyDown(document, { key: "Escape" });
 
+    // C has no Worker: plain history delete.
     fireEvent.contextMenu(screen.getAllByTestId("session-select-C")[0]!);
+    expect(screen.getByRole("menuitem", { name: "Delete" }).getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    // The hover/more button opens the exact same menu without a long press.
+    fireEvent.click(screen.getAllByTestId("session-more-B")[0]!);
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Smart rename" })).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
   });
 
   it("smart-renames a globally live session without attaching the browser or activating history", async () => {

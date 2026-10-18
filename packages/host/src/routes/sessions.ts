@@ -99,7 +99,10 @@ function sessionErrorCode(error: unknown): string | undefined {
  * Map a sessiond delete failure onto an honest HTTP error (D4).
  *
  *   not_found                       → 404 SESSION_NOT_FOUND
- *   session_busy / conflict (live)  → 409 SESSION_IN_USE (fixed)
+ *   session_busy / conflict (live)  → 409 SESSION_IN_USE (fixed; the sessiond
+ *                                     authority refuses to delete a RUNNING
+ *                                     turn and stops an idle resident Worker
+ *                                     itself before deleting)
  *   timeout / unavailable / auth /  → 503 SESSIONS_UNAVAILABLE
  *   worker_unavailable / unknown    → 503 SESSIONS_UNAVAILABLE (sanitized)
  *
@@ -539,7 +542,7 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
     return c.json({ tree: { ...(result as Record<string, unknown>) } });
   });
 
-  // D4 session-history delete. Mounted ONLY when the mutation seam is present
+  // D4 session delete. Mounted ONLY when the mutation seam is present
   // (production: narrow delete client + sessiond `system.ping` mutation guard).
   // A generic composition with no delete seam gets no DELETE route and no
   // `session.delete` capability token.
@@ -551,7 +554,9 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
       await deps.delete!.mutationGuard.assertAvailable();
       // No force/override/query surface: ANY query string (even a bare `?`) is
       // rejected with a fixed 400 BEFORE session id/body validation and the
-      // delete RPC. There is no force/busy-bypass on this route.
+      // delete RPC. There is no force/busy-bypass on this route: sessiond owns
+      // the only stop-then-delete ladder (an idle resident Worker is stopped by
+      // the authority itself; a RUNNING turn still 409s here).
       if (c.req.url.includes("?")) {
         throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
       }

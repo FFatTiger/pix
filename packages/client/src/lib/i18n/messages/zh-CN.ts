@@ -730,6 +730,7 @@ export const zhCNLocale = {
     "desktop.deleteSession": "删除“{title}”？",
     "desktop.deleteDraft": "删除草稿“{title}”？",
     "desktop.delete": "删除",
+    "desktop.deleteRequiresStop": "运行中，先停止再删除",
     "desktop.rename": "重命名",
     "desktop.exportVisibleBranch": "导出可见分支",
     "desktop.regenerateTitle": "重新生成标题",

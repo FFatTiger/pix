@@ -95,8 +95,15 @@ export const ModelDiscoveryInputSchema = z.strictObject({
   expectedRevision: z.string().regex(/^[0-9a-f]{64}$/),
   sourceId: NonEmptyStringSchema.nullable(),
   providerId: NonEmptyStringSchema,
-  baseUrl: NonEmptyStringSchema,
-  api: ModelConfigApiSchema,
+  /**
+   * Provider endpoint to probe. Absent/blank means "use this Pi built-in
+   * provider's default endpoint" (the adapter resolves it from the SDK
+   * catalog); a non-built-in provider must supply one and the adapter rejects
+   * a missing endpoint with `invalid_input`.
+   */
+  baseUrl: NonEmptyStringSchema.optional(),
+  /** API type; absent means the built-in provider's own default api. */
+  api: ModelConfigApiSchema.optional(),
   apiKey: NonEmptyStringSchema.optional(),
 });
 export type ModelDiscoveryInput = z.infer<typeof ModelDiscoveryInputSchema>;

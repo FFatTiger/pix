@@ -730,6 +730,7 @@ export const enLocale = {
     "desktop.deleteSession": "Delete {title}?",
     "desktop.deleteDraft": "Delete draft {title}?",
     "desktop.delete": "Delete",
+    "desktop.deleteRequiresStop": "Running — stop it before deleting",
     "desktop.rename": "Rename",
     "desktop.exportVisibleBranch": "Export visible branch",
     "desktop.regenerateTitle": "Regenerate title",

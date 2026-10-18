@@ -155,6 +155,35 @@ describe("ModelsConfig", () => {
     });
   });
 
+  it("enables fetch for a built-in provider without a Base URL and sends no baseUrl/api override", async () => {
+    let discoverBody: unknown;
+    const builtinSnapshot = {
+      ...snapshot,
+      providers: [{ ...snapshot.providers[0], sourceId: "openai", id: "openai", baseUrl: undefined, api: undefined }],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/v1/models/discover") {
+        discoverBody = JSON.parse(String(init!.body));
+        return json({ models: [{ id: "gpt-5", metadataSource: null }] });
+      }
+      return json(builtinSnapshot);
+    });
+    mount(fetchMock);
+    await screen.findAllByText("openai");
+    const discover = screen.getByRole("button", { name: "Fetch model list" });
+    expect(discover.hasAttribute("disabled")).toBe(false);
+    expect(discover.getAttribute("title")).toBeNull();
+    fireEvent.click(discover);
+    await screen.findByText("gpt-5");
+    // The authority resolves the built-in default endpoint/api itself — the
+    // client must not invent an address or an api type.
+    expect(discoverBody).toEqual({
+      expectedRevision: revision,
+      sourceId: "openai",
+      providerId: "openai",
+    });
+  });
+
   it("disables the fetch button until an endpoint URL is set, with the reason as title", async () => {
     const noBaseUrl = {
       ...snapshot,

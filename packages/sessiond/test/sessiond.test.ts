@@ -3192,23 +3192,27 @@ test("D4 delete without a catalog fails closed with unavailable", async () => {
   await service.shutdown();
 });
 
-test("D4 live idle/prompt/bash/compact sessions all reject with session_busy: no stop, no catalog delete, no worker shutdown", async () => {
-  const states: { label: string; state?: Partial<RuntimeSnapshot["state"]> }[] = [
-    { label: "idle" },
+test("D4 running live sessions (prompt/bash/compact/extension question/queued messages/pending command) all reject with session_busy: no stop, no catalog delete, no worker shutdown", async () => {
+  const states: { label: string; state: Partial<RuntimeSnapshot["state"]> }[] = [
     { label: "prompt", state: { isPromptRunning: true } },
     { label: "bash", state: { isBashRunning: true } },
     { label: "compact", state: { isCompacting: true } },
+    { label: "streaming", state: { isStreaming: true } },
+    { label: "waiting-user", state: { pendingExtensionUi: [{ id: "q1", method: "confirm", title: "Continue?", message: "Proceed" }] } },
+    { label: "queued-steering", state: { queuedMessages: { steering: [{ message: "later" }], followUp: [] } } },
+    { label: "queued-follow-up", state: { queuedMessages: { steering: [], followUp: [{ message: "then" }] } } },
+    { label: "pending-message", state: { pendingMessageCount: 1 } },
   ];
   for (const { label, state } of states) {
     const { service, workers, deleted, files, seed } = deleteHarness({
-      worker: { readyDelayMs: 0, ...(state === undefined ? {} : { snapshot: busySnapshot("s1", state) }) },
+      worker: { readyDelayMs: 0, snapshot: busySnapshot("s1", state) },
     });
     seed("s1");
     await service.activate("s1");
     await assert.rejects(service.deleteSession("s1"), (error: unknown) => {
       assert.ok(error instanceof SessiondError, `${label}: must reject with a SessiondError`);
-      assert.equal(error.code, "session_busy", `${label}: live delete must fail closed with session_busy`);
-      assert.equal(error.retryable, false, `${label}: live delete conflict is not retryable`);
+      assert.equal(error.code, "session_busy", `${label}: running delete must fail closed with session_busy`);
+      assert.equal(error.retryable, false, `${label}: running delete conflict is not retryable`);
       return true;
     });
     assert.deepEqual(deleted, [], `${label}: catalog delete must never run`);
@@ -3217,6 +3221,65 @@ test("D4 live idle/prompt/bash/compact sessions all reject with session_busy: no
     assert.ok(service.listRunning().sessions.some((s) => s.sessionId === "s1"), `${label}: record must remain live`);
     await service.shutdown();
   }
+});
+
+test("D4 idle live session is stopped through the runtime.stop path and then deleted", async () => {
+  const { service, workers, deleted, files, seed } = deleteHarness({ worker: { readyDelayMs: 0 } });
+  seed("s1");
+  await service.activate("s1");
+  const worker = workers.workers[0]!;
+  assert.ok(service.listRunning().sessions.some((s) => s.sessionId === "s1"), "precondition: idle record is live");
+  await service.deleteSession("s1");
+  assert.ok(worker.sent.some((item) => item.type === "worker.shutdown"), "delete must shut the idle worker down");
+  assert.deepEqual(deleted, ["s1"], "catalog delete must run once after the stop");
+  assert.equal(files.get("s1"), false, "file must be removed");
+  assert.deepEqual(service.listRunning().sessions, [], "no record may survive the delete");
+  await service.shutdown();
+});
+
+test("D4 delete stops an idle live record only once: the stop closes the record before the catalog delete", async () => {
+  let recordStillLiveDuringCatalogDelete: boolean | undefined;
+  const harnessed = deleteHarness({
+    worker: { readyDelayMs: 0 },
+    deleteSession: async (sessionId) => {
+      recordStillLiveDuringCatalogDelete = harnessed.service.listRunning().sessions.some((s) => s.sessionId === sessionId);
+      harnessed.files.set(sessionId, false);
+      harnessed.deleted.push(sessionId);
+    },
+  });
+  harnessed.seed("s1");
+  await harnessed.service.activate("s1");
+  await harnessed.service.deleteSession("s1");
+  assert.equal(recordStillLiveDuringCatalogDelete, false, "the record must already be stopped when the catalog delete runs");
+  await harnessed.service.shutdown();
+});
+
+test("D4 a submit queued behind an idle-live delete observes the stopped record and fails closed", async () => {
+  const { service, deleted, files, seed } = deleteHarness({ worker: { readyDelayMs: 0 } });
+  seed("s1");
+  const activated = await service.activate("s1");
+  // Both operations share the per-session lane. The delete is admitted first
+  // (idle record → stop → catalog delete); the turn submitted behind it can
+  // never resurrect the deleted session.
+  const deleting = service.deleteSession("s1");
+  const turn = service.submitTurn({
+    sessionId: "s1",
+    operationId: "op-queued",
+    prompt: "hello",
+    expectedEpoch: activated.epoch,
+    expectedRevision: 0,
+  });
+  await deleting;
+  const admission = await turn;
+  assert.equal(admission.status, "rejected", "a turn queued behind the delete must be rejected");
+  if (admission.status !== "rejected") return;
+  assert.ok(
+    ["not_found", "epoch_changed", "worker_unavailable"].includes(admission.error.code),
+    `queued turn must fail closed, got ${admission.error.code}`,
+  );
+  assert.deepEqual(deleted, ["s1"]);
+  assert.equal(files.get("s1"), false, "the delete wins the lane and removes the file");
+  await service.shutdown();
 });
 
 test("D4 activation-delete race: in-flight activation wins → delete conflicts with session_busy and removes nothing", async () => {

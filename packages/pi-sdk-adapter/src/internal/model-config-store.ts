@@ -180,6 +180,27 @@ async function listAvailableProviders(): Promise<readonly AvailableModelProvider
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Default endpoint + API type of a Pi BUILT-IN provider, read from the SDK's own
+ * built-in catalog (never a hand-maintained address table). The provider record
+ * carries the default Base URL; the API type comes from the catalog models that
+ * provider actually serves (the first chat api wins — matching the provider's
+ * primary text endpoint, not its image/classifier variants).
+ *
+ * Returns undefined for a provider id outside the built-in catalog (a
+ * user-defined models.json provider, a renamed one, or a typo) — discovery then
+ * keeps its mandatory Base URL and fails closed instead of guessing a host.
+ */
+async function builtinProviderEndpoint(providerId: string): Promise<{ baseUrl: string; api: ModelConfigApi } | undefined> {
+  const runtime = await createOfflineRuntime(null);
+  const provider = runtime.getProvider(providerId);
+  const baseUrl = provider?.baseUrl?.trim();
+  if (provider === undefined || !baseUrl) return undefined;
+  const api = provider.getModels().find((model) => typeof model.api === "string" && model.api.length > 0)?.api;
+  if (typeof api !== "string" || !api.length) return undefined;
+  return { baseUrl, api };
+}
+
 async function readSource(agentDir: string): Promise<{ text: string; raw: RawModelsJson; revision: string; runtime: ModelRuntime | null }> {
   const modelsPath = join(agentDir, "models.json");
   let result;
@@ -439,18 +460,33 @@ async function discoverFromSource(
   input: ModelDiscoveryInput,
   modelsDev: ModelsDevCatalogStore,
 ): Promise<readonly DiscoveredModelConfig[]> {
-  if (!/^[0-9a-f]{64}$/.test(input.expectedRevision) || !input.providerId.trim() || !input.baseUrl.trim() || !input.api.length) {
+  if (!/^[0-9a-f]{64}$/.test(input.expectedRevision) || !input.providerId.trim()) {
     throw runtimeError("invalid_input", "model discovery input is invalid");
   }
+  // A blank Base URL means "use the built-in provider's own default endpoint".
+  // A provider that is not part of the Pi catalog has no default to fall back
+  // to, so its endpoint stays mandatory (fail closed, never a guessed host).
+  const explicitBaseUrl = input.baseUrl?.trim() ? input.baseUrl.trim() : undefined;
+  const endpoint = explicitBaseUrl === undefined ? await builtinProviderEndpoint(input.providerId) : undefined;
+  if (explicitBaseUrl === undefined && endpoint === undefined) {
+    throw runtimeError("invalid_input", "model discovery input is invalid");
+  }
+  const baseUrl = explicitBaseUrl ?? endpoint!.baseUrl;
+  // The API type is part of the request shape: an explicit value wins, and a
+  // built-in provider falls back to the api its catalog models actually use.
+  const api = input.api?.trim() ? input.api : explicitBaseUrl === undefined ? endpoint!.api : undefined;
+  if (api === undefined) throw runtimeError("invalid_input", "model discovery input is invalid");
   const current = await readSource(agentDir);
   if (current.revision !== input.expectedRevision) throw runtimeError("conflict", "model configuration changed");
   const source = input.sourceId === null ? undefined : current.raw.providers[input.sourceId];
   if (input.sourceId !== null && !source) throw runtimeError("conflict", "model configuration changed");
   // Never replay a persisted credential/header set to an edited endpoint. A
-  // changed provider id or Base URL requires a freshly typed one-way key.
+  // changed provider id or Base URL requires a freshly typed one-way key. A
+  // blank Base URL resolves to the built-in default, so "unchanged" compares
+  // the RESOLVED endpoint with the stored one.
   const sourceEndpointMatches = input.sourceId !== null
     && input.providerId === input.sourceId
-    && source?.baseUrl === input.baseUrl;
+    && (source?.baseUrl ?? endpoint?.baseUrl) === baseUrl;
   const apiKey = resolvedDiscoveryKey(input.apiKey ?? (sourceEndpointMatches ? source?.apiKey : undefined));
   const headers = new Headers();
   if (sourceEndpointMatches && isRecord(source?.headers)) {
@@ -460,23 +496,23 @@ async function discoverFromSource(
   }
   headers.set("Accept", "application/json");
   if (apiKey) {
-    if (input.api === "anthropic-messages") {
+    if (api === "anthropic-messages") {
       if (!headers.has("x-api-key")) headers.set("x-api-key", apiKey);
       if (!headers.has("anthropic-version")) headers.set("anthropic-version", "2023-06-01");
-    } else if (input.api === "google-generative-ai") {
+    } else if (api === "google-generative-ai") {
       if (!headers.has("x-goog-api-key")) headers.set("x-goog-api-key", apiKey);
     } else if (!headers.has("authorization")) {
       headers.set("Authorization", `Bearer ${apiKey}`);
     }
   }
-  const discoveryUrl = modelsListUrl(input.baseUrl, input.api);
+  const discoveryUrl = modelsListUrl(baseUrl, api);
   let payload: unknown = await fetchDiscoveryJson(discoveryUrl, headers);
   const pages: unknown[] = [payload];
   // Cursoring APIs (Anthropic has_more/last_id, Google nextPageToken) are
   // followed page by page up to the hard ceiling; page size is already maxed
   // in modelsListUrl so this only matters for very large catalogs.
   for (let pageCount = 1; ; pageCount += 1) {
-    const next = nextPageUrl(discoveryUrl, input.api, payload);
+    const next = nextPageUrl(discoveryUrl, api, payload);
     if (next === null || pageCount >= MAX_DISCOVERY_PAGES) break;
     payload = await fetchDiscoveryJson(next, headers);
     pages.push(payload);
@@ -485,7 +521,7 @@ async function discoverFromSource(
   if (models.length === 0) throw runtimeError("unavailable", "model discovery returned no models");
   const catalog = await modelsDev.get();
   return models.map((model) => {
-    const entry = matchModelsDevEntry(catalog, model.id, input.api);
+    const entry = matchModelsDevEntry(catalog, model.id, api);
     const fields = entry === null ? null : modelsDevEntryToFields(entry);
     if (fields === null) return { ...model, metadataSource: null };
     return {

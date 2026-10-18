@@ -502,6 +502,7 @@ function ProviderDetail({
   revision,
   defaultModel,
   canToggleVisibility,
+  isBuiltinProvider,
   lastVisibleKeys,
   onToggleModelVisible,
   onChange,
@@ -515,6 +516,13 @@ function ProviderDetail({
   /** Raw settings.json default model; drives the hidden-default hint. */
   defaultModel: { provider: string; id: string } | null;
   canToggleVisibility: boolean;
+  /**
+   * Provider id is in the Pi BUILT-IN catalog (the same catalog the Add
+   * Provider picker lists). A built-in endpoint defaults to Pi's own Base URL,
+   * so discovery works without the user typing one; a custom provider still
+   * needs an explicit endpoint.
+   */
+  isBuiltinProvider: boolean;
   /** Draft rows that are the single remaining visible model (lock their switch). */
   lastVisibleKeys: ReadonlySet<string>;
   onToggleModelVisible: (providerKey: string, modelKey: string, visible: boolean) => void;
@@ -539,7 +547,10 @@ function ProviderDetail({
     setSelected(new Set());
   }, [provider.key, provider.id, provider.baseUrl, provider.api, provider.apiKeyValue]);
 
-  const canDiscover = Boolean(provider.baseUrl?.trim());
+  const baseUrl = provider.baseUrl?.trim();
+  // A built-in provider resolves its own default endpoint server-side; any
+  // other provider must have one typed in.
+  const canDiscover = Boolean(baseUrl) || isBuiltinProvider;
   const toggle = (id: string) => setSelected((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id);
@@ -612,8 +623,13 @@ function ProviderDetail({
                 expectedRevision: revision,
                 sourceId: provider.sourceId,
                 providerId: provider.id,
-                baseUrl: provider.baseUrl!.trim(),
-                api: provider.api ?? "openai-completions",
+                // Blank Base URL + built-in provider → sessiond uses Pi's own
+                // default endpoint and api for that provider. Only an explicit
+                // endpoint falls back to the editable form's api default.
+                ...(baseUrl === undefined ? {} : { baseUrl }),
+                ...(provider.api !== undefined
+                  ? { api: provider.api }
+                  : baseUrl === undefined ? {} : { api: "openai-completions" }),
                 ...(provider.apiKeyMutation === "replace" && provider.apiKeyValue
                   ? { apiKey: provider.apiKeyValue }
                   : {}),
@@ -706,6 +722,14 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
     return first ? { type: "provider", providerKey: first.key } : null;
   });
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Built-in provider ids come from the SAME authoritative catalog the Add
+  // Provider picker renders (never a client-side copy of the address book):
+  // those providers have a Pi default endpoint, so discovery works without a
+  // typed Base URL.
+  const builtinProviderIds = useMemo(
+    () => new Set(snapshot.availableProviders.map((available) => available.id)),
+    [snapshot.availableProviders],
+  );
   const save = useMutation(createMutationOptions(http, queryClient).models.saveConfig());
   const saveVisibility = useMutation(createMutationOptions(http, queryClient).models.saveVisibility());
   // Picker visibility lives in settings.json (`enabledModels`): its default
@@ -1013,6 +1037,7 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
               revision={revision}
               defaultModel={visibilityQuery.data?.defaultModel ?? null}
               canToggleVisibility={canToggleVisibility}
+              isBuiltinProvider={builtinProviderIds.has(selectedProvider.id)}
               lastVisibleKeys={lastVisibleKeys}
               onToggleModelVisible={toggleModelVisibility}
               onChange={(patch) => updateProvider(selectedProvider.key, patch)}

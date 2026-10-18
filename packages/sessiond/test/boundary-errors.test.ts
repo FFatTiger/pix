@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ProtocolError } from "@fffattiger/pix-protocol";
+import type { ProtocolError, RuntimeSnapshot } from "@fffattiger/pix-protocol";
 import { makeRuntimeError, type SessionCatalogPort, type SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondApplication } from "../src/application.js";
 import { SessiondError, toBoundaryProtocolError } from "../src/errors.js";
@@ -211,7 +211,7 @@ test("RPC boundary: sessions.delete of a missing session survives as canonical n
   }
 });
 
-test("RPC boundary: sessions.delete of a live session survives as canonical session_busy (round-trip)", async (t) => {
+test("RPC boundary: sessions.delete of a RUNNING live session survives as canonical session_busy (round-trip)", async (t) => {
   if (process.platform === "win32") return t.skip("unix socket test");
   const directory = await mkdtemp(join(tmpdir(), "sessiond-delete-busy-"));
   const endpoint = join(directory, "rpc.sock");
@@ -220,10 +220,19 @@ test("RPC boundary: sessions.delete of a live session survives as canonical sess
     async locate(sessionId) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
     async resolveLeafId(sessionId) { return sessionId; },
   };
+  const busySnapshot: RuntimeSnapshot = {
+    sessionId: "live-s1",
+    cwd: "/cwd/live-s1",
+    projectRoot: "/cwd/live-s1",
+    state: { sessionId: "live-s1", isStreaming: false, isPromptRunning: true, isBashRunning: false, isCompacting: false, model: null, messageCount: 0, queuedMessages: { steering: [], followUp: [] }, pendingMessageCount: 0, writtenFiles: [] },
+    capabilities: { capabilities: [], version: 0 },
+    streaming: { active: false, phase: "idle" },
+  };
+  const workers = new FakeWorkerFactory({ readyDelayMs: 0, snapshot: busySnapshot });
   const service = new SessiondService({
     sessionLocator: locator,
     activationContext: { async resolve(sessionId, _location, requestedCwd) { return { cwd: requestedCwd ?? `/cwd/${sessionId}`, projectRoot: requestedCwd ?? `/cwd/${sessionId}` }; } },
-    workerFactory: new FakeWorkerFactory({ readyDelayMs: 0 }),
+    workerFactory: workers,
     sessionCatalog: {
       async listSessions() { return []; },
       async readSession() { throw makeRuntimeError("not_found", "session not found"); },
@@ -241,11 +250,15 @@ test("RPC boundary: sessions.delete of a live session survives as canonical sess
     await assert.rejects(
       client.call("sessions.delete", { sessionId: "live-s1" }),
       (error: unknown) => {
-        assert.ok(error instanceof SessiondError, "live delete must reject with a SessiondError");
-        assert.equal(error.code, "session_busy", "live delete must surface canonical session_busy");
-        assert.equal(error.retryable, false, "the live-delete conflict is not retryable");
+        assert.ok(error instanceof SessiondError, "running delete must reject with a SessiondError");
+        assert.equal(error.code, "session_busy", "running delete must surface canonical session_busy");
+        assert.equal(error.retryable, false, "the running-delete conflict is not retryable");
         return true;
       },
+    );
+    assert.ok(
+      !workers.workers[0]!.sent.some((message) => message.type === "worker.shutdown"),
+      "a running session must never be stopped by a delete",
     );
   } finally {
     await server.close();
