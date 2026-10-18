@@ -25,6 +25,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -395,6 +396,9 @@ async function runAll(sandbox) {
   );
   log(`  RPC round-trip OK (session ${roundTrip.sessionId.slice(0, 12)}… created → snapshot → stopped)`);
 
+  log("step 5b/8: installed client loads in a real browser");
+  await verifyInstalledClient({ prefix, pixBin, env: { ...sandboxEnv(), PIX_ALLOWED_ROOTS: workspace } });
+
   log("step 6/8: authenticated `pix down --all` (RPC shutdown, no signals)");
   const down = await runAsync(pixBin, ["down", "--all"], { env: sandboxEnv() });
   if (down.status !== 0) fail(`pix down --all exited ${down.status}: ${down.stdout} ${down.stderr}`);
@@ -486,6 +490,58 @@ console.log(JSON.stringify({ sessionId: manager.getSessionId(), file: manager.ge
 }
 
 const children = new Set();
+/**
+ * The published client must actually boot: every other step exercises the
+ * server, install and upgrade paths, never the shipped bundle, so a corrupt
+ * build (e.g. two builds writing one dist) passes all of them. Require exactly
+ * one entry bundle, then the installed Host serves it to headless Chrome and
+ * the app shell must render.
+ */
+async function verifyInstalledClient({ prefix, pixBin, env }) {
+  const clientDir = join(prefix, "lib", "node_modules", "@fffattiger", "pix-cli", "client");
+  const html = readFileSync(join(clientDir, "index.html"), "utf8");
+  const entries = readdirSync(join(clientDir, "assets")).filter((name) => /^index-.*\.js$/.test(name));
+  const referenced = html.match(/assets\/(index-[^"]+\.js)/)?.[1];
+  if (entries.length !== 1 || entries[0] !== referenced) {
+    fail(`client bundle is not a single clean build (entries: ${entries.join(", ")}; index.html -> ${referenced})`);
+  }
+  const port = await new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port: free } = server.address();
+      server.close(() => resolvePort(free));
+    });
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  const host = spawnChild(pixBin, ["start", "--hostname", "127.0.0.1", "--port", String(port), "--no-open"], { env, stdio: ["ignore", "ignore", "pipe"] });
+  const hostExit = exitCodePromise(host);
+  let hostErr = "";
+  host.stderr.on("data", (c) => { hostErr += c; });
+  const { launchChromeCdp } = await import("../tests/e2e/helpers/chrome-cdp.mjs");
+  let chrome = null;
+  try {
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const ok = await fetch(`${origin}/`).then((r) => r.ok).catch(() => false);
+      if (ok) break;
+      if (Date.now() > deadline) fail(`installed host did not serve the client: ${hostErr.slice(-500)}`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    chrome = await launchChromeCdp();
+    await chrome.navigate(`${origin}/`);
+    await chrome.waitFor(
+      `document.querySelector('[data-testid="sidebar-new-session"], [data-testid="title-new-session"]') ? true : null`,
+      { timeoutMs: 30_000, label: "app shell rendered from the installed client" },
+    ).catch((error) => fail(`installed client did not render: ${error?.message ?? error}`));
+    log(`  client ${referenced} rendered the app shell in headless Chrome`);
+  } finally {
+    await chrome?.close().catch(() => undefined);
+    host.kill("SIGTERM");
+    await hostExit;
+  }
+}
+
 function spawnChild(cmd, args, opts) {
   const child = spawn(cmd, args, opts);
   children.add(child);
