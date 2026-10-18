@@ -1,6 +1,6 @@
 {
   "name": "@fffattiger/pix-runtime-contract-tests",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "private": true,
   "description": "TEST-ONLY reusable adapter contract suite and reference fake; excluded from production package allowlists",
   "keywords": ["test-only", "adapter-contract"],
