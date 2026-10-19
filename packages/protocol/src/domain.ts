@@ -369,6 +369,31 @@ export type TrustLevel = z.infer<typeof TrustLevelSchema>;
 export const ASSISTANT_SENT_MESSAGE_PREFIX = "[Pixie 代用户发送]";
 
 /**
+ * True when a message text's first line is exactly the assistant SENT marker —
+ * i.e. this (queued or delivered) user-role message was sent by the assistant
+ * on the user's behalf, not typed by the user. The marker is part of the
+ * persisted text, so every consumer that must separate the two origins
+ * (sessiond's user-stop queue surgery, the client's queue recall) classifies
+ * through this single owner instead of re-declaring the line.
+ */
+export function isAssistantSentMessage(text: string): boolean {
+  return (text.split("\n", 1)[0] ?? "") === ASSISTANT_SENT_MESSAGE_PREFIX;
+}
+
+/**
+ * The body the assistant actually sent: everything after the SENT marker line
+ * and the single blank line that follows it. Empty for a non-marker text
+ * (mirror of how the sessiond authority composes the marked message).
+ */
+export function assistantSentMessageBody(text: string): string {
+  if (!isAssistantSentMessage(text)) return "";
+  const newline = text.indexOf("\n");
+  if (newline < 0) return "";
+  const rest = text.slice(newline + 1);
+  return rest.startsWith("\n") ? rest.slice(1) : rest;
+}
+
+/**
  * Fixed FIRST LINE of the completion notification message the sessiond
  * authority delivers INTO the assistant session when delegated work finishes
  * (completed / failed / stopped / waiting for the user). Blocks below follow

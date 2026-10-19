@@ -562,6 +562,18 @@ packages/
   `lastTextChars`（全文字数），两者都是 optional 的加性协议字段；通知多一行
   `（全文 N 字已保存到 <path>，需要时用 read 读取）`，adapter
   `formatCompletion` 用同一行。
+
+### 用户停止丢弃助手排队的消息（不复活已停会话）
+
+不变式：用户主动停止（abort interrupt）某会话时，该会话运行时队列里带
+`ASSISTANT_SENT_MESSAGE_PREFIX` 首行的排队消息被丢弃，用户自己排队的消息
+按原顺序保留；会话正常结束、出错等不触发。归属：sessiond `service.ts`
+在 abort 准入前做整队清空 + 仅用户消息重排（协议只能整队清空，服务端权威，
+与客户端 Composer 召回队列同一纪律），标记识别单点是 protocol 的
+`isAssistantSentMessage`。被丢弃的委派由 `assistant-ops.ts`
+`noteUserStopDroppedMessages` 按消息摘要一一对应标记，结算一律为
+「已停止」并附未送达预览（60 字，`droppedPreview` 同时进通知与等待回执），
+绝不因目标 tail 看起来完成而伪造「完成」。
 - 目录按 mtime 只保留最新 100 个文件（`REPLY_FILE_KEEP`），更旧的删除。
 - 写文件失败（或没有状态目录）降级为前 600 字且不带路径：通知照常送达，绝不为
   了附带路径而失败。

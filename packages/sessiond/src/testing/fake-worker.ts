@@ -84,6 +84,9 @@ export interface FakeWorkerOptions {
   autoTitle?: string;
   /** Phase 5B rotate response: success (default), reject without clearing, or drop for timeout/uncertain tests. */
   rotateEpochBehavior?: "success" | "reject" | "drop";
+  /** Answer these command types with a scripted unavailable failure (used to
+   * prove callers degrade honestly when a mid-sequence command fails). */
+  failCommandTypes?: readonly string[];
 }
 
 /**
@@ -414,6 +417,11 @@ export class FakeWorkerConnection implements WorkerConnection {
               ...(keep === 0 ? {} : { leafId: command.targetId }),
             },
           };
+        }
+        if (this.options.failCommandTypes?.includes(command.type)) {
+          const failed: RuntimeCommandOutcome = { ok: false, type: command.type, error: { code: "unavailable", message: `scripted ${command.type} failure`, retryable: true } };
+          setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, failed), this.options.commandDelayMs ?? 0);
+          return;
         }
         setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, commandOutcome), this.options.commandDelayMs ?? 0);
         return;

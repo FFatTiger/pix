@@ -523,6 +523,11 @@ export const WorkerAssistantCompletionMessageSchema = z.strictObject({
     lastTextChars: z.number().int().min(0).optional(),
     writtenFiles: z.array(NonEmptyStringSchema).max(8).optional(),
     error: z.string().optional(),
+    /** Preview of the assistant's own message that was still QUEUED in the
+     * target when the user stopped that session; sessiond dropped it so it
+     * would not revive the stopped session. Present only on `stopped`
+     * outcomes caused by such a user stop. */
+    droppedPreview: z.string().optional(),
   }),
 });
 export type WorkerAssistantCompletionPayload = z.infer<typeof WorkerAssistantCompletionMessageSchema>["payload"];

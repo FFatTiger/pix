@@ -630,6 +630,9 @@ function outcomeLabel(outcome: WorkerAssistantCompletionPayload["outcome"]): str
 
 function formatCompletion(note: string, completion: WorkerAssistantCompletionPayload): string {
   const lines = [`已发送并完成：`, note, `结果: ${outcomeLabel(completion.outcome)}`];
+  if (completion.droppedPreview !== undefined && completion.droppedPreview !== "") {
+    lines.push(`你发的这条消息当时还在队列里，因会话被用户停止而未送达：「${completion.droppedPreview}」（需要时可重新发送）`);
+  }
   if (completion.lastText !== undefined && completion.lastText !== "") {
     // sessiond already bounded this: whole text under its inline cap, a preview
     // plus a file path above it. Never re-truncate here.

@@ -21,6 +21,7 @@ import { basename, join } from "node:path";
 import {
   ASSISTANT_NOTIFY_MESSAGE_PREFIX,
   ASSISTANT_SENT_MESSAGE_PREFIX,
+  assistantSentMessageBody,
   type AssistantDeliveryPath,
   type AssistantWorkOutcome,
   type CorrelatedRuntimeCommandResult,
@@ -49,6 +50,8 @@ const SUMMARY_CHARS = 120;
 const LAST_TEXT_INLINE_MAX_CHARS = 2_000;
 /** Inline preview length when the whole reply goes to a file instead. */
 const LAST_TEXT_PREVIEW_CHARS = 600;
+/** Preview cap for a user-stop drop note (one queued message, first line). */
+const DROPPED_PREVIEW_CHARS = 60;
 /** Reply files kept in the sessiond state directory; older ones are removed. */
 const REPLY_FILE_KEEP = 100;
 /** Subdirectory of the sessiond state directory holding long replies. */
@@ -166,6 +169,10 @@ interface Delegation {
   notifyLastTextChars?: number;
   notifyWrittenFiles?: string[];
   notifyError?: string;
+  /** Set when a user stop dropped this delegation's still-queued message before
+   * it was ever delivered: the settlement reports `stopped` with this preview
+   * instead of a fabricated completion. */
+  userStopDropped?: string;
 }
 
 interface ChainTarget {
@@ -194,6 +201,9 @@ interface NotifyItem {
   lastTextChars?: number;
   writtenFiles?: string[];
   error?: string;
+  /** Preview of the assistant's own message dropped from the target's runtime
+   * queue by a user stop (present only on such `stopped` settlements). */
+  droppedPreview?: string;
   attempts: number;
 }
 
@@ -309,6 +319,37 @@ export class AssistantOpsAuthority {
   }
 
   /**
+   * The user stopped a session's running turn (abort) and the service dropped
+   * the assistant's still-queued messages from that session's runtime queue —
+   * the SDK keeps them across an abort and they would otherwise be delivered
+   * as the next turn, reviving a session the user explicitly stopped. Mark the
+   * matching pending delegations so their settlement is an honest `stopped`
+   * carrying what never arrived (preview-capped), instead of a fabricated
+   * completion from whatever the aborted turn's tail looks like. Matching is
+   * one-to-one on the delegation summary (the exact body the assistant sent);
+   * a drop with no matching pending delegation is a no-op.
+   */
+  noteUserStopDroppedMessages(targetSessionId: string, droppedTexts: readonly string[]): void {
+    if (this.disposed || droppedTexts.length === 0) return;
+    const candidates = this.delegations.filter((row) => row.targetSessionId === targetSessionId
+      && (row.state === "wait" || row.state === "notify") && row.userStopDropped === undefined);
+    if (candidates.length === 0) return;
+    let changed = false;
+    for (const text of droppedTexts) {
+      const body = assistantSentMessageBody(text);
+      if (body.trim().length === 0) continue;
+      const match = candidates.find((row) => row.summary === summarize(body));
+      if (match === undefined) continue;
+      match.userStopDropped = droppedPreviewOf(body);
+      candidates.splice(candidates.indexOf(match), 1);
+      changed = true;
+    }
+    if (!changed) return;
+    this.persist();
+    this.scheduleSettleCheck();
+  }
+
+  /**
    * The assistant worker became (re)available. A delegation whose
    * notification exhausted its delivery attempts gets exactly ONE more ride
    * per load: success delivers it, failure parks it again until the next
@@ -334,6 +375,7 @@ export class AssistantOpsAuthority {
         ...(delegation.notifyLastTextChars === undefined ? {} : { lastTextChars: delegation.notifyLastTextChars }),
         ...(delegation.notifyWrittenFiles === undefined || delegation.notifyWrittenFiles.length === 0 ? {} : { writtenFiles: delegation.notifyWrittenFiles }),
         ...(delegation.notifyError === undefined ? {} : { error: delegation.notifyError }),
+        ...(delegation.userStopDropped === undefined ? {} : { droppedPreview: delegation.userStopDropped }),
         attempts: NOTIFY_ATTEMPT_CAP - 1,
       });
     }
@@ -849,11 +891,12 @@ export class AssistantOpsAuthority {
           continue;
         }
         const failed = delegation.busySeen === true ? await this.tailFailure(delegation.targetSessionId) : undefined;
-        const outcome: AssistantWorkOutcome = delegation.busySeen !== true
-          ? "stopped"
-          : failed !== undefined
-            ? "failed"
-            : (await this.tailCompleted(delegation.targetSessionId)) ? "completed" : "stopped";
+        const outcome: AssistantWorkOutcome = delegation.userStopDropped !== undefined ? "stopped"
+          : delegation.busySeen !== true
+            ? "stopped"
+            : failed !== undefined
+              ? "failed"
+              : (await this.tailCompleted(delegation.targetSessionId)) ? "completed" : "stopped";
         await this.settle(delegation, outcome, failed);
         continue;
       }
@@ -862,12 +905,15 @@ export class AssistantOpsAuthority {
         continue;
       }
       if (target.status === "crashed") {
-        await this.settle(delegation, "failed", "会话异常退出");
+        await this.settle(delegation, delegation.userStopDropped !== undefined ? "stopped" : "failed", "会话异常退出");
         continue;
       }
       if (target.pendingExtensionUi().length > 0) {
         this.clearConfirm(delegation);
-        await this.settle(delegation, "waiting_user");
+        // A user stop already dropped this delegation's queued message: the ask
+        // belongs to an earlier turn, so the honest outcome is the stop, not
+        // waiting_user (which would claim the target is waiting for input).
+        await this.settle(delegation, delegation.userStopDropped === undefined ? "waiting_user" : "stopped");
         continue;
       }
       if (target.isTurnRunning()) {
@@ -895,8 +941,11 @@ export class AssistantOpsAuthority {
       // Idle after real work. A failed assistant tail is "failed"; idle
       // without ever having been busy is an honest stop — never a fabricated
       // completion. The catalog read degrades to "completed" when absent.
+      // A user-stop drop is always "stopped": the delegated message never
+      // ran, whatever the aborted turn's tail looks like.
       const failed = delegation.busySeen === true ? await this.tailFailure(delegation.targetSessionId) : undefined;
-      const outcome: AssistantWorkOutcome = delegation.busySeen !== true ? "stopped" : failed !== undefined ? "failed" : "completed";
+      const outcome: AssistantWorkOutcome = delegation.userStopDropped !== undefined ? "stopped"
+        : delegation.busySeen !== true ? "stopped" : failed !== undefined ? "failed" : "completed";
       await this.settle(delegation, outcome, failed);
     }
     if (needsConfirm || this.delegations.some((item) => (item.state === "wait" || item.state === "notify") && item.pendingSettleAt !== undefined)) {
@@ -927,6 +976,9 @@ export class AssistantOpsAuthority {
     this.clearConfirm(delegation);
     const summary = await this.buildSummary(delegation, outcome, forcedError);
     if (summary.targetTitle) delegation.targetTitle = summary.targetTitle;
+    // The user-stop drop note (if any) travels on every settlement channel:
+    // the wait receipt frame and the queued notification alike.
+    const droppedPreview = delegation.userStopDropped;
     // Retain the rendered fields so a redelivery (noteAssistantReady) can
     // rebuild the queue item exactly.
     if (summary.lastText !== undefined) delegation.notifyLastText = summary.lastText;
@@ -952,6 +1004,7 @@ export class AssistantOpsAuthority {
               ...(summary.lastTextChars === undefined ? {} : { lastTextChars: summary.lastTextChars }),
               ...(summary.writtenFiles === undefined ? {} : { writtenFiles: summary.writtenFiles }),
               ...(summary.error === undefined ? {} : { error: summary.error }),
+              ...(droppedPreview === undefined ? {} : { droppedPreview }),
             },
           });
           this.persist();
@@ -971,6 +1024,7 @@ export class AssistantOpsAuthority {
       ...(summary.lastTextChars === undefined ? {} : { lastTextChars: summary.lastTextChars }),
       ...(summary.writtenFiles === undefined ? {} : { writtenFiles: summary.writtenFiles }),
       ...(summary.error === undefined ? {} : { error: summary.error }),
+      ...(droppedPreview === undefined ? {} : { droppedPreview }),
       attempts: 0,
     });
   }
@@ -1344,6 +1398,12 @@ function summarize(message: string): string {
   return flat.length <= SUMMARY_CHARS ? flat : flat.slice(0, SUMMARY_CHARS);
 }
 
+/** Preview of a user-stop-dropped message: flattened, capped at 60 chars. */
+function droppedPreviewOf(body: string): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  return flat.length <= DROPPED_PREVIEW_CHARS ? flat : `${flat.slice(0, DROPPED_PREVIEW_CHARS)}…`;
+}
+
 function projectLabel(cwd: string): string {
   const label = basename(cwd);
   return label.length > 0 ? label : cwd;
@@ -1401,6 +1461,9 @@ function renderNotification(items: NotifyItem[]): string {
       `会话: ${item.targetTitle || item.targetSessionId}｜项目: ${projectLabel(item.targetCwd)}｜id: ${item.targetSessionId}`,
       `结果: ${OUTCOME_LABEL[item.outcome]}`,
     ];
+    if (item.droppedPreview !== undefined && item.droppedPreview.length > 0) {
+      lines.push(`你发的这条消息当时还在队列里，因会话被用户停止而未送达：「${item.droppedPreview}」（需要时可重新发送）`);
+    }
     if (item.lastText) lines.push(`最后回复: ${item.lastText}`);
     if (item.lastTextPath) {
       const count = item.lastTextChars === undefined ? "全文" : `全文 ${item.lastTextChars} 字`;
