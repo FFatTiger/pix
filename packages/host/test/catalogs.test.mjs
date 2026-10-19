@@ -476,6 +476,38 @@ test("PUT /v1/models/config maps stale revisions to a fixed conflict", async () 
   assert.equal(JSON.stringify(body).includes("private"), false);
 });
 
+test("PUT /v1/models/config surfaces located field rejections and drops malformed details", async () => {
+  const root = temp("pix-cat-model-field-");
+  const roots = await rootsFor(root);
+  const rejection = new Error("model configuration is invalid");
+  rejection.code = "invalid_input";
+  const app = appWithCatalogs({
+    roots,
+    modelsMutation: fakeModelsMutation({ writeConfig: async () => { throw rejection; } }),
+  });
+  const put = (details) => {
+    rejection.details = details;
+    return app.request("http://localhost/v1/models/config", {
+      method: "PUT",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: "0".repeat(64), providers: [] }),
+    });
+  };
+  const res = await put({ provider: "huu-gemini", model: "antigravity/gemini-4-argon", field: "cost.cacheWrite" });
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), {
+    error: "Invalid model configuration",
+    code: "INVALID_INPUT",
+    message: "Invalid model configuration",
+    details: { provider: "huu-gemini", model: "antigravity/gemini-4-argon", field: "cost.cacheWrite" },
+  });
+  // Anything that fails the located-rejection schema never reaches the wire.
+  const malformed = await put({ provider: "huu-gemini", extra: true });
+  const malformedBody = await malformed.json();
+  assert.equal(malformedBody.code, "INVALID_INPUT");
+  assert.equal(malformedBody.details, undefined);
+});
+
 test("GET/PUT /v1/settings/config round-trip raw text with strict body rules and capability token", async () => {
   const root = temp("pix-cat-settings-config-");
   const roots = await rootsFor(root);

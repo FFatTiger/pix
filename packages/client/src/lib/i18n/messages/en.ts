@@ -797,6 +797,7 @@ export const enLocale = {
     "desktop.modelsConfigUnavailable": "Model configuration is not available.",
     "desktop.modelsConfigurationChanged": "Model configuration changed elsewhere. Reopen Settings and try again.",
     "desktop.modelsInvalidConfiguration": "The model configuration is invalid. Check the highlighted values and try again.",
+    "desktop.modelsInvalidConfigurationField": "The model configuration is invalid: {field} of {target} is not valid. Check it and try again.",
     "desktop.modelsShowInPicker": "Show {model} in the model picker",
     "desktop.modelsDefaultHidden": "The default model is hidden. New sessions fall back to the first visible model.",
     "desktop.modelsNetworkUnavailable": "Could not reach the model configuration service.",

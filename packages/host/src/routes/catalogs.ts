@@ -12,6 +12,7 @@
  * throws, proxies, or extra nested material never reach the wire as raw data.
  */
 import type { Hono } from "hono";
+import { ModelsConfigFieldErrorSchema, type ModelsConfigFieldError } from "@fffattiger/pix-protocol";
 import { BUILT_IN_CAPABILITY_IDS } from "@fffattiger/pix-protocol/built-in-capabilities";
 import { CompactionSettingsResponseSchema, CompactionSettingsMutationSchema, SubagentSettingsResponseSchema, SubagentSettingsMutationSchema } from "@fffattiger/pix-protocol/settings-config";
 import {
@@ -79,10 +80,22 @@ function catalogErrorCode(error: unknown): string | undefined {
   return undefined;
 }
 
+/** Located models-config rejection (provider/model/field), surfaced only when the
+ * adapter's structured `details` parses; anything else fails closed to the
+ * generic fixed body. */
+function modelsConfigFieldDetails(error: unknown): ModelsConfigFieldError | undefined {
+  if (!isPlainObject(error)) return undefined;
+  const parsed = ModelsConfigFieldErrorSchema.safeParse(error.details);
+  return parsed.success ? parsed.data : undefined;
+}
+
 function mapModelsConfigError(error: unknown): HttpError {
   if (error instanceof HttpError) return error;
   const code = catalogErrorCode(error);
-  if (code === "invalid_input") return new HttpError(400, "INVALID_INPUT", "Invalid model configuration");
+  if (code === "invalid_input") {
+    const details = modelsConfigFieldDetails(error);
+    return new HttpError(400, "INVALID_INPUT", "Invalid model configuration", details);
+  }
   if (code === "conflict") return new HttpError(409, "CONFLICT", "Model configuration changed; reload and try again");
   return new HttpError(503, "CATALOG_UNAVAILABLE", CATALOG_UNAVAILABLE_MESSAGE);
 }

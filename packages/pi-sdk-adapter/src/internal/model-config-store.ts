@@ -45,8 +45,9 @@ interface RawModelsJson {
 function runtimeError(
   code: "invalid_input" | "unavailable" | "conflict",
   message: string,
+  options?: { details?: unknown },
 ): ReturnType<typeof makeRuntimeError> {
-  return makeRuntimeError(code, message);
+  return makeRuntimeError(code, message, options);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -145,14 +146,20 @@ function projectProvider(id: string, raw: Record<string, unknown>): EditableProv
   };
 }
 
-async function createOfflineRuntime(modelsPath: string | null): Promise<ModelRuntime> {
+async function createOfflineRuntime(modelsPath: string | null, raw?: unknown): Promise<ModelRuntime> {
   const runtime = await ModelRuntime.create({
     allowModelNetwork: false,
     credentials: new InMemoryCredentialStore(),
     modelsStore: new InMemoryModelsStore(),
     modelsPath,
   });
-  if (runtime.getError()) throw runtimeError("invalid_input", "model configuration is invalid");
+  const errorText = runtime.getError();
+  if (errorText) {
+    const located = locatedModelsConfigRejection(errorText, raw);
+    throw located === undefined
+      ? runtimeError("invalid_input", "model configuration is invalid")
+      : runtimeError("invalid_input", "model configuration is invalid", { details: located });
+  }
   return runtime;
 }
 
@@ -215,7 +222,7 @@ async function readSource(agentDir: string): Promise<{ text: string; raw: RawMod
   const missing = "missing" in result;
   const text = "content" in result ? result.content : "";
   const raw = parseRawModelsJson(text, missing);
-  const runtime = missing ? null : await createOfflineRuntime(modelsPath);
+  const runtime = missing ? null : await createOfflineRuntime(modelsPath, raw);
   return { text, raw, revision: hash(text), runtime };
 }
 
@@ -258,6 +265,33 @@ function setOptional(target: Record<string, unknown>, key: string, value: unknow
   else target[key] = value;
 }
 
+/** Map the first `providers.<id>.models.<i>.<field>` (or `providers.<id>.<field>`)
+ * bullet of a Pi SDK models.json schema error to a located rejection, resolving
+ * the model id through the parsed document. Exposes only provider/model ids and
+ * field names — the raw SDK text embeds absolute file paths and stays internal. */
+function locatedModelsConfigRejection(errorText: string, raw: unknown): { provider: string; model?: string; field: string } | undefined {
+  let match = /-\s+providers\.(.+?)\.models\.(\d+)\.([^:\s]+):/.exec(errorText);
+  if (match) {
+    const provider = match[1]!;
+    const entry = modelEntryAtPath(raw, provider, Number(match[2]));
+    return {
+      provider,
+      ...(entry === undefined ? {} : { model: entry }),
+      field: match[3]!,
+    };
+  }
+  match = /-\s+providers\.([^.:\s]+)\.([^:\s]+):/.exec(errorText);
+  if (match) return { provider: match[1]!, field: match[2]! };
+  return undefined;
+}
+
+function modelEntryAtPath(raw: unknown, provider: string, index: number): string | undefined {
+  if (!isRecord(raw) || !isRecord(raw.providers)) return undefined;
+  const source = raw.providers[provider];
+  const entry = isRecord(source) && Array.isArray(source.models) ? source.models[index] : undefined;
+  return isRecord(entry) && typeof entry.id === "string" && entry.id.trim() ? entry.id : undefined;
+}
+
 function mergeModel(source: unknown, model: ModelConfigProviderMutation["models"][number]): Record<string, unknown> {
   const next = isRecord(source) ? structuredClone(source) : {};
   next.id = model.id;
@@ -272,6 +306,15 @@ function mergeModel(source: unknown, model: ModelConfigProviderMutation["models"
     const value = model.cost?.[key];
     if (value === undefined) delete cost[key];
     else cost[key] = value;
+  }
+  // models.json (Pi SDK ModelCostSchema) requires ALL FOUR rates on any cost
+  // object, while models.dev metadata commonly carries a subset (e.g. no
+  // cacheWrite). A missing rate means "unknown", which the SDK's own default
+  // prices as 0 — fill it so partial catalog metadata stays savable.
+  if (Object.keys(cost).length > 0) {
+    for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+      if (cost[key] === undefined) cost[key] = 0;
+    }
   }
   setOptional(next, "cost", Object.keys(cost).length > 0 ? cost : undefined);
   return next;
@@ -321,12 +364,12 @@ function mergeConfig(raw: RawModelsJson, input: ModelsConfigMutation): RawModels
   return next;
 }
 
-async function validateSerialized(serialized: string): Promise<void> {
+async function validateSerialized(serialized: string, raw: unknown): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "pix-model-config-"));
   const file = join(dir, `models-${randomUUID()}.json`);
   try {
     await writeFile(file, serialized, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await createOfflineRuntime(file);
+    await createOfflineRuntime(file, raw);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -621,7 +664,7 @@ export function createPiSdkModelConfigStore(options: PiSdkModelConfigStoreOption
         await assertSettingsReadableForHygiene(agentDir);
         const merged = mergeConfig(current.raw, input);
         const serialized = `${JSON.stringify(merged, null, 2)}\n`;
-        await validateSerialized(serialized);
+        await validateSerialized(serialized, merged);
         await secureState.writeStateDocument(modelsPath, serialized, { maxBytes: MODELS_MAX_BYTES });
         // models.json changed: keep the settings.json enabledModels whitelist
         // consistent (drop dead exact rows, append newly configured models,

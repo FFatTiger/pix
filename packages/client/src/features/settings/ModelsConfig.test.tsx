@@ -302,6 +302,43 @@ describe("ModelsConfig", () => {
     expect(screen.queryByText(/raw host detail|Invalid project path|Catalog unavailable/i)).toBeNull();
   });
 
+  it("names the provider, model, and field when the server rejects with located details", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return json({
+          code: "INVALID_INPUT",
+          message: "Invalid model configuration",
+          details: { provider: "acme-deepseek", model: "deepseek-v4-flash", field: "cost.cacheWrite" },
+        }, { status: 400 });
+      }
+      return json(snapshot);
+    });
+    mount(fetchMock);
+    const name = await screen.findByDisplayValue("acme-deepseek");
+    fireEvent.change(name, { target: { value: "renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("acme-deepseek / deepseek-v4-flash");
+    expect(alert.textContent).toContain("cost.cacheWrite");
+  });
+
+  it("falls back to the generic invalid-configuration copy when details are malformed", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return json({ code: "INVALID_INPUT", message: "raw host detail", details: { provider: "p", extra: true } }, { status: 400 });
+      }
+      return json(snapshot);
+    });
+    mount(fetchMock);
+    const name = await screen.findByDisplayValue("acme-deepseek");
+    fireEvent.change(name, { target: { value: "renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("The model configuration is invalid");
+    expect(alert.textContent).not.toContain("raw host detail");
+    expect(alert.textContent).not.toContain("provider");
+  });
+
   it("saves through the typed global route and preserves an unchanged secret server-side", async () => {
     let putBody: unknown;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

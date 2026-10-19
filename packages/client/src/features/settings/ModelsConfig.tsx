@@ -13,6 +13,7 @@ import type {
   ModelsConfigMutation,
   ModelsConfigResponse,
 } from "@fffattiger/pix-protocol";
+import { ModelsConfigFieldErrorSchema } from "@fffattiger/pix-protocol";
 import { HttpError } from "@/api/http-client";
 import { createMutationOptions } from "@/api/mutations";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
@@ -128,10 +129,26 @@ function visibilityIntentsFrom(providers: readonly DraftProvider[]): VisibilityI
   return intents;
 }
 
+/** Located rejection from the error body (provider/model/field), decoded only
+ * when it parses against the shared protocol schema; anything else degrades to
+ * the generic fixed sentence. */
+function modelsConfigFieldError(body: unknown): { provider: string; model?: string | undefined; field: string } | null {
+  if (!body || typeof body !== "object") return null;
+  const parsed = ModelsConfigFieldErrorSchema.safeParse((body as { details?: unknown }).details);
+  return parsed.success ? parsed.data : null;
+}
+
 function describeModelsConfigError(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
   if (error instanceof HttpError) {
     if (error.code === "CONFLICT") return t("desktop.modelsConfigurationChanged");
-    if (error.code === "INVALID_INPUT" || error.code === "INVALID_MODELS_CONFIG") return t("desktop.modelsInvalidConfiguration");
+    if (error.code === "INVALID_INPUT" || error.code === "INVALID_MODELS_CONFIG") {
+      const located = modelsConfigFieldError(error.body);
+      if (located) {
+        const target = located.model ? `${located.provider} / ${located.model}` : located.provider;
+        return t("desktop.modelsInvalidConfigurationField", { target, field: located.field });
+      }
+      return t("desktop.modelsInvalidConfiguration");
+    }
     if (error.kind === "network") return t("desktop.modelsNetworkUnavailable");
     if (error.kind === "timeout") return t("desktop.modelsRequestTimedOut");
   }

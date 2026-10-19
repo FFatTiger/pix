@@ -135,6 +135,20 @@ export const ModelDiscoveryResponseSchema = z.strictObject({
 });
 export type ModelDiscoveryResponse = z.infer<typeof ModelDiscoveryResponseSchema>;
 
+/**
+ * Located models-config rejection: which provider / model / field was refused.
+ * The Host body validators and the adapter's models.json validator both report
+ * through this shape, so the client names the offending field instead of
+ * showing one generic sentence. `field` is the dotted path inside the provider
+ * (`contextWindow`, `cost.cacheWrite`, `apiKey.mode`, …).
+ */
+export const ModelsConfigFieldErrorSchema = z.strictObject({
+  provider: NonEmptyStringSchema,
+  model: NonEmptyStringSchema.optional(),
+  field: NonEmptyStringSchema,
+});
+export type ModelsConfigFieldError = z.infer<typeof ModelsConfigFieldErrorSchema>;
+
 /** Max ids per models.dev parameter lookup (bounded Host request surface). */
 export const MODEL_METADATA_MAX_IDS = 100;
 

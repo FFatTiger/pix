@@ -201,6 +201,61 @@ describe("writable models.json config store", () => {
       await rm(agentDir, { recursive: true, force: true });
     }
   });
+  it("zero-fills partial cost rates so models.dev metadata saves, and locates field rejections", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pix-model-config-cost-"));
+    try {
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const empty = await store.readConfig();
+      // Reproduces the production bug: a model added after "fetch model list"
+      // carries only the cost rates models.dev publishes (no cacheWrite), which
+      // the Pi SDK's models.json schema refuses to load — the save used to fail
+      // with a generic invalid_input.
+      const saved = await store.writeConfig({
+        expectedRevision: empty.revision,
+        providers: [{
+          sourceId: null,
+          id: "huu-gemini",
+          baseUrl: "http://127.0.0.1:9000/v1",
+          api: "openai-completions",
+          apiKey: { mode: "replace", value: "sk-cost-canary" },
+          modelsDefined: true,
+          models: [{ sourceIndex: null, id: "antigravity/gemini-4-argon", cost: { input: 2, output: 10, cacheRead: 0.1 } }],
+        }],
+      });
+      assert.equal(saved.providers[0]?.models[0]?.cost?.cacheWrite, 0);
+      const persisted = JSON.parse(await readFile(join(agentDir, "models.json"), "utf8"));
+      assert.deepEqual(persisted.providers["huu-gemini"].models[0].cost, {
+        input: 2,
+        output: 10,
+        cacheRead: 0.1,
+        cacheWrite: 0,
+      });
+
+      // A field-level SDK schema rejection names the provider, model, and field.
+      const current = await store.readConfig();
+      await assert.rejects(
+        store.writeConfig({
+          expectedRevision: current.revision,
+          providers: [{
+            sourceId: "huu-gemini",
+            id: "huu-gemini",
+            apiKey: { mode: "preserve" },
+            modelsDefined: true,
+            models: [{ sourceIndex: 0, id: "antigravity/gemini-4-argon", contextWindow: 0 }],
+          }],
+        }),
+        (error: unknown) => {
+          const located = (error as { code?: string; details?: { provider?: string; model?: string; field?: string } }).details;
+          return (error as { code?: string }).code === "invalid_input"
+            && located?.provider === "huu-gemini"
+            && located?.model === "antigravity/gemini-4-argon"
+            && located?.field === "contextWindow";
+        },
+      );
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("model discovery for built-in providers (blank Base URL)", () => {
