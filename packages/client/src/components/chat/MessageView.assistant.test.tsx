@@ -57,11 +57,10 @@ describe("UserMessageView assistant markers", () => {
     expect(screen.getByText("普通消息")).toBeTruthy();
     expect(screen.queryByText("Sent by Pixie")).toBeNull();
     expect(document.querySelector(".chat-user-bubble")).toBeTruthy();
-    expect(document.querySelector(".assistant-notice")).toBeNull();
-    expect(document.querySelector(".chat-notice-row")).toBeNull();
+    expect(document.querySelector(".assistant-notice-card")).toBeNull();
   });
 
-  it("renders a notification as a left-aligned event line with a status and opens the parsed session", () => {
+  it("renders a notification card with a result badge and opens the parsed session", () => {
     const body = [
       ASSISTANT_NOTIFY_MESSAGE_PREFIX,
       "",
@@ -69,20 +68,13 @@ describe("UserMessageView assistant markers", () => {
       "结果: 完成",
       "最后回复: 已修好",
     ].join("\n");
-    const { container } = mount(user(body));
+    mount(user(body));
     expect(screen.getByTestId("assistant-notice-card")).toBeTruthy();
-    const status = screen.getByTestId("assistant-notice-status");
-    expect(status.textContent).toBe("完成");
-    expect(status.className).toContain("is-positive");
-    expect(screen.getByText("最后回复: 已修好").getAttribute("title")).toBe("最后回复: 已修好");
-    // A notice is not something the user said: it never renders in the
-    // right-aligned user message column.
-    expect(screen.getByTestId("chat-notice-row")).toBeTruthy();
-    expect(container.querySelector(".chat-user-message")).toBeNull();
+    expect(screen.getByText("Work notice")).toBeTruthy();
+    expect(screen.getByTestId("assistant-notice-badge").textContent).toBe("完成");
+    expect(screen.getByTestId("assistant-notice-badge").className).toContain("is-positive");
+    expect(screen.getByText("最后回复: 已修好")).toBeTruthy();
     expect(document.querySelector(".chat-user-bubble")).toBeNull();
-    // No project line, no card title, no user-message action row.
-    expect(screen.queryByText("pix")).toBeNull();
-    expect(screen.queryByTitle("Copy message")).toBeNull();
     fireEvent.click(screen.getByTestId("assistant-notice-open"));
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({
       search: { session: "s-9", cwd: "" },
@@ -101,11 +93,10 @@ describe("UserMessageView assistant markers", () => {
       "结果: 停下等用户",
     ].join("\n");
     mount(user(body));
-    const statuses = screen.getAllByTestId("assistant-notice-status");
-    expect(statuses.map((status) => status.textContent)).toEqual(["出错", "停下等用户"]);
-    expect(statuses[0]!.className).toContain("is-error");
-    expect(statuses[1]!.className).toContain("is-accent");
-    expect(screen.getAllByTestId("assistant-notice-block")).toHaveLength(2);
+    const badges = screen.getAllByTestId("assistant-notice-badge");
+    expect(badges.map((badge) => badge.textContent)).toEqual(["出错", "停下等用户"]);
+    expect(badges[0]!.className).toContain("is-error");
+    expect(badges[1]!.className).toContain("is-accent");
     expect(screen.getAllByTestId("assistant-notice-open")).toHaveLength(2);
     expect(screen.getByText("错误: boom")).toBeTruthy();
   });
@@ -113,7 +104,14 @@ describe("UserMessageView assistant markers", () => {
   it("falls back to the raw body when a notice has no parseable blocks", () => {
     mount(user(`${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n这不是标准块`));
     expect(screen.getByTestId("assistant-notice-card")).toBeTruthy();
-    expect(screen.getByTestId("assistant-notice-raw").textContent).toBe("这不是标准块");
+    expect(screen.getByText("这不是标准块")).toBeTruthy();
     expect(screen.queryByTestId("assistant-notice-open")).toBeNull();
+  });
+
+  it("copies a notice unchanged, marker included", async () => {
+    const body = `${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n自由文本`;
+    mount(user(body));
+    fireEvent.click(screen.getByTitle("Copy message"));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(body));
   });
 });

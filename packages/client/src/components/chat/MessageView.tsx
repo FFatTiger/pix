@@ -533,29 +533,21 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   const canNavigate = !!prevAssistantEntryId && !!onNavigate;
 
   const copyContent = () => {
-    copyText(displayText).then(() => {
+    copyText(assistantKind === "notice" ? rawContent : displayText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
   };
-
-  // A work notice is a quiet event line in the transcript, not something the
-  // user said: it never enters the right-aligned user bubble, nor its
-  // hover actions/timestamp/edit/fork row. Placed after every hook above.
-  if (assistantKind === "notice") {
-    return (
-      <div className="chat-notice-row" data-testid="chat-notice-row">
-        <AssistantNoticeCard body={stripAssistantMarker(rawContent)} />
-      </div>
-    );
-  }
 
   return (
     <div className={`chat-user-message${forking ? " is-forking" : ""}`}>
       {assistantKind === "sent" ? (
         <div className="chat-user-sent-label">{t("desktop.assistantSentLabel")}</div>
       ) : null}
-      <>
+      {assistantKind === "notice" ? (
+        <AssistantNoticeCard body={stripAssistantMarker(rawContent)} />
+      ) : (
+        <>
       <div className="chat-user-bubble-wrap">
         <div className="chat-user-bubble">
           {attachmentSplit.files.length > 0 && (
@@ -653,6 +645,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
         document.body,
       )}
         </>
+      )}
 
       {/* Bottom row: action buttons + timestamp */}
       {(time || canFork || canNavigate || true) && (

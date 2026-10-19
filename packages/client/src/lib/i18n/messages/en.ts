@@ -248,6 +248,7 @@ export const enLocale = {
     "desktop.assistantChip_open_session": "Opened",
     "desktop.assistantChip_draft_to_session": "Drafted for",
     "desktop.assistantSentLabel": "Sent by Pixie",
+    "desktop.assistantNoticeTitle": "Work notice",
     "desktop.workspaceFlagsUnavailable": "Pinning is unavailable right now",
     "desktop.workspaceFlagsSaveFailed": "Could not save the pin/archive change; it was rolled back",
     "desktop.agentFeature.smartCompact": "Smart compaction",
