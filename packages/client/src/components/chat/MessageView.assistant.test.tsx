@@ -81,6 +81,54 @@ describe("UserMessageView assistant markers", () => {
     }));
   });
 
+  it("names an untitled notice from the cached session (title, else first message), never the raw id", () => {
+    const body = [
+      ASSISTANT_NOTIFY_MESSAGE_PREFIX,
+      "",
+      "会话: ｜项目: pix｜id: s-1",
+      "结果: 完成",
+    ].join("\n");
+    const withTitle = { sessionId: "s-1", cwd: "/repos/pix", projectRoot: "/repos/pix", title: "修登录", createdAt: 1, updatedAt: 2 } as SessionHeader;
+    mount(user(body), [withTitle]);
+    expect(screen.getByText("修登录")).toBeTruthy();
+    expect(screen.queryByText(/s-1/)).toBeNull();
+  });
+
+  it("falls back to the cached first message when the session has no title", () => {
+    const body = [
+      ASSISTANT_NOTIFY_MESSAGE_PREFIX,
+      "",
+      "会话: ｜项目: pix｜id: s-1",
+      "结果: 完成",
+    ].join("\n");
+    const untitled = { sessionId: "s-1", cwd: "/repos/pix", projectRoot: "/repos/pix", firstMessage: "整理周报", createdAt: 1, updatedAt: 2 } as SessionHeader;
+    mount(user(body), [untitled]);
+    expect(screen.getByText("整理周报")).toBeTruthy();
+  });
+
+  it("keeps the id when the notice's title is the id itself and the cache knows no such session", () => {
+    const body = [
+      ASSISTANT_NOTIFY_MESSAGE_PREFIX,
+      "",
+      "会话: s-404｜项目: pix｜id: s-404",
+      "结果: 完成",
+    ].join("\n");
+    mount(user(body));
+    expect(screen.getByText("s-404")).toBeTruthy();
+  });
+
+  it("names an id-titled notice from the cache, matching the sidebar rule", () => {
+    const body = [
+      ASSISTANT_NOTIFY_MESSAGE_PREFIX,
+      "",
+      "会话: s-1｜项目: pix｜id: s-1",
+      "结果: 完成",
+    ].join("\n");
+    const untitled = { sessionId: "s-1", cwd: "/repos/pix", projectRoot: "/repos/pix", firstMessage: "整理周报", createdAt: 1, updatedAt: 2 } as SessionHeader;
+    mount(user(body), [untitled]);
+    expect(screen.getByText("整理周报")).toBeTruthy();
+  });
+
   it("renders every block of a multi-block notice", () => {
     const body = [
       ASSISTANT_NOTIFY_MESSAGE_PREFIX,

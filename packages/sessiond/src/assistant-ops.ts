@@ -509,7 +509,9 @@ export class AssistantOpsAuthority {
     }
     const delegationId = this.registerDelegation(record, {
       targetSessionId: created.sessionId,
-      targetTitle: op.title?.trim() || created.sessionId,
+      // An untitled create must not store the raw id as its name: the catalog
+      // names it by its first message, and settlement refreshes it again.
+      targetTitle: op.title?.trim() || await this.targetTitle(created.sessionId, target),
       targetCwd: op.cwd,
       summary: summarize(op.message),
       createdEventId: target?.lastEventId ?? 0,
@@ -1189,6 +1191,7 @@ export class AssistantOpsAuthority {
 
   /** One merged prompt per assistant. The notify prefix is NOT the sent marker. */
   private async deliverNotification(assistantId: string, items: NotifyItem[]): Promise<boolean> {
+    await this.nameUntitled(items);
     const prompt = renderNotification(items);
     const assistant = this.surface.getRecord(assistantId);
     const live = assistant !== undefined && !["crashed", "stopped", "stopping"].includes(assistant.status);
@@ -1207,6 +1210,25 @@ export class AssistantOpsAuthority {
       return admission.status !== "rejected";
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * A notification names the session the way the UI names it. The ledger can
+   * still hold an empty title or the raw id — it was registered before the
+   * session had a first message, or the catalog was cold at send time — so
+   * the name is re-read from the catalog (which derives an untitled session's
+   * name from its first message) right before the text is rendered. An
+   * unresolvable session keeps the id, which is an honest label.
+   */
+  private async nameUntitled(items: NotifyItem[]): Promise<void> {
+    for (const item of items) {
+      if (item.targetTitle !== "" && item.targetTitle !== item.targetSessionId) continue;
+      const title = await this.targetTitle(item.targetSessionId, undefined);
+      if (title === "" || title === item.targetSessionId) continue;
+      item.targetTitle = title;
+      const delegation = this.delegations.find((row) => row.id === item.delegationId);
+      if (delegation) delegation.targetTitle = title;
     }
   }
 
