@@ -883,13 +883,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     // added/removed images) takes over and saves immediately.
     if (snapshot && snapshot.value === value && snapshot.imageCount === images.length) return;
     restoredSnapshotRef.current = null;
-    // Never overwrite a draft that arrived from OUTSIDE this editor (a queue
-    // restore recovering cleared messages). The editor adopts it on the next
-    // key effect pass; clobbering it here would lose the recovered text.
-    const stored = getDraft(draftKey);
-    if (stored !== null && stored.value !== value && stored.value.trim().length > 0 && value.trim().length === 0) {
-      return;
-    }
+    // The user's own edit (including deleting everything) always wins here.
+    // An external writer such as the queue restore has already put its text in
+    // the draft store and prepends through the editor handle, so skipping this
+    // save would only make a normal clear indistinguishable from an external
+    // write and resurrect the deleted text on the next switch.
     setDraft(draftKey, { value, images });
   }, [attachedImages, draftKey, value]);
 

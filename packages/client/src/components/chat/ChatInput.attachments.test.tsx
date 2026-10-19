@@ -4,6 +4,7 @@ import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@
 import { I18nProvider } from "@/hooks/useI18n";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { MAX_IMAGE_ATTACHMENTS } from "@fffattiger/pix-protocol";
+import { getDraft, setDraft } from "@/lib/draft-store";
 
 class ResizeObserverStub {
   observe(): void {}
@@ -257,6 +258,23 @@ describe("ChatInput pending file attachments", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Remove image" })).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Remove file" })).toBeNull();
     expect(uploadAttachment).not.toHaveBeenCalled();
+  });
+
+  it("never resurrects text the user deleted, even when a restore wrote it", async () => {
+    // A queue restore can write a draft from OUTSIDE the editor. The user's
+    // later deletion must still win: the editor must not treat its own clear
+    // as an external write and reload the text on the next switch.
+    setDraft("restored-draft-a", { value: "recalled text", images: [] });
+    const uploadAttachment = vi.fn();
+    const view = renderInput({ uploadAttachment, draftKey: "restored-draft-a" });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe("recalled text"));
+    fireEvent.change(textarea, { target: { value: "" } });
+    await waitFor(() => expect(getDraft("restored-draft-a")).toBeNull());
+    view.rerender(inputTree({ uploadAttachment, draftKey: "restored-draft-b" }));
+    view.rerender(inputTree({ uploadAttachment, draftKey: "restored-draft-a" }));
+    await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(""));
+    expect(getDraft("restored-draft-a")).toBeNull();
   });
 
   it("restores pending files when switching away from and back to a draft", async () => {
