@@ -423,7 +423,7 @@ export function AppShell({ search }: AppShellProps) {
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
   /** File the preview pane shows (any allowed path, not only the workspace). Cleared when the pane closes. */
   const [previewFile, setPreviewFile] = useState<string | null>(null);
-  const [previewDisplayMode, setPreviewDisplayMode] = useState<"diff" | undefined>(undefined);
+  const [previewDisplayMode, setPreviewDisplayMode] = useState<"diff" | "preview" | undefined>(undefined);
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
@@ -1084,7 +1084,9 @@ export function AppShell({ search }: AppShellProps) {
       // in the right pane. Every other chat link still opens a main-area tab.
       if (options?.source === "turn-files") {
         setPreviewFile(filePath);
-        setPreviewDisplayMode(options.initialDisplayMode);
+        // A file handed over in the answer opens rendered (openfile); the
+        // explicit diff action keeps its diff.
+        setPreviewDisplayMode(options.initialDisplayMode ?? "preview");
         setRightPane("preview");
         return;
       }
@@ -1125,7 +1127,7 @@ export function AppShell({ search }: AppShellProps) {
         const open = showFilesOpenPath(effect.details);
         if (open !== null && canFiles) {
           setPreviewFile(open);
-          setPreviewDisplayMode(undefined);
+          setPreviewDisplayMode("preview");
           setRightPane("preview");
         }
       } else if (effect.toolName === "open_session" && isAssistantView) {

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HttpClientProvider } from "@/app/http-context";
 import { I18nProvider } from "@/hooks/useI18n";
 import { FileViewerPanel, type FileViewerPanelHandle } from "./FileViewerPanel";
+import { FileViewer } from "./FileViewer";
 import { setWatchSessionFactory, type WatchConnectionState, type WatchSession } from "@/api/files-watch";
 
 function json(body: unknown, status = 200) {
@@ -216,5 +217,35 @@ describe("FileViewer — out-of-order watch settles", () => {
     act(() => { harness.emitState("closed", "Watch stream ended"); });
     expect(screen.getByText(/Watch disconnected/)).toBeTruthy();
     expect(screen.getByText("AAAA")).toBeTruthy();
+  });
+});
+
+describe("FileViewer — default display mode", () => {
+  function serve(content: string, language: string) {
+    setWatchSessionFactory(() => fakeWatchSession().session);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("op=read")) return json({ content, language, size: content.length });
+      if (url.includes("/v1/git/diff")) return json({ supported: false });
+      return json({ error: "not found" }, 404);
+    }) as unknown as typeof fetch);
+    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  }
+
+  it("openfile (preview requested) renders html; a plain open shows its source", async () => {
+    const html = "hellohtml";
+    const qc = serve(html, "html");
+    const { unmount } = mount(qc, <FileViewer filePath="/repo/a.html" cwd="/repo" initialDisplayMode="preview" />);
+    await screen.findByTitle("HTML preview");
+    unmount();
+
+    mount(serve(html, "html"), <FileViewer filePath="/repo/a.html" cwd="/repo" />);
+    await screen.findByText(html);
+    expect(screen.queryByTitle("HTML preview")).toBeNull();
+  });
+
+  it("a file without a preview ignores the request and shows source", async () => {
+    mount(serve("alphasource", "typescript"), <FileViewer filePath="/repo/a.ts" cwd="/repo" initialDisplayMode="preview" />);
+    await screen.findByText("alphasource");
   });
 });

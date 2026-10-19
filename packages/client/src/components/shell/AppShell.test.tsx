@@ -4283,13 +4283,13 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
   }
 
   /** Host stub that also serves file reads + git diff for the central viewer. */
-  function fileFetch(): typeof fetch {
+  function fileFetch(read: { content: string; language: string } = { content: "AAAA", language: "text" }): typeof fetch {
     return vi.fn(async (input: RequestInfo | URL) => {
       const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
       const p = String(path);
       if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
       if (p.includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
-      if (p.includes("op=read")) return json({ content: "AAAA", language: "text", size: 4 });
+      if (p.includes("op=read")) return json({ ...read, size: read.content.length });
       if (p.includes("/v1/git/diff")) return json({ supported: false });
       if (p.includes("/v1/projects")) return json({ projects: [], page: 1, pageSize: 10, total: 0, totalPages: 0, catalogRevision: 0 });
       if (p.includes("/v1/sessions")) return json({ sessions: [], page: 1, pageSize: 50, total: 0, totalPages: 0, catalogRevision: 0 });
@@ -4916,6 +4916,19 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("region", { name: /outside\.png/ })).toBeNull();
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-closed");
+  });
+
+  it("a file handed over in the answer (openfile) opens rendered when it has a preview", async () => {
+    globalThis.fetch = fileFetch({ content: "hellohtml", language: "html" });
+    mountApp({ cwd: "/x" });
+    await settle();
+    await act(async () => {
+      openChatFile("/x/page.html", { source: "turn-files" });
+      await flush();
+    });
+    await settle();
+    expect(screen.getByRole("region", { name: /page\.html/ })).toBeTruthy();
+    expect(screen.getByTitle("HTML preview")).toBeTruthy();
   });
 
   it("opens a written file in the preview pane as a diff", async () => {

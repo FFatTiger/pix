@@ -34,7 +34,9 @@ interface Props {
   onOpenFile?: ((filePath: string) => void) | undefined;
   /** Insert this file's relative path into the chat input (@ mention). */
   onAtMention?: ((relativePath: string, isDir: boolean) => void) | undefined;
-  initialDisplayMode?: "diff" | undefined;
+  /** `preview` asks for the rendered view where one exists (markdown/html);
+   *  other files ignore it and show source. */
+  initialDisplayMode?: "diff" | "preview" | undefined;
   /** Viewer state to restore when the file is re-opened (tab switch). */
   initialState?: FileViewerState | undefined;
   /** Called when the viewer unmounts so the tab can snapshot scroll/mode. */
@@ -934,13 +936,16 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
     lastContentRef.current = content;
   }, [readQuery.data?.content]);
 
-  // The markdown/html default-preview auto-switch only applies on a fresh
-  // open; a restored tab keeps its saved display mode.
+  // Default display on a fresh open (a restored tab keeps its saved mode):
+  // markdown always previews; html previews only when the opener asked for it
+  // (openfile), so a manual file-tree open still shows its source. A file with
+  // no preview falls back to source even when preview was requested. Keyed on
+  // the language, not every watch refetch, so a manual toggle survives edits.
+  const fileLanguage = readQuery.data?.language;
   useEffect(() => {
-    if (initialState === undefined && readQuery.data?.language === "markdown" && initialDisplayMode !== "diff") {
-      setPreviewMode(true);
-    }
-  }, [initialDisplayMode, initialState, readQuery.data]);
+    if (fileLanguage === undefined || initialState !== undefined || initialDisplayMode === "diff") return;
+    setPreviewMode(fileLanguage === "markdown" || (fileLanguage === "html" && initialDisplayMode === "preview"));
+  }, [fileLanguage, initialDisplayMode, initialState]);
 
   // File watch: a WatchSession with explicit connection state, bounded
   // reconnect/backoff and an authoritative resync after every (re)connect.
