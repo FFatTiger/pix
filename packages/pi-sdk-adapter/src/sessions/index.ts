@@ -81,6 +81,12 @@ export interface PiSdkSessionStore {
    * the directory has no sessions.
    */
   findLatestSessionByCwd?(cwd: string): Promise<SessionHeader | null>;
+  /**
+   * Creation hint (SessionCatalogPort.noteSessionCreated): the id was minted
+   * by a successful runtime.create, so exact-id misses are transient (the Pi
+   * SDK persists the JSONL lazily) and never become sticky negatives.
+   */
+  noteSessionCreated?(sessionId: string): void;
 }
 
 class PiSdkSessionCatalog implements SessionCatalogPort {
@@ -135,6 +141,10 @@ class PiSdkSessionCatalog implements SessionCatalogPort {
       throw makeRuntimeError("unavailable", "session catalog cannot resolve the latest session for a directory");
     }
     return this.store.findLatestSessionByCwd(cwd);
+  }
+
+  noteSessionCreated(sessionId: string): void {
+    this.store.noteSessionCreated?.(sessionId);
   }
 
   deleteSession(sessionId: string): Promise<void> {

@@ -742,6 +742,12 @@ export class SessiondService {
         },
       };
       const record = await this.start(start);
+      // The Pi SDK persists the new session's JSONL lazily (first append), so
+      // the catalog can observe this freshly minted id as missing for a short
+      // window. Tell the catalog the id is real so its exact-id miss handling
+      // stays transient (never a sticky negative) — clients holding this id
+      // converge as soon as the file lands.
+      this.deps.sessionCatalog?.noteSessionCreated?.(record.sessionId);
       return {
         sessionId: record.sessionId,
         epoch: record.epoch,

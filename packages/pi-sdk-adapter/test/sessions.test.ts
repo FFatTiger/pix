@@ -1086,6 +1086,88 @@ describe("pi-sdk sessions cache hardening (injected SDK)", () => {
     assert.equal(scans, 2);
   });
 
+  it("a runtime.create-hinted id never becomes a sticky negative (lazy JSONL flush)", async () => {
+    let scans = 0;
+    let flushed = false;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          ...(flushed ? [mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" })] : []),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // scans = 1, warm snapshot without s2
+    store.noteSessionCreated?.("s2"); // create returned before the SDK flushed the JSONL
+    // Miss while the file is still absent: one fresh scan, and NO negative is
+    // recorded for the hinted id (the miss is transient by definition).
+    await assert.rejects(() => store.readSession("s2"), isNotFound);
+    assert.equal(scans, 2);
+    // The worker flushes the file; the next exact-id read recovers immediately
+    // — no list-TTL expiry, no invalidation event, no 30s negative stall.
+    flushed = true;
+    const detail = await store.readSession("s2");
+    assert.equal(detail.sessionId, "s2");
+    assert.equal(scans, 3);
+    // Once observed in an applied scan the id is ordinary catalog state again:
+    // repeated reads are warm index hits.
+    await store.readSession("s2");
+    assert.equal(scans, 3);
+  });
+
+  it("a hinted id clears a negative recorded by a read that raced the create", async () => {
+    let scans = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // scans = 1
+    await assert.rejects(() => store.readSession("s2"), isNotFound); // scans = 2, negative recorded
+    // The create hint arrives AFTER the racing read already poisoned the id.
+    store.noteSessionCreated?.("s2");
+    // The very next read re-scans instead of honoring the stale negative.
+    await assert.rejects(() => store.readSession("s2"), isNotFound);
+    assert.equal(scans, 3);
+  });
+
+  it("findLatestSessionByCwd falls through an empty answer with a fresh scan, not the warm cache", async () => {
+    let scans = 0;
+    let assistantAppeared = false;
+    const assistantCwd = "/home/u/.pi/pix/assistant";
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          ...(assistantAppeared
+            ? [mkInfo({ path: "/repo/sessions/assistant.jsonl", id: "assistant", cwd: assistantCwd })]
+            : []),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // scans = 1, warm snapshot predates the assistant conversation
+    // Empty answer while the directory truly has no session: still a bounded
+    // FRESH scan (scans = 2), never the stale warm snapshot.
+    assert.equal(await store.findLatestSessionByCwd?.(assistantCwd), null);
+    assert.equal(scans, 2);
+    // The first assistant message flushes the JSONL; the binding lookup finds
+    // it immediately (scans = 3) instead of waiting for the list TTL.
+    assistantAppeared = true;
+    const latest = await store.findLatestSessionByCwd?.(assistantCwd);
+    assert.equal(latest?.sessionId, "assistant");
+    assert.equal(latest?.cwd, assistantCwd);
+    assert.equal(scans, 3);
+  });
+
   it("an invalidated warm-miss scan never repopulates the cache or clears a newer in-flight scan", async () => {
     let scans = 0;
     let releaseGen0: ((infos: FakeSessionInfo[]) => void) | undefined;

@@ -534,6 +534,16 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
   private negatives = new Map<string, number>();
   private readonly maxNegatives: number;
   /**
+   * Ids sessiond minted via a successful `runtime.create` whose JSONL the Pi
+   * SDK has not necessarily persisted yet (lazy first-append flush). Exact-id
+   * misses for these ids are transient by definition, so they never record or
+   * honor a negative: every read re-scans (coalesced) until the file lands.
+   * Entry drops automatically once an applied scan observes the id; capacity
+   * is bounded (insertion-order eviction) so a long-lived daemon cannot grow
+   * it without bound.
+   */
+  private createdSessions = new Map<string, true>();
+  /**
    * Per-session mutation serialization (D4 adapter foundation): rename AND
    * delete for the SAME session id share one FIFO queue so ordering is
    * deterministic (last committed append wins for rename/rename; delete-first
@@ -674,7 +684,12 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     this.cache = { ts: this.now(), infos, revision };
     this.lastAppliedRevision = revision;
     if (coldSnapshot) this.negatives.clear();
-    for (const info of infos) this.negatives.delete(info.id);
+    for (const info of infos) {
+      this.negatives.delete(info.id);
+      // A created session finally observed in an applied scan: the creation
+      // hint has served its purpose (the id is now ordinary catalog state).
+      this.createdSessions.delete(info.id);
+    }
   }
 
   /** Prune negatives whose recording-time deadline has passed. */
@@ -802,8 +817,12 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
    */
   private async resolveInfo(sessionId: string): Promise<SdkSessionInfo | undefined> {
     // A negative has its own fixed recording-time deadline, independent of cache
-    // freshness, so unrelated warm-miss refreshes never extend it.
-    if (this.isNegative(sessionId)) return undefined;
+    // freshness, so unrelated warm-miss refreshes never extend it. A session the
+    // lifecycle authority just created never honors (or records) a negative:
+    // the Pi SDK flushes its JSONL at the first append, so a miss for this id is
+    // transient and every read must be allowed to re-scan until the file lands.
+    const created = this.createdSessions.has(sessionId);
+    if (this.isNegative(sessionId) && !created) return undefined;
     const listWasWarm = this.isWarm();
     const generation = this.generation;
     await this.listInfos();
@@ -816,7 +835,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       // A miss is final ONLY while it is still the newest applied snapshot (no
       // newer scan in flight); otherwise fail closed without recording.
       if (this.generation === generation && this.revision === this.cache?.revision) {
-        this.recordNegative(sessionId);
+        if (!created) this.recordNegative(sessionId);
       }
       return undefined;
     }
@@ -833,7 +852,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       this.isWarm() &&
       this.revision === this.cache?.revision
     ) {
-      this.recordNegative(sessionId);
+      if (!created) this.recordNegative(sessionId);
     }
     return undefined;
   }
@@ -1088,7 +1107,11 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       const latest = (await this.readyProjectionIndex()).findLatestSessionByCwd(cwd);
       if (latest !== null) return latest;
     }
-    const infos = (await this.listInfos()).filter((info) =>
+    // Empty answer ⇒ authoritative FRESH scan, never the warm list cache: the
+    // assistant conversation is created lazily (JSONL lands at the first
+    // append), so the boot snapshot may legitimately predate it. scanOnce
+    // coalesces concurrent empty answers onto one scan per generation.
+    const infos = (await this.scanOnce()).filter((info) =>
       info.cwd === cwd && (info.parentSessionPath === undefined || info.parentSessionPath === ""));
     if (infos.length === 0) return null;
     let latest = infos[0]!;
@@ -1096,6 +1119,24 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       if (info.modified.getTime() > latest.modified.getTime()) latest = info;
     }
     return toHeader(latest, {});
+  }
+
+  /** Creation hint from the lifecycle authority (SessionCatalogPort.noteSessionCreated). */
+  noteSessionCreated(sessionId: string): void {
+    if (sessionId.length === 0) return;
+    if (this.createdSessions.has(sessionId)) {
+      // Re-insert at the tail so eviction order tracks recency of the hint.
+      this.createdSessions.delete(sessionId);
+    }
+    this.createdSessions.set(sessionId, true);
+    while (this.createdSessions.size > 256) {
+      const oldest = this.createdSessions.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.createdSessions.delete(oldest);
+    }
+    // The hint invalidates any negative this id may already carry (a read that
+    // raced the create could have recorded one before the hint arrived).
+    this.negatives.delete(sessionId);
   }
 
   async listProjectPage(request: CatalogPageRequest): Promise<ProjectPage> {

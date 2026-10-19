@@ -221,6 +221,16 @@ export interface SessionCatalogPort {
    * fail closed with `unavailable` instead of falling back to a list scan.
    */
   findLatestSessionByCwd?(cwd: string): Promise<SessionHeader | null>;
+  /**
+   * Creation hint from the session-lifecycle authority: sessiond calls this
+   * with the id a successful `runtime.create` minted. The Pi SDK persists
+   * the JSONL lazily (at the first append), so the catalog can observe a
+   * just-created id as missing for a short window; this hint lets the exact-id
+   * paths treat a miss for THIS id as transient (never a sticky negative) so
+   * clients holding the freshly created id converge as soon as the file
+   * lands. Optional: absent ⇒ catalogs keep their plain miss semantics.
+   */
+  noteSessionCreated?(sessionId: string): void;
 }
 
 /** Independent project catalog over the same materialized session index. */

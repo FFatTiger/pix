@@ -389,6 +389,20 @@ async function runCorpus(chromeSlot, stack, provider, dirs, corpus, { includeRes
   assertExactPromptOnce(provider, promptNav, `${corpus.label} nav send`);
   await waitForProviderGate(provider, STEP_TIMEOUT_MS, `${corpus.label}: nav gated`);
   await assertHeldStreaming(chrome, provider, heldNav, `${corpus.label}: nav pre-switch`);
+  // The isolated project cwd lives under the OS temp dir, which the catalog
+  // classifies session_only (deliberate rail policy: scratch/temp projects
+  // get no Projects card). Pin BOTH corpus sessions through the
+  // workspace-flags seam so their rows render in the Pinned rail — the
+  // designed sidebar path for session_only conversations — and the A↔B
+  // switches still exercise REAL row clicks.
+  for (const pinId of [corpus.otherId, history.sessionId]) {
+    const pinResponse = await fetch(`${stack.origin}/v1/workspace-flags`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "session", key: pinId, pinned: true }),
+    });
+    assert.equal(pinResponse.ok, true, `${corpus.label}: pinning ${pinId.slice(0, 8)} for the A↔B rail rows must succeed`);
+  }
   await clickSession(chrome, corpus.otherId, `${corpus.label}: A→B`);
   await delay(400);
   await clickSession(chrome, history.sessionId, `${corpus.label}: B→A`);
