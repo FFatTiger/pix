@@ -42,6 +42,7 @@ import {
   toLiveThinkingLevelOption,
   toQueuedMessagesView,
   isUserQueuedMessage,
+  queuedIndexForUserItem,
   assembleHistoryContextUsage,
   type ContextCatalogModel,
 } from "@/components/chat/chat-runtime-view";
@@ -1061,21 +1062,46 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [liveWorkspaceEnabled, live, hasThinkingSet, exact, isCurrent, stageThinking, clearStagedThinking],
   );
 
+  /** The queue was just cleared. Hand the user's own messages back as a draft
+   *  and put every other queued item (Pixie notices / messages sent on the
+   *  user's behalf) back into the runtime queue, so no queued input is lost.
+   *  A failed re-queue keeps its text in the draft. Returns true on failure. */
+  const restoreClearedQueue = useCallback(async (messages: readonly string[], options: { reverseDraft?: boolean } = {}): Promise<boolean> => {
+    if (exact === null) return false;
+    const draft: string[] = [];
+    let failed = false;
+    for (const message of messages) {
+      if (isUserQueuedMessage(message)) {
+        draft.push(message);
+        continue;
+      }
+      try {
+        if (!hasFollowUp) throw new Error("runtime.follow_up is not advertised");
+        await exact.followUp(message);
+      } catch {
+        failed = true;
+        draft.push(message);
+      }
+    }
+    const restore = options.reverseDraft === true ? [...draft].reverse() : draft;
+    if (restore.length > 0) inputRef.current?.insertIfEmpty(restore.join("\n"));
+    return failed;
+  }, [exact, hasFollowUp]);
+
   const handleRecallQueue = useCallback(() => {
     if (!liveWorkspaceEnabled || !hasQueue || !exact) return;
     const all = queuedMessages ? [...queuedMessages.steering, ...queuedMessages.followUp] : [];
-    // Only the user's own messages come back to the input; Pixie notices and
-    // messages Pixie sent go back into the queue so they are still delivered.
     void exact
       .clearQueue()
       .then(async () => {
         if (!isCurrent()) return;
-        const text = all.filter(isUserQueuedMessage).reverse().join("\n");
-        if (text) inputRef.current?.insertIfEmpty(text);
-        for (const message of all.filter((item) => !isUserQueuedMessage(item))) await exact.followUp(message);
+        // The draft keeps the established newest-first order.
+        const failed = await restoreClearedQueue(all, { reverseDraft: true });
+        if (!isCurrent()) return;
+        if (failed) setSendError(t("desktop.sendFailed"));
       })
       .catch(() => undefined);
-  }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent]);
+  }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent, restoreClearedQueue, t]);
 
   // The protocol can only clear the WHOLE queue, so steering one queued
   // message clears it, steers the chosen message, and re-queues the rest in
@@ -1089,11 +1115,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // `index` counts the visible (user-typed) items; the rest of the runtime
     // queue, assistant items included, is re-queued in its original order.
     const all = queuedMessages ? [...queuedMessages.steering, ...queuedMessages.followUp] : [];
-    const at = all.flatMap((message, itemIndex) => (isUserQueuedMessage(message) ? [itemIndex] : []))[index];
+    const at = queuedIndexForUserItem(all, index);
     const chosen = at === undefined ? undefined : all[at];
     if (chosen === undefined || chosen.trim().length === 0) return;
     const rest = all.filter((_, itemIndex) => itemIndex !== at);
-    const draftOf = (messages: readonly string[]) => messages.filter(isUserQueuedMessage).join("\n");
     steerOneInFlightRef.current = true;
     void exact
       .clearQueue()
@@ -1108,9 +1133,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             await exact.sendPromptToSession(chosen);
           }
         } catch (cause) {
-          // The chosen message never left. Put the whole queue back instead
-          // of re-queuing the others and losing it.
-          if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(draftOf([chosen, ...rest]));
+          if (!isCurrent()) return;
+          setSendError(describeSendFailure(cause));
+          // The chosen message may or may not have left. On a definite failure
+          // the whole queue is restored; on an uncertain one it may already be
+          // queued, so only the untouched remainder is put back.
+          await restoreClearedQueue(isDefiniteFailure(cause) ? [chosen, ...rest] : rest);
           return;
         }
         if (!isCurrent()) return;
@@ -1120,16 +1148,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             await exact.followUp(message);
             requeued.push(message);
           } catch (cause) {
-            if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(draftOf(rest.slice(requeued.length)));
+            if (!isCurrent()) return;
+            // The messages the queue never took back are restored instead of
+            // dropped; the failure is stated rather than swallowed.
+            setSendError(describeSendFailure(cause));
+            await restoreClearedQueue(isDefiniteFailure(cause) ? rest.slice(requeued.length) : rest.slice(requeued.length + 1));
             return;
           }
         }
       })
       .catch((cause: unknown) => {
-        if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(draftOf([chosen, ...rest]));
+        // clearQueue itself failed: the runtime queue is intact, so restoring
+        // the text would duplicate it. Only report the failure.
+        if (isCurrent()) setSendError(describeSendFailure(cause));
       })
       .finally(() => { steerOneInFlightRef.current = false; });
-  }, [liveWorkspaceEnabled, hasQueue, hasSteer, hasFollowUp, queuedMessages, exact, isCurrent, isDefiniteFailure, restoreDraft]);
+  }, [liveWorkspaceEnabled, hasQueue, hasSteer, hasFollowUp, queuedMessages, exact, isCurrent, isDefiniteFailure, describeSendFailure, restoreClearedQueue]);
 
   useImperativeHandle(ref, () => ({
     recallQueue: handleRecallQueue,

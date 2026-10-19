@@ -17,6 +17,7 @@ import { SessionStagingProvider } from "@/features/composer/session-staging-prov
 import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
 import { CaptureTestRuntime } from "@/runtime/testing/capture-test-runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
+import { ASSISTANT_NOTIFY_MESSAGE_PREFIX } from "@/lib/assistant-message";
 import { WORKSPACE_LAST_SESSION_STORAGE_KEY, WORKSPACE_SESSION_TABS_STORAGE_KEY } from "@/features/workspace/tabs/workspace-tab-state";
 import type { TestRuntimeStore } from "@/runtime/testing/test-runtime-store";
 import { setWatchSessionFactory, type WatchConnectionState, type WatchSession } from "@/api/files-watch";
@@ -3098,6 +3099,68 @@ describe("Composer — steer / follow-up settle like a send", () => {
     expect(screen.getByRole("alert").textContent).toContain("The message was not sent");
     expect(composerTextarea().value).toBe("queued while running");
   });
+
+  it("steering a visible row leaves Pixie's hidden queue items in the runtime queue", async () => {
+    const ws = await mountRunningA();
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: { type: "runtime_capabilities_changed", sessionId: "A", epoch: "e1", eventId: 3, capabilities: { capabilities: [...LIVE_CAPS, "runtime.steer", "runtime.follow_up", "runtime.queue"], version: 2 } },
+      });
+      await flush(12);
+    });
+    // A Pixie notice and a user message wait in the runtime queue; the card
+    // only renders the user's message.
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "queue_update",
+          sessionId: "A",
+          epoch: "e1",
+          eventId: 4,
+          steering: [],
+          followUp: [
+            { message: `${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n会话完成` },
+            { message: "mine to steer" },
+          ],
+        },
+      });
+      await flush(12);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
+      await flush();
+    });
+    const section = screen.getByTestId("status-queue-section");
+    // Row 0 is the user's message even though the assistant notice sits first
+    // in the runtime queue: steering must address the message the row shows.
+    await act(async () => {
+      fireEvent.click(within(section).getAllByRole("button", { name: "Steer this message now" })[0]!);
+      await flush();
+    });
+    const clear = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    expect(clear.payload).toMatchObject({ interrupt: { type: "clear_queue" } });
+    await act(async () => {
+      ws.serverSend({ type: "interrupt_result", id: clear.id, payload: { sessionId: "A", commandId: clear.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+      await flush(12);
+    });
+    // The steered message goes out as steer (the turn is still running)…
+    const steer = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(steer.payload.command).toMatchObject({ type: "steer", message: "mine to steer" });
+    await act(async () => {
+      ws.serverSend({ type: "response", id: steer.id, payload: { ok: true, result: { commandId: steer.payload.command.commandId, result: { ok: true, type: "steer" } } } });
+      await flush(12);
+    });
+    // …and the hidden assistant notice is re-queued rather than dropped.
+    await act(async () => { await flush(12); });
+    const requeue = lastFrame<{ type: string; id: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
+    expect(requeue.payload.command).toMatchObject({ type: "follow_up" });
+    expect(requeue.payload.command.message).toContain(ASSISTANT_NOTIFY_MESSAGE_PREFIX);
+    // Nothing was pushed back into the input: the steered message left and the
+    // notice returned to the queue.
+    expect(composerTextarea().value).not.toContain("mine to steer");
+  });
 });
 
 const PROJECT_SESSIONS: readonly SessionHeader[] = [
@@ -4815,6 +4878,49 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(screen.getByRole("button", { name: "Side chat" }).getAttribute("aria-pressed")).toBe("false");
     expect(screen.queryByTestId("side-chat-panel")).toBeNull();
     expect(ws.sent.filter((frame) => (frame as { type?: string; payload?: { sessionId?: string } }).type === "attach" && (frame as { payload?: { sessionId?: string } }).payload?.sessionId === "B")).toHaveLength(0);
+  });
+
+  it("hides Pixie's own queued prompts from the Status capsule but keeps the user's", async () => {
+    const parent: SessionHeader = {
+      sessionId: "parent",
+      sessionFile: "/sessions/parent.jsonl",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Parent",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 3,
+      workspaceAccess: AUTHORIZED,
+    };
+    globalThis.fetch = controllableStubFetch({ sessions: [parent], contextEntries: new Map([["parent", []]]) });
+    mountApp({ cwd: "/x", session: "parent" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("parent").catch(() => undefined);
+      const attach = await waitForAttach(ws, "parent");
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "parent",
+          capabilities: [...LIVE_CAPS, "runtime.steer", "runtime.follow_up", "runtime.queue"],
+          queuedMessages: {
+            steering: [{ message: "去修测试" }],
+            followUp: [{ message: `${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n会话完成` }, { message: "我自己的后续" }],
+          },
+        }),
+      });
+      await flush();
+    });
+    await settle();
+    // Assistant-marked items still sit in the runtime queue; the card only
+    // counts and lists what the user typed.
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    expect(capsule.textContent).toContain("2 queued");
+    fireEvent.click(capsule);
+    const section = screen.getByTestId("status-queue-section");
+    expect(within(section).queryByText(/会话完成/)).toBeNull();
+    expect(within(section).getByText("我自己的后续")).toBeTruthy();
   });
 
   it("updates the Status capsule from snapshot Todo then todo_changed through the production reducer", async () => {

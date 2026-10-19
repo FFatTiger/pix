@@ -257,6 +257,16 @@ export function userQueuedMessagesView(view: QueuedMessagesView | null): QueuedM
   return { steering, followUp };
 }
 
+/**
+ * Runtime-queue position of the nth visible (user-typed) queued message.
+ * The queue card hides assistant-marked items, so its row index counts only
+ * user items; every queue operation still addresses the full runtime queue.
+ */
+export function queuedIndexForUserItem(all: readonly string[], index: number): number | undefined {
+  const positions = all.flatMap((message, position) => (isUserQueuedMessage(message) ? [position] : []));
+  return positions[index];
+}
+
 /** Composer AttachedImage list → protocol prompt images (base64, no prefix). */
 const SUPPORTED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set(SupportedImageMediaTypeSchema.options);
 

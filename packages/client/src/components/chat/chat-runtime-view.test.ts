@@ -11,6 +11,7 @@ import {
   toLiveThinkingLevelOption,
   toQueuedMessagesView,
   userQueuedMessagesView,
+  queuedIndexForUserItem,
 } from "./chat-runtime-view";
 import { ASSISTANT_NOTIFY_MESSAGE_PREFIX, ASSISTANT_SENT_MESSAGE_PREFIX } from "@/lib/assistant-message";
 import type { AttachedImage } from "./ChatInput";
@@ -354,5 +355,14 @@ describe("userQueuedMessagesView", () => {
   it("hides the queue when only assistant items are waiting", () => {
     expect(userQueuedMessagesView({ steering: [], followUp: [notice, sent] })).toBeNull();
     expect(userQueuedMessagesView(null)).toBeNull();
+  });
+
+  it("maps a visible row index onto the runtime queue position", () => {
+    // The card's rows count only user items; the runtime queue holds every item.
+    const all = [sent, "mine", notice, "later"];
+    expect(queuedIndexForUserItem(all, 0)).toBe(1);
+    expect(queuedIndexForUserItem(all, 1)).toBe(3);
+    expect(queuedIndexForUserItem(all, 2)).toBeUndefined();
+    expect(queuedIndexForUserItem([], 0)).toBeUndefined();
   });
 });
