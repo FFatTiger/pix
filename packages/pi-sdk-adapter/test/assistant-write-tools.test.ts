@@ -46,6 +46,8 @@ interface FakeChannel extends AssistantOpsChannel {
   renameResult: WorkerAssistantOpResultPayload;
   completion: WorkerAssistantCompletionPayload | null | "hang";
   resolveCompletion?: (value: WorkerAssistantCompletionPayload | null) => void;
+  /** Fired synchronously the moment the tool enters the wait (not merely dispatched). */
+  onWaitStarted?: (delegationId: string) => void;
 }
 
 function fakeChannel(overrides: Partial<FakeChannel> = {}): FakeChannel {
@@ -75,6 +77,7 @@ function fakeChannel(overrides: Partial<FakeChannel> = {}): FakeChannel {
     },
     waitForCompletion(delegationId, timeoutMs) {
       calls.push({ method: "waitForCompletion", args: [delegationId, timeoutMs] });
+      channel.onWaitStarted?.(delegationId);
       if (channel.completion === "hang") {
         return new Promise((resolve) => {
           channel.resolveCompletion = resolve;
@@ -253,10 +256,17 @@ describe("assistant write tools", () => {
       completion: "hang",
     });
     const controller = new AbortController();
+    // Abort at the exact moment the tool enters the wait. Aborting on a wall-
+    // clock sleep instead races the session-directory scan that precedes it:
+    // under load the abort landed first, the tool returned through
+    // throwIfAborted(), and the cancelWait assertion failed.
+    const waitStarted = new Promise<void>((resolve) => {
+      channel.onWaitStarted = () => resolve();
+    });
     const pending = run(collect(channel), "send_to_session", {
       session: id, message: "改方向", delivery: "steer", wait: true, wait_minutes: 10,
     }, controller.signal);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitStarted;
     controller.abort();
     await assert.rejects(pending);
     assert.ok(channel.calls.some((call) => call.method === "cancelWait" && call.args[0] === "d-3"));
