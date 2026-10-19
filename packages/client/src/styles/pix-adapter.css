@@ -2614,6 +2614,23 @@ html.dark .catalog-meta-item--error {
   color: var(--text);
 }
 
+.assistant-notice-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.assistant-notice-open .assistant-notice-title { color: inherit; }
+.assistant-notice-open svg { flex: none; color: var(--text-dim); }
+.assistant-notice-open:hover { color: var(--accent); }
+.assistant-notice-open:hover svg { color: var(--accent); }
+
 .assistant-notice-badge {
   flex: none;
   padding: 1px 8px;

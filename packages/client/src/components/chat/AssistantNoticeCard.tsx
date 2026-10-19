@@ -1,6 +1,6 @@
-import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
+import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { useI18n } from "@/hooks/useI18n";
 import { queryKeys } from "@/api/query-keys";
 import type { SessionHeader } from "@fffattiger/pix-protocol";
@@ -71,7 +71,6 @@ function NoticeBlockView({ block }: { block: NoticeBlock }) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [opened, setOpened] = useState(false);
   const tone = RESULT_TONE[block.result] ?? "";
   const open = () => {
     if (block.sessionId === null) return;
@@ -84,12 +83,24 @@ function NoticeBlockView({ block }: { block: NoticeBlock }) {
       }
     }
     void navigate({ to: "/", search: { session: block.sessionId, cwd } });
-    setOpened(true);
   };
   return (
     <div className="assistant-notice-block" data-testid="assistant-notice-block">
       <div className="assistant-notice-head">
-        <span className="assistant-notice-title">{block.title}</span>
+        {block.sessionId !== null ? (
+          <button
+            type="button"
+            className="assistant-notice-open"
+            data-testid="assistant-notice-open"
+            onClick={open}
+            title={t("desktop.assistantActionOpen")}
+          >
+            <span className="assistant-notice-title">{block.title}</span>
+            <CaretRightIcon size={10} />
+          </button>
+        ) : (
+          <span className="assistant-notice-title">{block.title}</span>
+        )}
         {block.result !== "" ? (
           <span className={`assistant-notice-badge${tone ? ` ${tone}` : ""}`} data-testid="assistant-notice-badge">{block.result}</span>
         ) : null}
@@ -98,17 +109,6 @@ function NoticeBlockView({ block }: { block: NoticeBlock }) {
       {block.details.map((line) => (
         <div key={line} className="assistant-action-card-note">{line}</div>
       ))}
-      {block.sessionId !== null ? (
-        <button
-          type="button"
-          className="assistant-action-button"
-          data-testid="assistant-action-button"
-          disabled={opened}
-          onClick={open}
-        >
-          {opened ? "✓ " : ""}{t("desktop.assistantActionOpen")}
-        </button>
-      ) : null}
     </div>
   );
 }

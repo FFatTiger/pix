@@ -75,7 +75,7 @@ describe("UserMessageView assistant markers", () => {
     expect(screen.getByTestId("assistant-notice-badge").className).toContain("is-positive");
     expect(screen.getByText("最后回复: 已修好")).toBeTruthy();
     expect(document.querySelector(".chat-user-bubble")).toBeNull();
-    fireEvent.click(screen.getByTestId("assistant-action-button"));
+    fireEvent.click(screen.getByTestId("assistant-notice-open"));
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({
       search: { session: "s-9", cwd: "" },
     }));
@@ -97,7 +97,7 @@ describe("UserMessageView assistant markers", () => {
     expect(badges.map((badge) => badge.textContent)).toEqual(["出错", "停下等用户"]);
     expect(badges[0]!.className).toContain("is-error");
     expect(badges[1]!.className).toContain("is-accent");
-    expect(screen.getAllByTestId("assistant-action-button")).toHaveLength(2);
+    expect(screen.getAllByTestId("assistant-notice-open")).toHaveLength(2);
     expect(screen.getByText("错误: boom")).toBeTruthy();
   });
 
@@ -105,7 +105,7 @@ describe("UserMessageView assistant markers", () => {
     mount(user(`${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n这不是标准块`));
     expect(screen.getByTestId("assistant-notice-card")).toBeTruthy();
     expect(screen.getByText("这不是标准块")).toBeTruthy();
-    expect(screen.queryByTestId("assistant-action-button")).toBeNull();
+    expect(screen.queryByTestId("assistant-notice-open")).toBeNull();
   });
 
   it("copies a notice unchanged, marker included", async () => {

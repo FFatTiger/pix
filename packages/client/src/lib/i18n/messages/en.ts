@@ -246,7 +246,7 @@ export const enLocale = {
     "desktop.assistantChip_send_to_session": "Sent to",
     "desktop.assistantChip_create_session": "Created",
     "desktop.assistantChip_open_session": "Opened",
-    "desktop.assistantChip_draft_to_session": "Draft for",
+    "desktop.assistantChip_draft_to_session": "Drafted for",
     "desktop.assistantSentLabel": "Sent by Pixie",
     "desktop.assistantNoticeTitle": "Work notice",
     "desktop.workspaceFlagsUnavailable": "Pinning is unavailable right now",
