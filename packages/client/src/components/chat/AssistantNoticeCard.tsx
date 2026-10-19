@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
+import { BellSimpleIcon } from "@phosphor-icons/react/BellSimple";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { useI18n } from "@/hooks/useI18n";
 import { queryKeys } from "@/api/query-keys";
@@ -7,8 +8,9 @@ import type { SessionHeader } from "@fffattiger/pix-protocol";
 
 /**
  * Completion notice the assistant session receives when delegated work
- * finishes. The persisted text is machine-formatted; this card only presents
- * it. Unparseable text is shown raw — never dropped.
+ * finishes. The persisted text is machine-formatted; this renders it as a
+ * quiet left-aligned event line, not a user bubble. Unparseable text is shown
+ * raw — never dropped.
  */
 
 export interface NoticeBlock {
@@ -53,13 +55,11 @@ export function parseAssistantNotice(body: string): NoticeBlock[] | null {
 }
 
 export function AssistantNoticeCard({ body }: { body: string }) {
-  const { t } = useI18n();
   const blocks = parseAssistantNotice(body);
   return (
-    <div className="assistant-action-card assistant-notice-card" data-testid="assistant-notice-card">
-      <div className="assistant-action-card-title">{t("desktop.assistantNoticeTitle")}</div>
+    <div className="assistant-notice" data-testid="assistant-notice-card">
       {blocks === null ? (
-        <div className="assistant-action-card-note">{body.trim()}</div>
+        <div className="assistant-notice-raw" data-testid="assistant-notice-raw">{body.trim()}</div>
       ) : blocks.map((block, index) => (
         <NoticeBlockView key={`${block.sessionId}-${index}`} block={block} />
       ))}
@@ -87,6 +87,7 @@ function NoticeBlockView({ block }: { block: NoticeBlock }) {
   return (
     <div className="assistant-notice-block" data-testid="assistant-notice-block">
       <div className="assistant-notice-head">
+        <BellSimpleIcon size={12} className="assistant-notice-icon" aria-hidden="true" />
         {block.sessionId !== null ? (
           <button
             type="button"
@@ -102,12 +103,11 @@ function NoticeBlockView({ block }: { block: NoticeBlock }) {
           <span className="assistant-notice-title">{block.title}</span>
         )}
         {block.result !== "" ? (
-          <span className={`assistant-notice-badge${tone ? ` ${tone}` : ""}`} data-testid="assistant-notice-badge">{block.result}</span>
+          <span className={`assistant-notice-status${tone ? ` ${tone}` : ""}`} data-testid="assistant-notice-status">{block.result}</span>
         ) : null}
       </div>
-      {block.project !== "" ? <div className="assistant-action-card-note">{block.project}</div> : null}
       {block.details.map((line) => (
-        <div key={line} className="assistant-action-card-note">{line}</div>
+        <div key={line} className="assistant-notice-detail" title={line}>{line}</div>
       ))}
     </div>
   );

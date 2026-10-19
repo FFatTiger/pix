@@ -2588,20 +2588,58 @@ html.dark .catalog-meta-item--error {
   color: var(--text-dim);
 }
 
-.assistant-notice-card {
-  border: 0;
+/* A delegated-session completion notice: a quiet left-aligned event line in
+   the transcript, not a user bubble and not a card. */
+.chat-notice-row {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 20px;
+}
+
+.assistant-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 
 .assistant-notice-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .assistant-notice-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.assistant-notice-icon {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.assistant-notice-detail,
+.assistant-notice-raw {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* Indent details to the session name: bell width (12px) + head gap. */
+.assistant-notice-detail {
+  padding-left: 16px;
+}
+
+.assistant-notice-raw {
+  white-space: pre-wrap;
 }
 
 .assistant-notice-title {
@@ -2631,33 +2669,26 @@ html.dark .catalog-meta-item--error {
 .assistant-notice-open:hover { color: var(--accent); }
 .assistant-notice-open:hover svg { color: var(--accent); }
 
-.assistant-notice-badge {
+.assistant-notice-status {
   flex: none;
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: var(--bg-subtle);
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.6;
 }
 
-.assistant-notice-badge.is-positive {
-  background: color-mix(in srgb, var(--status-success, var(--accent-green)) 16%, transparent);
+.assistant-notice-status.is-positive {
   color: var(--status-success, var(--accent-green));
 }
 
-.assistant-notice-badge.is-error {
-  background: color-mix(in srgb, var(--status-danger, #e5484d) 16%, transparent);
+.assistant-notice-status.is-error {
   color: var(--status-danger, #e5484d);
 }
 
-.assistant-notice-badge.is-warn {
-  background: color-mix(in srgb, var(--status-warning) 16%, transparent);
+.assistant-notice-status.is-warn {
   color: var(--status-warning);
 }
 
-.assistant-notice-badge.is-accent {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+.assistant-notice-status.is-accent {
   color: var(--accent);
 }
 

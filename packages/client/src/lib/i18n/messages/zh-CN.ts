@@ -248,7 +248,6 @@ export const zhCNLocale = {
     "desktop.assistantChip_open_session": "已打开",
     "desktop.assistantChip_draft_to_session": "已起草",
     "desktop.assistantSentLabel": "由 Pixie 发送",
-    "desktop.assistantNoticeTitle": "工作通知",
     "desktop.workspaceFlagsUnavailable": "置顶/归档暂时不可用",
     "desktop.workspaceFlagsSaveFailed": "置顶/归档保存失败，已回滚",
     "desktop.agentFeature.smartCompact": "智能压缩",
