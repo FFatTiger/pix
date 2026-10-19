@@ -883,6 +883,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     // added/removed images) takes over and saves immediately.
     if (snapshot && snapshot.value === value && snapshot.imageCount === images.length) return;
     restoredSnapshotRef.current = null;
+    // Never overwrite a draft that arrived from OUTSIDE this editor (a queue
+    // restore recovering cleared messages). The editor adopts it on the next
+    // key effect pass; clobbering it here would lose the recovered text.
+    const stored = getDraft(draftKey);
+    if (stored !== null && stored.value !== value && stored.value.trim().length > 0 && value.trim().length === 0) {
+      return;
+    }
     setDraft(draftKey, { value, images });
   }, [attachedImages, draftKey, value]);
 
@@ -896,10 +903,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const previousDraftKey = draftKeyRef.current;
     const keyChanged = previousDraftKey !== draftKey;
     if (previousDraftKey && keyChanged && draftRestoredRef.current === previousDraftKey) {
-      setDraft(previousDraftKey, {
-        value: valueRef.current,
-        images: attachedImagesRef.current.map(imageToDraftImage),
-      });
+      // The editor normally saves on every change, so the store already holds
+      // what the user typed. A DIFFERENT non-empty value means someone wrote
+      // this draft from outside (a queue restore parking recovered text):
+      // that write is newer and must not be overwritten with the stale editor
+      // state as it goes away.
+      const stored = getDraft(previousDraftKey);
+      const external = stored !== null && stored.value.trim().length > 0 && stored.value !== valueRef.current;
+      if (!external) {
+        setDraft(previousDraftKey, {
+          value: valueRef.current,
+          images: attachedImagesRef.current.map(imageToDraftImage),
+        });
+      }
       setDraftFiles(previousDraftKey, pendingFilesRef.current);
     }
 

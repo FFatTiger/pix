@@ -300,6 +300,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // Draft persistence key: the selected session id, or a per-cwd placeholder
   // while a brand-new (not-yet-created) session is selected.
   const draftKey = selectedSessionId ?? (cwd ? `new:${cwd}` : undefined);
+  /** Live draft key mirror: async callbacks must read the CURRENT selection. */
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
 
   // --- Session title generation (Settings → Chat consumer) ------------------
   const autoTitleFiredRef = useRef<Set<string>>(new Set());
@@ -1105,15 +1108,33 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
    *  Only the user's own text becomes a draft. A marker line is not the user's
    *  words, so a Pixie item that cannot be re-queued is recovered as the body
    *  it carried, never as a replayed marker. */
-  const restoreClearedQueue = useCallback(async (messages: readonly string[]): Promise<{ failed: boolean }> => {
-    const draft: string[] = [];
+  const restoreClearedQueue = useCallback(async (
+    messages: readonly string[],
+    sourceDraftKey: string | undefined,
+  ): Promise<{ failed: boolean }> => {
+    // The editor is only a valid target while it still serves the draft key the
+    // queue belonged to: AppShell does not remount the composer on a session
+    // switch, so the same ChatInput instance starts editing the NEW session's
+    // draft. Prepending there would save the old session's queue under the new
+    // one. Everything else goes to the originating session's persisted draft.
+    // The editor is trusted only when the composer STILL shows the draft this
+    // queue belonged to. Comparing against a value captured at click time is
+    // not enough: this callback keeps a stale closure, so the live key must be
+    // read through a ref.
+    const target = draftKeyRef.current === sourceDraftKey ? inputRef.current : null;
+    const recover = (body: string): void => {
+      if (!restoreQueueText(target, sourceDraftKey, body)) failed = true;
+    };
     let failed = false;
+    // The user's own text goes back FIRST: re-queueing Pixie's items awaits the
+    // runtime and must never delay (or, on a gone session, replace) that.
+    // One blank line between messages, matching what prependText produces: a
+    // multi-line Pixie body glued to the next message with a single newline
+    // would read as one message.
+    const userText = messages.filter(isUserQueuedMessage).join("\n\n");
+    if (userText.trim().length > 0) recover(userText);
     for (const message of messages) {
-      const userText = isUserQueuedMessage(message);
-      if (userText) {
-        draft.push(message);
-        continue;
-      }
+      if (isUserQueuedMessage(message)) continue;
       // Pixie's own item: back into the runtime queue when we can.
       if (exact !== null && hasFollowUp) {
         try {
@@ -1123,28 +1144,24 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         }
       }
       failed = true;
-      draft.push(stripAssistantMarker(message));
-    }
-    const text = draft.filter((item) => item.trim().length > 0).join("\n");
-    if (text.length > 0) {
-      // The editor can be unmounted while this async restore resumes (and a
-      // handle captured at click time belongs to the instance that may already
-      // be gone), so only the CURRENT ref is trusted; the helper falls back to
-      // the session's persisted draft, which a later mount hydrates.
-      if (!restoreQueueText(inputRef.current, draftKey, text)) failed = true;
+      const body = stripAssistantMarker(message);
+      if (body.trim().length > 0) recover(body);
     }
     return { failed };
   }, [exact, hasFollowUp, draftKey]);
 
   const handleRecallQueue = useCallback(() => {
     if (!liveWorkspaceEnabled || !hasQueue || !exact) return;
+    // Bind the restore to the DRAFT whose queue this is: the ack can land after
+    // the user switched sessions.
+    const sourceDraftKey = draftKey;
     const all = queuedMessages ? [...queuedMessages.steering, ...queuedMessages.followUp] : [];
     void exact
       .clearQueue()
       .then(async () => {
         // The queue is empty from here on: restore regardless of whether this
         // composer still owns the selection, or the messages are gone.
-        const { failed } = await restoreClearedQueue([...all].reverse());
+        const { failed } = await restoreClearedQueue([...all].reverse(), sourceDraftKey);
         if (!isCurrent()) return;
         if (failed) setSendError(t("desktop.sendFailed"));
       })
@@ -1153,7 +1170,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         // restored. Say so instead of leaving a queue the UI claimed to recall.
         if (isCurrent()) setSendError(describeSendFailure(cause));
       });
-  }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent, restoreClearedQueue, describeSendFailure, t]);
+  }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent, restoreClearedQueue, describeSendFailure, t, draftKey]);
 
   // The protocol can only clear the WHOLE queue, so steering one queued
   // message clears it, steers the chosen message, and re-queues the rest in
@@ -1171,6 +1188,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const chosen = at === undefined ? undefined : all[at];
     if (chosen === undefined || chosen.trim().length === 0) return;
     const rest = all.filter((_, itemIndex) => itemIndex !== at);
+    const sourceDraftKey = draftKey;
     steerOneInFlightRef.current = true;
     void exact
       .clearQueue()
@@ -1189,12 +1207,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           // queued, so only the untouched remainder is put back. Either way the
           // queue is already empty, so this runs even after a session switch.
           if (isCurrent()) setSendError(describeSendFailure(cause));
-          await restoreClearedQueue(isDefiniteFailure(cause) ? [chosen, ...rest] : rest);
+          await restoreClearedQueue(isDefiniteFailure(cause) ? [chosen, ...rest] : rest, sourceDraftKey);
           return;
         }
         // The chosen message left. Everything else still has to get back into
         // the queue, whether or not this composer still owns the selection.
-        const { failed } = await restoreClearedQueue(rest);
+        const { failed } = await restoreClearedQueue(rest, sourceDraftKey);
         if (!isCurrent()) return;
         if (failed) setSendError(t("desktop.sendFailed"));
       })
@@ -1204,7 +1222,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         if (isCurrent()) setSendError(describeSendFailure(cause));
       })
       .finally(() => { steerOneInFlightRef.current = false; });
-  }, [liveWorkspaceEnabled, hasQueue, hasSteer, queuedMessages, exact, isCurrent, isDefiniteFailure, describeSendFailure, restoreClearedQueue, t]);
+  }, [liveWorkspaceEnabled, hasQueue, hasSteer, queuedMessages, exact, isCurrent, isDefiniteFailure, describeSendFailure, restoreClearedQueue, t, draftKey]);
 
   useImperativeHandle(ref, () => ({
     recallQueue: handleRecallQueue,

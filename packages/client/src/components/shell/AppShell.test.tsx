@@ -3014,10 +3014,12 @@ describe("Composer — steer / follow-up settle like a send", () => {
   // The queued-turn lane now carries the same send-failure judgment as an
   // ordinary prompt: proven non-delivery restores the draft and says so;
   // an unresolved delivery shows the "unconfirmed" copy and keeps the message.
+  let lastRerender: ((search: WorkspaceSearch) => void) | null = null;
   beforeEach(() => {
     vi.useFakeTimers();
     SOCKETS.length = 0;
     capturedStore = null;
+    lastRerender = null;
     navigateMock.mockReset();
     previousFetch = globalThis.fetch;
     modelsCatalog = { models: [{ provider: "openai", id: "gpt-5", displayName: "GPT-5", contextWindow: 1_000_000 }], defaultModel: null };
@@ -3028,7 +3030,8 @@ describe("Composer — steer / follow-up settle like a send", () => {
 
   /** Mount the live session A while the agent is running so Enter queues a steer. */
   async function mountRunningA(): Promise<FakeWebSocket> {
-    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const { rerender } = mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    lastRerender = rerender;
     const ws = await acceptAutomaticConnection(submitTurnAck());
     await act(async () => {
       ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: ["A"] } });
@@ -3210,18 +3213,27 @@ describe("Composer — steer / follow-up settle like a send", () => {
     });
     const clear = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
     // The clear ack lands after the user moved to another session: the queue is
-    // already empty, so the notice must still be put back.
+    // already empty, so it must still be put back.
+    // A REAL selection switch: AppShell's search now selects B, so the same
+    // editor instance serves B's draft key when the ack lands.
     await act(async () => {
-      void capturedStore!.openSession("B").catch(() => undefined);
-      await flush();
+      lastRerender!({ cwd: "/x", session: "B" });
+      await flush(16);
     });
     await act(async () => {
       ws.serverSend({ type: "interrupt_result", id: clear.id, payload: { sessionId: "A", commandId: clear.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
-      await flush(16);
+      await flush(24);
     });
     const requeue = lastFrame<{ type: string; id: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
     expect(requeue.payload.command.type).toBe("follow_up");
     expect(requeue.payload.command.message).toContain(ASSISTANT_NOTIFY_MESSAGE_PREFIX);
+    // The user's own message belongs to session A: it must never be drafted
+    // into whatever session the editor is showing now.
+    const { getDraft: readDraft } = await import("@/lib/draft-store");
+    expect(readDraft("B")?.value ?? "").not.toContain("我自己的消息");
+    // A's own draft keeps the recalled message: switching sessions must not
+    // lose the user's text along with the cleared queue.
+    expect(readDraft("A")?.value ?? "").toContain("我自己的消息");
   });
 
   it("a failed recall clear is reported instead of silently leaving the queue", async () => {

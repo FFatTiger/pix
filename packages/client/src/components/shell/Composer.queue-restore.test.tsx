@@ -87,4 +87,12 @@ describe("restoreQueueText", () => {
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("recalled text");
     });
   });
+
+  it("keeps items apart with a blank line, never gluing a body to the next message", () => {
+    // A Pixie notice body is already multi-line; a single newline would merge
+    // it into the user's own message as one draft.
+    setDraft("s1", { value: "", images: [] });
+    restoreQueueText(null, "s1", "会话: X\n结果: 完成\n\n我自己的消息");
+    expect(getDraft("s1")?.value).toBe("会话: X\n结果: 完成\n\n我自己的消息");
+  });
 });
