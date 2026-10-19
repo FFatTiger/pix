@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantActionCard, isAssistantActionTool } from "./AssistantActionCard";
+import { AssistantActionCard, isAssistantActionTool, TurnActionChips } from "./AssistantActionCard";
+import { extractTurnActions } from "@/lib/turn-actions";
 import { queryKeys } from "@/api/query-keys";
 import { getDraft, clearDraft } from "@/lib/draft-store";
 import { HttpClientProvider } from "@/app/http-context";
@@ -160,5 +161,30 @@ describe("AssistantActionCard", () => {
     expect(isAssistantActionTool("stop_session")).toBe(false);
     expect(isAssistantActionTool("session_status")).toBe(false);
     expect(isAssistantActionTool("read")).toBe(false);
+  });
+});
+
+describe("TurnActionChips", () => {
+  it("lists the turn's successful session actions and opens the tool's own target", () => {
+    const content = [
+      { type: "toolCall", toolCallId: "c1", toolName: "send_to_session", input: { session: "x", message: "go" } },
+      { type: "toolCall", toolCallId: "c2", toolName: "create_session", input: { project: "pix", message: "new" } },
+      { type: "toolCall", toolCallId: "c3", toolName: "send_to_session", input: { session: "y", message: "failed" } },
+      { type: "toolCall", toolCallId: "c4", toolName: "read", input: { path: "/a" } },
+    ] as never;
+    const results = new Map([
+      ["c1", { role: "toolResult", toolCallId: "c1", isError: false, details: { sessionId: "s-9", cwd: "/repos/other", title: "另一个会话" } }],
+      ["c2", { role: "toolResult", toolCallId: "c2", isError: false, details: { sessionId: "s-new", cwd: "/repos/pix", title: "new" } }],
+      ["c3", { role: "toolResult", toolCallId: "c3", isError: true }],
+      ["c4", { role: "toolResult", toolCallId: "c4", isError: false }],
+    ]) as never;
+    const actions = extractTurnActions(content, results);
+    expect(actions.map((action) => action.toolCallId)).toEqual(["c1", "c2"]);
+
+    mount(<TurnActionChips actions={actions} />);
+    const chips = screen.getAllByTestId("turn-action-chip");
+    expect(chips.map((chip) => chip.textContent)).toEqual(["Sent to另一个会话", "Creatednew"]);
+    fireEvent.click(chips[1]!);
+    expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ search: { session: "s-new", cwd: "/repos/pix" } }));
   });
 });

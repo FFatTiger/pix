@@ -2461,6 +2461,46 @@ html.dark .catalog-meta-item--error {
 /* Assistant suggested-action card (open_session / organize_sessions /
    draft_to_session tool details) — reuses surface/border tokens, no new
    component library (feat/ui-kit owns that migration). */
+.turn-action-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: calc(var(--spacing) * 3);
+}
+
+.turn-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.turn-action-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-dim) 6%, var(--bg-subtle));
+  color: var(--text);
+}
+
+.turn-action-chip:disabled {
+  cursor: default;
+}
+
+.turn-action-chip-name {
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
 .assistant-action-card {
   display: flex;
   flex-direction: column;

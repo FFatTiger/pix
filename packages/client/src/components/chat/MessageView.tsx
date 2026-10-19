@@ -15,6 +15,8 @@ import type { MentionValidators } from "@/lib/mention-tokens";
 import { CompactionSummary } from "./CompactionSummary";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { TurnFileRow, WrittenFile } from "@/lib/turn-written-files";
+import type { TurnAction } from "@/lib/turn-actions";
+import { TurnActionChips } from "./AssistantActionCard";
 import { displayMcpToolName, isEditToolName, parseMcpToolName } from "@/lib/tool-names";
 import { AssistantNoticeCard } from "./AssistantNoticeCard";
 import { assistantUserMessageKind, stripAssistantMarker } from "@/lib/assistant-message";
@@ -244,6 +246,8 @@ interface Props {
   writtenFiles?: WrittenFile[];
   /** Written files plus files the turn showed the user. */
   turnFiles?: TurnFileRow[];
+  /** Session actions the turn took (compact chips under the answer). */
+  turnActions?: TurnAction[];
   /** pix adapter: this turn's settle was aborted (user stop) — settled-tail answer rows only. */
   turnStopped?: boolean | undefined;
   /** pix adapter: mention validity injected instead of a project-context data hook. */
@@ -283,12 +287,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, turnFiles, turnStopped, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, turnFiles, turnActions, turnStopped, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} mentionValidators={mentionValidators} skillInfo={skillInfo} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} turnFiles={turnFiles} turnStopped={turnStopped} loadDeferredThinking={loadDeferredThinking} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} turnFiles={turnFiles} turnActions={turnActions} turnStopped={turnStopped} loadDeferredThinking={loadDeferredThinking} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -328,8 +332,20 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.loadBashFullOutput === next.loadBashFullOutput
     && prev.turnStopped === next.turnStopped
     && haveSameWrittenFiles(prev.writtenFiles, next.writtenFiles)
-    && haveSameTurnFiles(prev.turnFiles, next.turnFiles);
+    && haveSameTurnFiles(prev.turnFiles, next.turnFiles)
+    && haveSameTurnActions(prev.turnActions, next.turnActions);
 });
+
+function haveSameTurnActions(previous: TurnAction[] | undefined, next: TurnAction[] | undefined): boolean {
+  if (previous === next) return true;
+  if (!previous || !next || previous.length !== next.length) return false;
+  // Result details carry the resolved session, i.e. what the chip navigates to:
+  // a late/refreshed result must re-render, exactly like turn files above.
+  return previous.every((action, i) => {
+    const other = next[i];
+    return action.toolCallId === other?.toolCallId && action.resultDetails === other?.resultDetails;
+  });
+}
 
 function haveSameTurnFiles(previous: TurnFileRow[] | undefined, next: TurnFileRow[] | undefined): boolean {
   if (previous === next) return true;
@@ -726,6 +742,7 @@ function AssistantMessageView({
   sessionId,
   entryId,
   turnFiles,
+  turnActions,
   turnStopped,
   loadDeferredThinking,
 }: {
@@ -740,6 +757,7 @@ function AssistantMessageView({
   sessionId?: string | undefined;
   entryId?: string | undefined;
   turnFiles?: TurnFileRow[] | undefined;
+  turnActions?: TurnAction[] | undefined;
   /** True when the turn's settle was aborted (user stop) — settled-tail answer rows only. */
   turnStopped?: boolean | undefined;
   loadDeferredThinking?: DeferredThinkingLoader | undefined;
@@ -905,6 +923,8 @@ function AssistantMessageView({
       {turnFiles && turnFiles.length > 0 && (
         <TurnWrittenFiles files={turnFiles} onOpenFile={onOpenFile} sessionId={sessionId} cwd={cwd} />
       )}
+
+      {turnActions && turnActions.length > 0 && <TurnActionChips actions={turnActions} />}
 
       {!isStreaming && (textContent || time || message.provider || turnStopped) && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>

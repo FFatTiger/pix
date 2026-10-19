@@ -1279,15 +1279,16 @@ export function createAssistantToolsExtension(
         });
         if (res.ok === false) return toolError(res.error.message);
         if (res.kind !== "create") return toolError("会话操作返回了意外结果。");
+        const created: SessionTargetDetails = { sessionId: res.targetSessionId, cwd: project.cwd, title: concise(title === undefined || title === "" ? params.message : title, 80) };
         if (wait && res.delegationId !== undefined) {
           const completion = await waitWithAbort(assistantOps, signal, res.delegationId, waitMinutes);
           if (completion === "aborted") throw signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
           if (completion === null) {
-            return toolText(`已新建并等待超时：目标仍在处理这条消息。它结束时你会收到通知，届时请查看并汇报。\n新会话: ${res.targetSessionId}\n${res.note}`);
+            return toolText(`已新建并等待超时：目标仍在处理这条消息。它结束时你会收到通知，届时请查看并汇报。\n新会话: ${res.targetSessionId}\n${res.note}`, created);
           }
-          return toolText(`已新建并完成：\n新会话: ${res.targetSessionId}\n${formatCompletion(res.note, completion)}`);
+          return toolText(`已新建并完成：\n新会话: ${res.targetSessionId}\n${formatCompletion(res.note, completion)}`, created);
         }
-        return toolText(`已新建：\n新会话: ${res.targetSessionId}\n${res.note}\n\n它结束时你会收到通知。`);
+        return toolText(`已新建：\n新会话: ${res.targetSessionId}\n${res.note}\n\n它结束时你会收到通知。`, created);
       },
     });
 

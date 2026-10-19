@@ -32,6 +32,10 @@ const KEYS = [
   "desktop.assistantActionCreatedProject",
   "desktop.assistantActionCreatedUnresolved",
   "desktop.assistantActionRenamed",
+  "desktop.assistantChip_send_to_session",
+  "desktop.assistantChip_create_session",
+  "desktop.assistantChip_open_session",
+  "desktop.assistantChip_draft_to_session",
   "desktop.assistantSentLabel",
   "desktop.assistantNoticeTitle",
 ] as const;

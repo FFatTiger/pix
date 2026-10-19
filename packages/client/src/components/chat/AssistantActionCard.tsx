@@ -7,6 +7,12 @@ import { createMutationOptions } from "@/api/mutations";
 import { queryKeys } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import type { SessionHeader } from "@fffattiger/pix-protocol";
+import type { TurnAction } from "@/lib/turn-actions";
+import { ArrowSquareOutIcon } from "@phosphor-icons/react/ArrowSquareOut";
+import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
+import { NotePencilIcon } from "@phosphor-icons/react/NotePencil";
+import { PaperPlaneTiltIcon } from "@phosphor-icons/react/PaperPlaneTilt";
+import { PlusIcon } from "@phosphor-icons/react/Plus";
 
 /**
  * Action card for the assistant's action tools (open_session /
@@ -161,7 +167,7 @@ export function AssistantActionCard({ toolName, input, resultDetails }: {
   }
 
   if (toolName === "create_session") {
-    return <CreateSessionCard input={input} />;
+    return <CreateSessionCard input={input} resultDetails={resultDetails} />;
   }
 
   if (toolName === "draft_to_session") {
@@ -268,13 +274,14 @@ export function AssistantActionCard({ toolName, input, resultDetails }: {
   );
 }
 
-function CreateSessionCard({ input }: { input: Record<string, unknown> }) {
+function CreateSessionCard({ input, resultDetails }: { input: Record<string, unknown>; resultDetails?: unknown }) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const [opened, setOpened] = useState(false);
   const project = typeof input.project === "string" ? input.project : "";
   const message = typeof input.message === "string" ? input.message : "";
-  const target = useProjectSession(project);
+  const projectSession = useProjectSession(project);
+  const target = resultTarget(resultDetails) ?? projectSession;
   return (
     <div className="assistant-action-card" data-testid="assistant-action-card">
       <div className="assistant-action-card-title">{t("desktop.assistantActionCreatedTitle")}</div>
@@ -293,6 +300,57 @@ function CreateSessionCard({ input }: { input: Record<string, unknown> }) {
         />
       )}
     </div>
+  );
+}
+
+const CHIP_ICON = {
+  send_to_session: PaperPlaneTiltIcon,
+  create_session: PlusIcon,
+  open_session: ArrowSquareOutIcon,
+  draft_to_session: NotePencilIcon,
+} as const;
+
+/** One line per session action under the answer; a click goes to the session. */
+export function TurnActionChips({ actions }: { actions: TurnAction[] }) {
+  return (
+    <div className="turn-action-chips">
+      {actions.map((action) => <TurnActionChip key={action.toolCallId} action={action} />)}
+    </div>
+  );
+}
+
+function TurnActionChip({ action }: { action: TurnAction }) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const resolve = useTargetResolver();
+  const { toolName, input } = action;
+  const isCreate = toolName === "create_session";
+  const selector = typeof input.session === "string" ? input.session : "";
+  const project = typeof input.project === "string" ? input.project : "";
+  const projectSession = useProjectSession(isCreate ? project : "");
+  const target = resultTarget(action.resultDetails) ?? (isCreate ? projectSession : resolve(selector));
+  const name = target?.title ?? (isCreate ? project : selector);
+  const draft = toolName === "draft_to_session" && typeof input.text === "string" ? input.text : "";
+  const Icon = CHIP_ICON[toolName];
+  return (
+    <button
+      type="button"
+      className="turn-action-chip"
+      data-testid="turn-action-chip"
+      title={name}
+      disabled={target === null}
+      onClick={() => {
+        if (target === null) return;
+        // Same as the draft card: park it under the target's draft key, never send.
+        if (draft !== "") setDraft(target.sessionId, { value: draft, images: [] });
+        void navigate({ to: "/", search: { session: target.sessionId, cwd: target.cwd } });
+      }}
+    >
+      <Icon size={12} />
+      <span>{t(`desktop.assistantChip_${toolName}`)}</span>
+      <span className="turn-action-chip-name">{name}</span>
+      <CaretRightIcon size={10} />
+    </button>
   );
 }
 
