@@ -41,7 +41,7 @@ import { ProtocolVersionSchema, PROTOCOL_VERSION } from "./version.js";
  * repo version; a peer built from a different product version is never
  * silently reused (its {@link SessiondBuild.product} differs).
  */
-export const PIX_PRODUCT_VERSION = "0.3.11" as const;
+export const PIX_PRODUCT_VERSION = "0.3.12" as const;
 
 /**
  * sessiond RPC/control contract generation. Bumped on every change to the
