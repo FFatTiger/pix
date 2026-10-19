@@ -1100,8 +1100,10 @@ test("a reply over the inline cap is written to a file and only previewed", asyn
   const path = join(dir, "assistant-replies", "target-1700000000000.md");
   assert.equal(existsSync(path), true, "the full reply lands in the sessiond state directory");
   assert.equal(readFileSync(path, "utf8"), reply, "the file holds the whole reply, not a preview");
-  assert.equal(statSync(path).mode & 0o777, 0o600, "the reply file is private");
-  assert.equal(statSync(join(dir, "assistant-replies")).mode & 0o777, 0o700, "the reply directory is private");
+  if (process.platform !== "win32") {
+    assert.equal(statSync(path).mode & 0o777, 0o600, "the reply file is private"); // NTFS: no mode bits
+    assert.equal(statSync(join(dir, "assistant-replies")).mode & 0o777, 0o700, "the reply directory is private");
+  }
   assert.equal(prompt.includes(reply.slice(0, 600)), true, "the notification carries the 600-char preview");
   assert.equal(prompt.includes("末尾标记"), false, "the notification does not carry the full text");
   assert.match(prompt, new RegExp(`（全文 ${reply.length} 字已保存到 ${escapeRegExp(path)}，需要时用 read 读取）`));
