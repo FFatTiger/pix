@@ -1780,10 +1780,28 @@ describe("worker IPC", () => {
         targetTitle: "任务会话",
         outcome: "completed",
         lastText: "已完成并跑绿",
+        lastTextPath: "/Users/a/.pi/pix/sessiond/assistant-replies/t-1-1700000000000.md",
+        lastTextChars: 4_200,
         writtenFiles: ["/p/a.ts"],
       },
     });
     assert.equal(completion.payload.outcome, "completed");
+    assert.equal(completion.payload.lastTextPath, "/Users/a/.pi/pix/sessiond/assistant-replies/t-1-1700000000000.md");
+    assert.equal(completion.payload.lastTextChars, 4_200);
+    // Older frames (no reply-file fields) stay valid.
+    const legacyCompletion = roundTrip(SessiondToWorkerMessageSchema, {
+      type: "worker.assistantCompletion",
+      id: "d-2",
+      payload: {
+        sessionId: "assistant-1",
+        delegationId: "d-2",
+        targetSessionId: "target-1",
+        outcome: "completed",
+        lastText: "全部通过",
+      },
+    });
+    assert.equal(legacyCompletion.payload.lastTextPath, undefined);
+    assert.equal(legacyCompletion.payload.lastTextChars, undefined);
     assert.equal(
       safeParseSessiondToWorkerMessage({
         type: "worker.assistantCompletion",

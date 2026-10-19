@@ -697,6 +697,7 @@ export class SessiondService {
         surface: this.assistantOpsSurface(),
         store: deps.workspaceState,
         ...(legacyDirectory === undefined ? {} : { legacyDirectory }),
+        ...(legacyDirectory === undefined ? {} : { stateDirectory: legacyDirectory }),
         homedir: homedir(),
       });
     }

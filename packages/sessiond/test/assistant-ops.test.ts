@@ -4,7 +4,7 @@
  * routing, quota, chains, settlement and the ledger are deterministic.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1047,6 +1047,98 @@ test("a semantically-broken namespace value degrades to empty without touching t
 
 const IDLE_GRACE = 2_500;
 const NOTIFY_MERGE = 1_600;
+
+/**
+ * Settle one target whose last assistant reply is `reply` and return the
+ * delivered notification prompt. `stateDirectory`/`now` decide where the
+ * full-reply file (if any) lands.
+ */
+async function settleWithReply(reply: string, options: { stateDirectory?: string; clock?: number; waitMinutes?: number } = {}): Promise<{ prompt: string; dir: string; completion: { payload: Record<string, unknown> } | undefined }> {
+  const dir = mkdtempSync(join(tmpdir(), "pix-assistant-ops-reply-"));
+  const surface = new FakeSurface();
+  const clock = options.clock ?? 1_000_000;
+  const authority = new AssistantOpsAuthority({
+    surface,
+    store: new FileWorkspaceStateStore(dir),
+    homedir: HOME,
+    now: () => clock,
+    ...(options.stateDirectory === undefined
+      ? { stateDirectory: dir }
+      : options.stateDirectory === "disk" ? {} : { stateDirectory: options.stateDirectory }),
+  });
+  const assistant = makeRecord("assistant", ASSISTANT_CWD);
+  surface.records.set("assistant", assistant);
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 1 });
+  surface.records.set("target", target);
+  surface.exists.add("target");
+  surface.contexts.set("target", [completedEntry(reply)]);
+  await authority.handleWorkerOp(view(assistant), "rep-1", { sessionId: "assistant", op: { kind: "send", targetSessionId: "target", message: "work", delivery: "steer", waitMinutes: options.waitMinutes ?? 0 } });
+  surface.records.delete("target");
+  authority.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  authority.dispose();
+  return {
+    prompt: surface.submits.at(-1)?.input.prompt ?? "",
+    dir,
+    completion: assistant.sent.find((frame) => frame.type === "worker.assistantCompletion") as { payload: Record<string, unknown> } | undefined,
+  };
+}
+
+test("a reply under the inline cap rides the notification whole", async () => {
+  const reply = "x".repeat(1_900) + "尾部标记";
+  const { prompt, dir } = await settleWithReply(reply);
+  assert.match(prompt, new RegExp(`最后回复: ${reply.slice(0, 40)}`));
+  assert.equal(prompt.includes("尾部标记"), true, "nothing is truncated under the cap");
+  assert.equal(prompt.includes("已保存到"), false, "no file line when the whole reply fits");
+  assert.equal(existsSync(join(dir, "assistant-replies")), false, "no file is written for a short reply");
+});
+
+test("a reply over the inline cap is written to a file and only previewed", async () => {
+  const reply = "头" + "y".repeat(2_500) + "末尾标记";
+  const { prompt, dir } = await settleWithReply(reply, { clock: 1_700_000_000_000 });
+  const path = join(dir, "assistant-replies", "target-1700000000000.md");
+  assert.equal(existsSync(path), true, "the full reply lands in the sessiond state directory");
+  assert.equal(readFileSync(path, "utf8"), reply, "the file holds the whole reply, not a preview");
+  assert.equal(statSync(path).mode & 0o777, 0o600, "the reply file is private");
+  assert.equal(statSync(join(dir, "assistant-replies")).mode & 0o777, 0o700, "the reply directory is private");
+  assert.equal(prompt.includes(reply.slice(0, 600)), true, "the notification carries the 600-char preview");
+  assert.equal(prompt.includes("末尾标记"), false, "the notification does not carry the full text");
+  assert.match(prompt, new RegExp(`（全文 ${reply.length} 字已保存到 ${escapeRegExp(path)}，需要时用 read 读取）`));
+
+  // The same fields ride the completion frame a waiting assistant receives.
+  const waited = await settleWithReply(reply, { clock: 1_700_000_000_000, waitMinutes: 5 });
+  assert.equal(waited.completion?.payload.lastTextPath, join(waited.dir, "assistant-replies", "target-1700000000000.md"), "the completion frame carries the path");
+  assert.equal(waited.completion?.payload.lastTextChars, reply.length);
+  assert.equal(waited.completion?.payload.lastText, reply.slice(0, 600));
+});
+
+test("reply files beyond the newest 100 are removed", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pix-assistant-ops-replies-"));
+  mkdirSync(join(directory, "assistant-replies"), { recursive: true, mode: 0o700 });
+  for (let index = 0; index < 100; index += 1) {
+    writeFileSync(join(directory, "assistant-replies", `old-${1000 + index}.md`), "old", "utf8");
+  }
+  const reply = "z".repeat(2_500);
+  await settleWithReply(reply, { stateDirectory: directory, clock: 2_000_000_000_000 });
+  const files = readdirSync(join(directory, "assistant-replies"));
+  assert.equal(files.length, 100, "the directory is capped at 100 files");
+  assert.equal(files.includes("old-1000.md"), false, "the oldest file is removed");
+  assert.equal(files.includes("target-2000000000000.md"), true, "the new reply survives the prune");
+});
+
+test("a failed reply-file write degrades to the preview without a path", async () => {
+  // A regular file where the reply directory must go makes mkdir fail.
+  const blocked = mkdtempSync(join(tmpdir(), "pix-assistant-ops-blocked-"));
+  writeFileSync(join(blocked, "assistant-replies"), "not a directory", "utf8");
+  const reply = "w".repeat(2_500) + "尾部标记";
+  const { prompt, completion } = await settleWithReply(reply, { stateDirectory: blocked });
+  assert.match(prompt, /结果: 完成/, "the notification still delivers");
+  assert.equal(prompt.includes(reply.slice(0, 600)), true, "the preview is still there");
+  assert.equal(prompt.includes("已保存到"), false, "no path line when the write failed");
+  assert.equal(completion?.payload.lastTextPath, undefined);
+  assert.equal(completion?.payload.lastTextChars, undefined);
+});
 
 function notifyCount(env: ReturnType<typeof harness>): number {
   return env.surface.submits.filter((call) => call.input.prompt.startsWith(ASSISTANT_NOTIFY_MESSAGE_PREFIX)).length

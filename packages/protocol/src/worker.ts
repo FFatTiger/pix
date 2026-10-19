@@ -516,6 +516,11 @@ export const WorkerAssistantCompletionMessageSchema = z.strictObject({
     targetTitle: z.string().optional(),
     outcome: AssistantWorkOutcomeSchema,
     lastText: z.string().optional(),
+    /** Absolute path of the full reply file, present only when the reply
+     * exceeded sessiond's inline cap. The assistant reads it with `read`. */
+    lastTextPath: z.string().optional(),
+    /** Full reply length in characters (the inline `lastText` is a preview). */
+    lastTextChars: z.number().int().min(0).optional(),
     writtenFiles: z.array(NonEmptyStringSchema).max(8).optional(),
     error: z.string().optional(),
   }),

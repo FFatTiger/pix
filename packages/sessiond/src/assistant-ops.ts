@@ -16,7 +16,7 @@
  * assistant-delegations.json, if present, is imported once and removed.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
   ASSISTANT_NOTIFY_MESSAGE_PREFIX,
@@ -45,7 +45,14 @@ const CHAIN_CAP = 3;
 /** Auto actions (send/create) per assistant since its last USER turn. */
 const AUTO_ACTION_CAP = 3;
 const SUMMARY_CHARS = 120;
-const LAST_TEXT_CHARS = 400;
+/** Replies up to this length ride inline in the notification, whole. */
+const LAST_TEXT_INLINE_MAX_CHARS = 2_000;
+/** Inline preview length when the whole reply goes to a file instead. */
+const LAST_TEXT_PREVIEW_CHARS = 600;
+/** Reply files kept in the sessiond state directory; older ones are removed. */
+const REPLY_FILE_KEEP = 100;
+/** Subdirectory of the sessiond state directory holding long replies. */
+const REPLY_DIR = "assistant-replies";
 const WRITTEN_FILE_CAP = 8;
 const CONTEXT_TAIL = 24;
 const SETTLE_DEBOUNCE_MS = 50;
@@ -112,6 +119,11 @@ export interface AssistantOpsOptions {
   /** Directory that may still hold the never-shipped standalone ledger file
    * (round-7 dev builds only). Imported once on construction, then removed. */
   legacyDirectory?: string;
+  /** Sessiond state directory for long-reply files (`assistant-replies/`).
+   * Defaults to {@link legacyDirectory}, which the daemon derives from the
+   * same runtime directory the other state files live in. Absent → long
+   * replies degrade to a preview with no file. */
+  stateDirectory?: string;
   /** Process home, for the assistant-workspace guard. */
   homedir: string;
   now?: () => number;
@@ -149,6 +161,9 @@ interface Delegation {
   /** Rendered notification fields retained for a redelivery after the queue
    * item was dropped (set when the settlement first enqueued). */
   notifyLastText?: string;
+  /** Absolute path of the full reply file (only for replies over the inline cap). */
+  notifyLastTextPath?: string;
+  notifyLastTextChars?: number;
   notifyWrittenFiles?: string[];
   notifyError?: string;
 }
@@ -175,6 +190,8 @@ interface NotifyItem {
   targetCwd: string;
   outcome: AssistantWorkOutcome;
   lastText?: string;
+  lastTextPath?: string;
+  lastTextChars?: number;
   writtenFiles?: string[];
   error?: string;
   attempts: number;
@@ -222,6 +239,7 @@ export class AssistantOpsAuthority {
   private readonly surface: AssistantOpsSurface;
   private readonly store: WorkspaceStateStore;
   private readonly legacyLedgerPath: string | undefined;
+  private readonly stateDirectory: string | undefined;
   private readonly homedir: string;
   private readonly now: () => number;
   private delegations: Delegation[] = [];
@@ -238,6 +256,7 @@ export class AssistantOpsAuthority {
     this.surface = options.surface;
     this.store = options.store;
     this.legacyLedgerPath = options.legacyDirectory === undefined ? undefined : join(options.legacyDirectory, LEDGER_FILE);
+    this.stateDirectory = options.stateDirectory ?? options.legacyDirectory;
     this.homedir = options.homedir;
     this.now = options.now ?? Date.now;
     this.load();
@@ -311,6 +330,8 @@ export class AssistantOpsAuthority {
         targetCwd: delegation.targetCwd,
         outcome: delegation.outcome ?? "completed",
         ...(delegation.notifyLastText === undefined ? {} : { lastText: delegation.notifyLastText }),
+        ...(delegation.notifyLastTextPath === undefined ? {} : { lastTextPath: delegation.notifyLastTextPath }),
+        ...(delegation.notifyLastTextChars === undefined ? {} : { lastTextChars: delegation.notifyLastTextChars }),
         ...(delegation.notifyWrittenFiles === undefined || delegation.notifyWrittenFiles.length === 0 ? {} : { writtenFiles: delegation.notifyWrittenFiles }),
         ...(delegation.notifyError === undefined ? {} : { error: delegation.notifyError }),
         attempts: NOTIFY_ATTEMPT_CAP - 1,
@@ -909,6 +930,8 @@ export class AssistantOpsAuthority {
     // Retain the rendered fields so a redelivery (noteAssistantReady) can
     // rebuild the queue item exactly.
     if (summary.lastText !== undefined) delegation.notifyLastText = summary.lastText;
+    if (summary.lastTextPath !== undefined) delegation.notifyLastTextPath = summary.lastTextPath;
+    if (summary.lastTextChars !== undefined) delegation.notifyLastTextChars = summary.lastTextChars;
     if (summary.writtenFiles !== undefined) delegation.notifyWrittenFiles = summary.writtenFiles;
     if (summary.error !== undefined) delegation.notifyError = summary.error;
     if (wasWait) {
@@ -925,6 +948,8 @@ export class AssistantOpsAuthority {
               ...(summary.targetTitle === undefined ? {} : { targetTitle: summary.targetTitle }),
               outcome,
               ...(summary.lastText === undefined ? {} : { lastText: summary.lastText }),
+              ...(summary.lastTextPath === undefined ? {} : { lastTextPath: summary.lastTextPath }),
+              ...(summary.lastTextChars === undefined ? {} : { lastTextChars: summary.lastTextChars }),
               ...(summary.writtenFiles === undefined ? {} : { writtenFiles: summary.writtenFiles }),
               ...(summary.error === undefined ? {} : { error: summary.error }),
             },
@@ -942,6 +967,8 @@ export class AssistantOpsAuthority {
       targetCwd: delegation.targetCwd,
       outcome,
       ...(summary.lastText === undefined ? {} : { lastText: summary.lastText }),
+      ...(summary.lastTextPath === undefined ? {} : { lastTextPath: summary.lastTextPath }),
+      ...(summary.lastTextChars === undefined ? {} : { lastTextChars: summary.lastTextChars }),
       ...(summary.writtenFiles === undefined ? {} : { writtenFiles: summary.writtenFiles }),
       ...(summary.error === undefined ? {} : { error: summary.error }),
       attempts: 0,
@@ -978,6 +1005,8 @@ export class AssistantOpsAuthority {
   private async buildSummary(delegation: Delegation, outcome: AssistantWorkOutcome, forcedError?: string): Promise<{
     targetTitle?: string;
     lastText?: string;
+    lastTextPath?: string;
+    lastTextChars?: number;
     writtenFiles?: string[];
     error?: string;
   }> {
@@ -989,12 +1018,21 @@ export class AssistantOpsAuthority {
       } catch { /* omit rather than fail the settlement */ }
     }
     let lastText: string | undefined;
+    let lastTextPath: string | undefined;
+    let lastTextChars: number | undefined;
     let error: string | undefined = forcedError;
     if (this.surface.readSessionContext) {
       try {
         const context = await this.surface.readSessionContext(delegation.targetSessionId, { limit: CONTEXT_TAIL });
         const tail = lastAssistant(context?.entries ?? []);
-        if (tail.text) lastText = tail.text.slice(0, LAST_TEXT_CHARS);
+        if (tail.text) {
+          // Short replies ride inline whole; long ones become a readable file
+          // so Pixie can `read` the rest instead of silently losing it.
+          const reply = this.persistAssistantReply(delegation.targetSessionId, tail.text);
+          lastText = reply.lastText;
+          if (reply.lastTextPath !== undefined) lastTextPath = reply.lastTextPath;
+          if (reply.lastTextChars !== undefined) lastTextChars = reply.lastTextChars;
+        }
         if (outcome === "failed" && error === undefined) error = tail.errorMessage || "（无错误信息）";
       } catch { /* catalog degradation omits the field */ }
     } else if (outcome === "failed" && error === undefined) {
@@ -1005,9 +1043,73 @@ export class AssistantOpsAuthority {
     return {
       ...(targetTitle === undefined ? {} : { targetTitle }),
       ...(lastText === undefined ? {} : { lastText }),
+      ...(lastTextPath === undefined ? {} : { lastTextPath }),
+      ...(lastTextChars === undefined ? {} : { lastTextChars }),
       ...(written === undefined || written.length === 0 ? {} : { writtenFiles: written }),
       ...(error === undefined ? {} : { error }),
     };
+  }
+
+  /**
+   * Decide how much of the reply the notification carries. Under the inline
+   * cap it is the whole text. Over it, the full text is written to
+   * `<stateDirectory>/assistant-replies/<sessionId>-<epoch-ms>.md` (0600, dir
+   * 0700, atomic rename) and only a preview + the absolute path travel. A
+   * failed write degrades to the preview with no path — never a failed
+   * notification.
+   */
+  private persistAssistantReply(sessionId: string, text: string): { lastText: string; lastTextPath?: string; lastTextChars?: number } {
+    if (text.length <= LAST_TEXT_INLINE_MAX_CHARS) return { lastText: text };
+    const preview = text.slice(0, LAST_TEXT_PREVIEW_CHARS);
+    const path = this.writeReplyFile(sessionId, text);
+    return path === undefined ? { lastText: preview } : { lastText: preview, lastTextPath: path, lastTextChars: text.length };
+  }
+
+  /** Write the full reply, prune old ones, and return the absolute path (or undefined on failure). */
+  private writeReplyFile(sessionId: string, text: string): string | undefined {
+    if (this.stateDirectory === undefined) return undefined;
+    const directory = join(this.stateDirectory, REPLY_DIR);
+    const safeSessionId = sessionId.replace(/[^A-Za-z0-9._-]/g, "_");
+    const target = join(directory, `${safeSessionId}-${this.now()}.md`);
+    const tmp = `${target}.tmp`;
+    try {
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const handle = openSync(tmp, "w", 0o600);
+      try {
+        writeFileSync(handle, text, "utf8");
+        fsyncSync(handle);
+      } finally {
+        closeSync(handle);
+      }
+      renameSync(tmp, target);
+    } catch (error) {
+      try { unlinkSync(tmp); } catch { /* staging file may not exist */ }
+      console.error(`[assistant-ops] reply file write failed: ${error instanceof Error ? error.message : "unknown"}`);
+      return undefined;
+    }
+    this.pruneReplyFiles(directory);
+    return target;
+  }
+
+  /** Keep only the newest {@link REPLY_FILE_KEEP} reply files; pruning is best-effort. */
+  private pruneReplyFiles(directory: string): void {
+    try {
+      const files = readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+        .map((entry) => {
+          try {
+            return { name: entry.name, mtime: statSync(join(directory, entry.name)).mtimeMs };
+          } catch {
+            return { name: entry.name, mtime: 0 };
+          }
+        })
+        .sort((left, right) => right.mtime - left.mtime);
+      for (const file of files.slice(REPLY_FILE_KEEP)) {
+        try { unlinkSync(join(directory, file.name)); } catch { /* already gone */ }
+      }
+    } catch (error) {
+      console.error(`[assistant-ops] reply prune failed: ${error instanceof Error ? error.message : "unknown"}`);
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -1300,6 +1402,10 @@ function renderNotification(items: NotifyItem[]): string {
       `结果: ${OUTCOME_LABEL[item.outcome]}`,
     ];
     if (item.lastText) lines.push(`最后回复: ${item.lastText}`);
+    if (item.lastTextPath) {
+      const count = item.lastTextChars === undefined ? "全文" : `全文 ${item.lastTextChars} 字`;
+      lines.push(`（${count}已保存到 ${item.lastTextPath}，需要时用 read 读取）`);
+    }
     if (item.writtenFiles && item.writtenFiles.length > 0) lines.push(`写过的文件: ${item.writtenFiles.join("、")}`);
     if (item.error) lines.push(`错误: ${item.error}`);
     return lines.join("\n");

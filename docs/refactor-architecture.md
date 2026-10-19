@@ -547,6 +547,27 @@ packages/
   （restarting）映射为与普通会话同一套标记体系里的「错误」小点，会话自身的
   进行中/等待中与普通会话同规则同组件。未知时绝不猜测。
 
+### 助手工作通知的最后回复（不静默截断）
+
+不变式：会话完成通知（`renderNotification` 的 `最后回复` 与
+`WorkerAssistantCompletionPayload.lastText`）绝不静默丢内容。sessiond
+`assistant-ops.ts` 的 `buildSummary` 单点决定形态：
+
+- 回复 ≤ 2000 字（`LAST_TEXT_INLINE_MAX_CHARS`）：`lastText` 是全文，不截断。
+- 回复 > 2000 字：全文写入
+  `PIX_SESSIOND_DIR/assistant-replies/<targetSessionId>-<epoch-ms>.md`
+  （目录 0700、文件 0600、同目录临时文件 + fsync + rename），`lastText` 只带前
+  600 字（`LAST_TEXT_PREVIEW_CHARS`），同帧附 `lastTextPath`（绝对路径）与
+  `lastTextChars`（全文字数），两者都是 optional 的加性协议字段；通知多一行
+  `（全文 N 字已保存到 <path>，需要时用 read 读取）`，adapter
+  `formatCompletion` 用同一行。
+- 目录按 mtime 只保留最新 100 个文件（`REPLY_FILE_KEEP`），更旧的删除。
+- 写文件失败（或没有状态目录）降级为前 600 字且不带路径：通知照常送达，绝不为
+  了附带路径而失败。
+
+这是一份投影，不是会话记录的第二真相：JSONL 仍是唯一真相，reply 文件只是
+通知的完整载荷副本，可随时删除。
+
 ### 智能压缩（smart_compact，第 2 轮内置）
 
 - pi-smart-compact@10.3.0 以 vendored tarball（`vendor/`，adapter file: 依赖）成为

@@ -212,6 +212,24 @@ describe("assistant write tools", () => {
     assert.match(ok.content[0]!.text!, /最后回复: 修好了/);
     assert.match(ok.content[0]!.text!, /写过的文件: src\/login\.ts/);
 
+    // A long reply arrives as sessiond's preview plus the full-text path: the
+    // tool must show both without truncating the preview again.
+    const longPreview = "甲".repeat(600);
+    const longPath = "/tmp/sessiond/assistant-replies/t-1-1700000000000.md";
+    const long = fakeChannel({
+      sendResult: {
+        ok: true, sessionId: "assistant", kind: "send", targetSessionId: id,
+        delivery: "new_turn", delegationId: "d-long", note: "已开始",
+      },
+      completion: {
+        sessionId: "assistant", delegationId: "d-long", targetSessionId: id, outcome: "completed",
+        lastText: longPreview, lastTextPath: longPath, lastTextChars: 4_200,
+      },
+    });
+    const completedLong = await run(collect(long), "send_to_session", { session: id, message: "写长报告", wait: true, wait_minutes: 0 });
+    assert.match(completedLong.content[0]!.text!, new RegExp(`最后回复: ${longPreview}`), "the 600-char preview is not truncated again");
+    assert.match(completedLong.content[0]!.text!, /（全文 4200 字已保存到 \/tmp\/sessiond\/assistant-replies\/t-1-1700000000000\.md，需要时用 read 读取）/);
+
     const slow = fakeChannel({
       sendResult: {
         ok: true, sessionId: "assistant", kind: "send", targetSessionId: id,

@@ -631,7 +631,13 @@ function outcomeLabel(outcome: WorkerAssistantCompletionPayload["outcome"]): str
 function formatCompletion(note: string, completion: WorkerAssistantCompletionPayload): string {
   const lines = [`已发送并完成：`, note, `结果: ${outcomeLabel(completion.outcome)}`];
   if (completion.lastText !== undefined && completion.lastText !== "") {
-    lines.push(`最后回复: ${concise(completion.lastText, 300)}`);
+    // sessiond already bounded this: whole text under its inline cap, a preview
+    // plus a file path above it. Never re-truncate here.
+    lines.push(`最后回复: ${completion.lastText}`);
+  }
+  if (completion.lastTextPath !== undefined && completion.lastTextPath !== "") {
+    const count = completion.lastTextChars === undefined ? "全文" : `全文 ${completion.lastTextChars} 字`;
+    lines.push(`（${count}已保存到 ${completion.lastTextPath}，需要时用 read 读取）`);
   }
   if (completion.writtenFiles !== undefined && completion.writtenFiles.length > 0) {
     lines.push(`写过的文件: ${completion.writtenFiles.join(", ")}`);
