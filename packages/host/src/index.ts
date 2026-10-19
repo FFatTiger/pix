@@ -156,11 +156,12 @@ export type {
 } from "./composition/runtime-gateway.js";
 export { createRuntimeWorkspaceAuthorizer } from "./composition/runtime-workspace-authorizer.js";
 export { createVisibilityTracker } from "./composition/visibility-tracker.js";
-export type { VisibilityRegistration, VisibilityTracker } from "./composition/visibility-tracker.js";
+export type { VisibilityRegistration, VisibilityReport, VisibilityTracker } from "./composition/visibility-tracker.js";
 export {
   PushNotifier,
   decideNotifications,
   classifyEndedTurn,
+  hashPushEndpoint,
   notificationUrl,
   pickPushCopy,
   scanLastAssistant,

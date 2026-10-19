@@ -172,10 +172,23 @@ export type WsPongMessage = z.infer<typeof WsPongMessageSchema>;
  * forwarded to sessiond/Worker): `visible: true` while the page is visible.
  * The Host keeps only an in-memory per-connection view; a closed/unreported
  * connection is never visible. Rejected without negotiation (fail closed).
+ *
+ * Per-device push suppression: `attended` is true only while the page is
+ * visible AND focused (a device that is actually being looked at), and
+ * `pushEndpointHash` identifies this browser's Web Push subscription
+ * (lowercase SHA-256 hex of the endpoint — never the endpoint or its keys).
+ * Both fields are optional so a legacy boolean-only report still parses; such
+ * a report maps to no endpoint and never suppresses any device's push.
  */
+export const PUSH_ENDPOINT_HASH_PATTERN = /^[a-f0-9]{64}$/;
+
 export const WsVisibilityMessageSchema = z.strictObject({
   type: z.literal("visibility"),
-  payload: z.strictObject({ visible: z.boolean() }),
+  payload: z.strictObject({
+    visible: z.boolean(),
+    attended: z.boolean().optional(),
+    pushEndpointHash: z.string().regex(PUSH_ENDPOINT_HASH_PATTERN, "pushEndpointHash must be a lowercase SHA-256 hex digest").optional(),
+  }),
 });
 export type WsVisibilityMessage = z.infer<typeof WsVisibilityMessageSchema>;
 

@@ -1,57 +1,84 @@
 /**
- * Host-level page-visibility tracker (Web Push suppression, D-PUSH).
+ * Host-level page-attention tracker (Web Push suppression, D-PUSH).
  *
- * Single in-memory owner of "is any connected client page visible right now".
- * The runtime WS gateway registers one entry per negotiating connection; a
+ * Single in-memory owner of "which push endpoints belong to a device that is
+ * currently being looked at". The runtime WS gateway registers one entry per
+ * negotiating connection; a connection reports `{ visible, attended?,
+ * pushEndpointHash? }` where `attended` means the page is visible AND focused.
+ * Suppression is per ENDPOINT, never global: only a live connection that
+ * reports `attended: true` together with a push endpoint hash suppresses that
+ * one endpoint — every other subscribed device still gets its notification.
+ * A legacy boolean-only report maps to no endpoint and suppresses nothing; a
  * connection that closes (or never negotiated `runtime.visibility.v1`) is
- * never visible — so a disconnected client can never suppress notifications.
+ * unregistered, so a disconnected client can never suppress notifications.
  * Deliberately process-local: nothing is persisted, and the answer is only as
  * fresh as the live connections reporting it.
  */
 
+/** One connection's report (the negotiated `visibility` frame payload). */
+export interface VisibilityReport {
+  /** Page visibility (legacy boolean; on its own it never suppresses). */
+  readonly visible: boolean;
+  /** Page is visible AND focused — the device is being looked at. */
+  readonly attended?: boolean | undefined;
+  /** Lowercase SHA-256 hex of this browser's push subscription endpoint. */
+  readonly pushEndpointHash?: string | undefined;
+}
+
 /** Registration handle; drop the reference (or call unregister) to leave. */
 export interface VisibilityRegistration {
-  /** Update this connection's reported page visibility. */
-  report(visible: boolean): void;
-  /** Remove the connection entirely (treated as not visible). */
+  /** Update this connection's reported page attention. */
+  report(report: VisibilityReport): void;
+  /** Remove the connection entirely (never suppresses after this). */
   unregister(): void;
 }
 
 export interface VisibilityTracker {
-  /** Register a connection (initially NOT visible until its first report). */
+  /** Register a connection (initially NOT attended until its first report). */
   register(): VisibilityRegistration;
-  /** True when at least one live connection reported a visible page. */
-  hasVisible(): boolean;
+  /**
+   * Endpoint hashes with at least one live connection reporting an attended
+   * page. Pushes to these endpoints are suppressed; every other subscription
+   * still receives its notification.
+   */
+  attendedEndpointHashes(): Set<string>;
+}
+
+interface TrackedConnection {
+  active: boolean;
+  visible: boolean;
+  attended: boolean;
+  endpointHash: string | undefined;
 }
 
 export function createVisibilityTracker(): VisibilityTracker {
-  const connections = new Set<VisibilityRegistration & { visible(): boolean }>();
+  const connections = new Set<TrackedConnection>();
   return {
     register() {
-      let visible = false;
-      let active = true;
-      const registration: VisibilityRegistration & { visible(): boolean } = {
+      const entry: TrackedConnection = { active: true, visible: false, attended: false, endpointHash: undefined };
+      connections.add(entry);
+      return {
         report(next) {
-          if (!active) return;
-          visible = next;
+          if (!entry.active) return;
+          entry.visible = next.visible;
+          // Suppression requires the full attended evidence: a report that is
+          // not visible, or a legacy report without attended, never suppresses.
+          entry.attended = next.attended === true && next.visible;
+          entry.endpointHash = next.pushEndpointHash;
         },
         unregister() {
-          if (!active) return;
-          active = false;
-          connections.delete(registration);
-        },
-        visible() {
-          return active && visible;
+          if (!entry.active) return;
+          entry.active = false;
+          connections.delete(entry);
         },
       };
-      connections.add(registration);
-      return registration;
     },
-    hasVisible() {
-      for (const registration of connections) {
-        if (registration.visible()) return true;
+    attendedEndpointHashes() {
+      const hashes = new Set<string>();
+      for (const entry of connections) {
+        if (entry.attended && entry.endpointHash !== undefined) hashes.add(entry.endpointHash);
       }
-      return false;
+      return hashes;
     },
   };
 }

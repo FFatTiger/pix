@@ -23,7 +23,7 @@ function makeHandler(rec: Recorded): RuntimeSocketHandler {
   };
 }
 
-function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnline?: (cb: () => void) => () => void; onVisibility?: (cb: (visible: boolean) => void) => () => void; liveness?: Partial<LivenessOptions> } = {}): RuntimeSocketDeps {
+function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnline?: (cb: () => void) => () => void; onAttention?: (cb: (attention: { visible: boolean; focused: boolean }) => void) => () => void; liveness?: Partial<LivenessOptions> } = {}): RuntimeSocketDeps {
   return {
     createWebSocket: (url) => { const ws = new FakeWebSocket(url); sockets.push(ws); return ws; },
     now: () => Date.now(),
@@ -33,7 +33,7 @@ function makeDeps(sockets: FakeWebSocket[], opts: { random?: () => number; onOnl
     location: { href: "https://pix.local/app/" },
     identity: { shell: "web", platform: "mac" } satisfies ClientIdentity,
     onOnline: opts.onOnline ?? (() => () => undefined),
-    ...(opts.onVisibility === undefined ? {} : { onVisibility: opts.onVisibility }),
+    ...(opts.onAttention === undefined ? {} : { onAttention: opts.onAttention }),
     ...(opts.liveness === undefined ? {} : { liveness: opts.liveness }),
   };
 }
@@ -105,10 +105,10 @@ describe("RuntimeSocket", () => {
 
   it("caps the reconnect wait at 2s while visible and keeps the full backoff while hidden", () => {
     const sockets: FakeWebSocket[] = [];
-    let setVisible: (visible: boolean) => void = () => undefined;
+    let setAttention: (attention: { visible: boolean; focused: boolean }) => void = () => undefined;
     const deps: RuntimeSocketDeps = {
       ...makeDeps(sockets, { random: () => 0.999 }),
-      onVisibility: (cb) => { setVisible = cb; return () => undefined; },
+      onAttention: (cb) => { setAttention = cb; return () => undefined; },
     };
     const socket = new RuntimeSocket(deps, makeHandler({ states: [], acks: [], rejects: [], messages: [] }));
     socket.connect();
@@ -118,7 +118,7 @@ describe("RuntimeSocket", () => {
       vi.advanceTimersByTime(2_000);
     }
     expect(sockets).toHaveLength(7);
-    setVisible(false);
+    setAttention({ visible: false, focused: true });
     sockets.at(-1)!.serverClose(1006);
     vi.advanceTimersByTime(2_000);
     expect(sockets).toHaveLength(7);
@@ -231,12 +231,12 @@ describe("RuntimeSocket", () => {
     expect(sockets[0]!.sent.at(-1)).toMatchObject({ type: "command", id: "c2" });
   });
 
-  it("negotiated visibility: initial report after ack and updates on visibilitychange", async () => {
+  it("negotiated attention: initial report after ack and updates on visibility/focus change", async () => {
     const sockets: FakeWebSocket[] = [];
-    let visibilityCb: ((visible: boolean) => void) | undefined;
+    let attentionCb: ((attention: { visible: boolean; focused: boolean }) => void) | undefined;
     const deps = makeDeps(sockets, {
-      onVisibility: (cb) => {
-        visibilityCb = cb;
+      onAttention: (cb) => {
+        attentionCb = cb;
         return () => undefined;
       },
     });
@@ -248,21 +248,92 @@ describe("RuntimeSocket", () => {
     const handshake = ws.sent[0] as { payload: { features: string[] } };
     expect(handshake.payload.features).toContain("runtime.visibility.v1");
     ws.serverSend({ type: "handshake_ack", payload: { ...ackPayload(), acceptedFeatures: ["runtime.visibility.v1"] } });
-    // Initial report (page assumed visible until reported otherwise).
-    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true } });
-    visibilityCb!(false);
-    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: false } });
-    visibilityCb!(true);
-    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true } });
+    // Initial report (page assumed visible+focused until reported otherwise):
+    // attended is only true while BOTH hold — per-device push suppression.
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true, attended: true } });
+    attentionCb!({ visible: true, focused: false }); // blur: still visible, not looked at
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true, attended: false } });
+    attentionCb!({ visible: false, focused: true }); // hidden tab
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: false, attended: false } });
+    attentionCb!({ visible: true, focused: true });
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true, attended: true } });
     socket.dispose();
   });
 
-  it("unnegotiated visibility: no frame is ever sent", async () => {
+  it("focus-only changes re-report without forcing a reconnect", () => {
     const sockets: FakeWebSocket[] = [];
-    let visibilityCb: ((visible: boolean) => void) | undefined;
+    let attentionCb: ((attention: { visible: boolean; focused: boolean }) => void) | undefined;
     const deps = makeDeps(sockets, {
-      onVisibility: (cb) => {
-        visibilityCb = cb;
+      onAttention: (cb) => { attentionCb = cb; return () => undefined; },
+    });
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(deps, makeHandler(rec));
+    socket.connect();
+    const ws = sockets[0]!;
+    ws.serverOpen();
+    ws.serverSend({ type: "handshake_ack", payload: { ...ackPayload(), acceptedFeatures: ["runtime.visibility.v1"] } });
+    const framesBefore = ws.sent.length;
+    attentionCb!({ visible: true, focused: false });
+    attentionCb!({ visible: true, focused: true });
+    expect(ws.sent.length).toBe(framesBefore + 2); // both blur and focus reported
+    expect(sockets).toHaveLength(1); // but no reconnect was forced
+    expect(socket.connectionState).toBe("ready");
+    socket.dispose();
+  });
+
+  it("push endpoint hash: reported once set, re-reported on change, survives reconnect", () => {
+    const sockets: FakeWebSocket[] = [];
+    const deps = makeDeps(sockets);
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(deps, makeHandler(rec));
+    socket.connect();
+    const ws = sockets[0]!;
+    ws.serverOpen();
+    ws.serverSend({ type: "handshake_ack", payload: { ...ackPayload(), acceptedFeatures: ["runtime.visibility.v1"] } });
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true, attended: true } });
+    const hash = "a".repeat(64);
+    socket.setPushEndpointHash(hash);
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true, attended: true, pushEndpointHash: hash } });
+    // Same hash → no redundant frame.
+    const before = ws.sent.length;
+    socket.setPushEndpointHash(hash);
+    expect(ws.sent.length).toBe(before);
+    // Cleared (push disabled on this device) → reported without a hash.
+    socket.setPushEndpointHash(undefined);
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true, attended: true } });
+    // A hash set while disconnected is picked up by the next handshake ack report.
+    socket.setPushEndpointHash(hash);
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250); // reconnect
+    const next = sockets[1]!;
+    next.serverOpen();
+    next.serverSend({ type: "handshake_ack", payload: { ...ackPayload(), acceptedFeatures: ["runtime.visibility.v1"] } });
+    expect(next.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: true, attended: true, pushEndpointHash: hash } });
+    socket.dispose();
+  });
+
+  it("initialAttention is adopted before any hook fires (hidden-tab connect reports honestly)", () => {
+    const sockets: FakeWebSocket[] = [];
+    const deps: RuntimeSocketDeps = {
+      ...makeDeps(sockets),
+      initialAttention: { visible: false, focused: true },
+    };
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(deps, makeHandler(rec));
+    socket.connect();
+    const ws = sockets[0]!;
+    ws.serverOpen();
+    ws.serverSend({ type: "handshake_ack", payload: { ...ackPayload(), acceptedFeatures: ["runtime.visibility.v1"] } });
+    expect(ws.sent.at(-1)).toEqual({ type: "visibility", payload: { visible: false, attended: false } });
+    socket.dispose();
+  });
+
+  it("unnegotiated attention: no frame is ever sent", async () => {
+    const sockets: FakeWebSocket[] = [];
+    let attentionCb: ((attention: { visible: boolean; focused: boolean }) => void) | undefined;
+    const deps = makeDeps(sockets, {
+      onAttention: (cb) => {
+        attentionCb = cb;
         return () => undefined;
       },
     });
@@ -273,8 +344,8 @@ describe("RuntimeSocket", () => {
     ws.serverOpen();
     ws.serverSend({ type: "handshake_ack", payload: ackPayload() });
     const before = ws.sent.length;
-    visibilityCb!(true);
-    visibilityCb!(false);
+    attentionCb!({ visible: true, focused: true });
+    attentionCb!({ visible: false, focused: false });
     expect(ws.sent.length).toBe(before);
     socket.dispose();
   });
@@ -325,9 +396,9 @@ describe("RuntimeSocket", () => {
   // one path (no second "page is visible" hook racing it).
   it("becoming visible reconnects a non-sendable transport on the one visibility path", async () => {
     const sockets: FakeWebSocket[] = [];
-    let visibilityCb: ((visible: boolean) => void) | undefined;
+    let attentionCb: ((attention: { visible: boolean; focused: boolean }) => void) | undefined;
     const deps = makeDeps(sockets, {
-      onVisibility: (cb) => { visibilityCb = cb; return () => undefined; },
+      onAttention: (cb) => { attentionCb = cb; return () => undefined; },
     });
     const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
     const socket = new RuntimeSocket(deps, makeHandler(rec));
@@ -336,7 +407,7 @@ describe("RuntimeSocket", () => {
     sockets[0]!.serverSend({ type: "handshake_ack", payload: ackPayload() });
     sockets[0]!.serverClose(1006); // unavailable, backoff pending
     expect(socket.connectionState).toBe("unavailable");
-    visibilityCb!(true);
+    attentionCb!({ visible: true, focused: true });
     expect(sockets).toHaveLength(2); // immediate reconnect, no backoff wait
     socket.dispose();
   });

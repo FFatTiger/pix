@@ -3,9 +3,11 @@ import {
   autoEnablePushOnce,
   base64UrlToBytes,
   currentPushEndpoint,
+  currentPushEndpointHash,
   detectPushCapability,
   isIosWithoutStandalone,
   registerDevicePush,
+  sha256Hex,
   toSubscriptionPayload,
   unregisterDevicePush,
   type AutoEnablePushDeps,
@@ -304,5 +306,29 @@ describe("unregisterDevicePush / currentPushEndpoint", () => {
       },
     });
     expect(await currentPushEndpoint(withSub)).toBe("https://fcm.googleapis.com/fcm/send/abc");
+  });
+});
+
+// Canonical digest vector — MUST equal the Host's `hashPushEndpoint` digest of
+// the same endpoint (per-device push suppression contract). Both sides hash
+// the endpoint as lowercase SHA-256 hex and never exchange the endpoint itself.
+const ENDPOINT = "https://fcm.googleapis.com/fcm/send/abc";
+const ENDPOINT_SHA256 = "4e9bdab8bbe7189c00aebb0922fc49fe40e00594c400f3e1b5dcf97a35c79f85";
+
+describe("sha256Hex / currentPushEndpointHash", () => {
+  it("hashes with the canonical SHA-256 hex vector (parity with the Host)", async () => {
+    expect(await sha256Hex(ENDPOINT)).toBe(ENDPOINT_SHA256);
+    expect(await sha256Hex("https://web.push.apple.com/v2/devices/xyz")).toBe("8eb424fc52dc2c9e8392f25256694ed9c24a5569c9aca50ac98e918ff58c60aa");
+  });
+
+  it("currentPushEndpointHash: the subscription digest, or undefined when there is no subscription", async () => {
+    const withSub = env({
+      notification: { permission: "granted", requestPermission: async () => "granted" },
+      serviceWorker: {
+        ready: Promise.resolve({ pushManager: { getSubscription: async () => subscription(), subscribe: async () => subscription() } }),
+      },
+    });
+    expect(await currentPushEndpointHash(withSub)).toBe(ENDPOINT_SHA256);
+    expect(await currentPushEndpointHash(env())).toBeUndefined();
   });
 });

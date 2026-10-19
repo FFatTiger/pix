@@ -13,7 +13,7 @@
  * RuntimeSocket owner (enforced by boundaries.test.ts).
  */
 export { createBrowserWebSocket } from "./socket.js";
-export type { ManagedWebSocket, RuntimeSocketDeps, NegotiatedHost, Timer } from "./socket.js";
+export type { ManagedWebSocket, RuntimeSocketDeps, NegotiatedHost, Timer, PageAttention } from "./socket.js";
 export { RuntimeConnection } from "./runtime-connection.js";
 export type {
   RuntimeConnectionOptions,
@@ -61,4 +61,5 @@ export { canSend } from "./lifecycle.js";
 export type { ConnectionState } from "./lifecycle.js";
 export { createDefaultIdFactory, decideEvent, decideCommandRetry } from "./correlation.js";
 export { useResumeRefetch, ResumeRefetch } from "./use-resume-refetch.js";
+export { PushAttentionReporter } from "./push-attention-reporter.js";
 export type { IdFactory, EventApplyDecision, CommandRetryDecision } from "./correlation.js";

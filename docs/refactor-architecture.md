@@ -705,10 +705,14 @@ packages/
   只读会话目录（`sessions.read` + `sessions.context`，零 Worker 激活）分正常完成
   （标题「已完成」+ 最后回复前 80 字）/ stopReason error（「出错了」）/ aborted
   （不推）；目录读失败降级为通用文案，绝不伪造。同一会话同类通知 10 秒去抖。
-- **可见性抑制**：协商了 `runtime.visibility.v1` 的连接在 ack 后与每次
-  visibilitychange 发 `visibility` 小帧（Host 自应答、不排队、不经 sessiond）；
-  Host 内存 tracker 按连接登记，断线即注销 ⇒ 永远不会被断线客户端抑制。任一
-  连接页面可见即不推。
+- **按设备抑制**：协商了 `runtime.visibility.v1` 的连接在 ack 后与每次
+  visibilitychange/focus/blur 发 `visibility` 小帧（Host 自答、不排队、不经
+  sessiond）；帧带 `attended`（页面可见且聚焦 = 该设备正在被看着）与可选
+  `pushEndpointHash`（本浏览器推送订阅 endpoint 的 SHA-256 hex，绝不上传
+  endpoint/密钥本体）。Host 内存 tracker 按连接登记，断线即注销 ⇒ 永远不会
+  被断线客户端抑制。只有正在被看着的设备对应的订阅被跳过，其它设备照常推
+  送；只上报布尔可见性的旧客户端、无推送订阅的页面（未开通知/无头浏览器）
+  不抑制任何订阅。客户端在订阅开启/关闭后重报当前 endpoint hash。
 - **HTTP 面**：`GET /v1/push/config`、`POST/DELETE /v1/push/subscriptions`
   （endpoint 去重、仅 https、长度与字段严格 fail-closed）、`POST /v1/push/test`；
   DTO 在 protocol `/push` 子路径，客户端走 typed transport。发送 404/410 删除订阅，

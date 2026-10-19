@@ -4,15 +4,18 @@
  * ONE Host-level subscription to the sessiond running watch (the same
  * revisioned `RuntimeRunningState` source the runtime WS gateway forwards per
  * browser): never one judgement per WS connection. Set transitions become
- * notification candidates; every candidate passes visibility suppression,
- * a fixed debounce window, read-only session catalog lookups (zero Worker
- * activation) and the durable subscription list before a single push is sent.
+ * notification candidates; every candidate passes per-device attention
+ * suppression (only the endpoint(s) on a device currently being looked at are
+ * skipped — other devices always receive), a fixed debounce window,
+ * read-only session catalog lookups (zero Worker activation) and the durable
+ * subscription list before a single push is sent.
  *
  * Honesty rules: a failed session lookup degrades to generic copy (never a
  * fabricated name/preview); an aborted turn is not notified; a sessiond watch
  * loss reconnects with a fresh baseline (no replay spam); send failures are
  * logged once and never retried except pruning 404/410 subscriptions.
  */
+import { createHash } from "node:crypto";
 import {
   ASSISTANT_SENT_MESSAGE_PREFIX,
   SessionContextSchema,
@@ -261,6 +264,16 @@ async function pruneSubscription(
   }
 }
 
+/**
+ * Lowercase SHA-256 hex of a push endpoint — the exact digest a client
+ * reports as `pushEndpointHash` in its `visibility` frames, so the Host can
+ * match "device being looked at" to a subscription without ever storing or
+ * receiving the endpoint itself.
+ */
+export function hashPushEndpoint(endpoint: string): string {
+  return createHash("sha256").update(endpoint, "utf8").digest("hex");
+}
+
 const DEFAULT_DEBOUNCE_MS = 10_000;
 const DEFAULT_RETRY_BASE_MS = 5_000;
 const MAX_RETRY_MS = 60_000;
@@ -373,7 +386,6 @@ export class PushNotifier {
 
   private async handle(candidate: NotificationCandidate): Promise<void> {
     if (this.stopped) return;
-    if (this.options.visibility.hasVisible()) return;
     const debounceKey = `${candidate.sessionId}:${candidate.kind}`;
     const last = this.debounce.get(debounceKey);
     const timestamp = this.now();
@@ -382,13 +394,23 @@ export class PushNotifier {
     const document = await this.options.store.read();
     if (document.subscriptions.length === 0 || document.vapid === undefined) return;
 
+    // Per-device suppression: skip only the endpoint(s) whose device currently
+    // has an attended (visible + focused) connection. Every other subscribed
+    // device — and every subscription when no device is attended — still gets
+    // the notification.
+    const attended = this.options.visibility.attendedEndpointHashes();
+    const targets = attended.size === 0
+      ? document.subscriptions
+      : document.subscriptions.filter((subscription) => !attended.has(hashPushEndpoint(subscription.endpoint)));
+    if (targets.length === 0) return;
+
     const copy = pickPushCopy(this.options.locale());
     const assistant = candidate.sessionId === this.assistantSessionId;
     const payload = await this.buildPayload(candidate, copy, assistant);
     if (payload === undefined) return; // aborted / nothing to say
 
     this.debounce.set(debounceKey, this.now());
-    await Promise.all(document.subscriptions.map((subscription) => this.deliver(subscription, document.vapid!, payload)));
+    await Promise.all(targets.map((subscription) => this.deliver(subscription, document.vapid!, payload)));
   }
 
   private async buildPayload(

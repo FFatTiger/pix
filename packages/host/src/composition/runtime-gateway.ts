@@ -161,10 +161,10 @@ export interface SessiondRuntimeGatewayOptions {
   readonly setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   readonly clearTimeoutFn?: (handle: unknown) => void;
   /**
-   * Host-level page-visibility sink (Web Push suppression). Wired ⇒ the
+   * Host-level page-attention sink (Web Push suppression). Wired ⇒ the
    * gateway accepts `runtime.visibility.v1` and feeds the tracker one entry
    * per live connection; a connection that closes is unregistered (never
-   * visible). Unwired ⇒ the feature is never acknowledged (fail closed).
+   * suppresses). Unwired ⇒ the feature is never acknowledged (fail closed).
    */
   readonly visibilityTracker?: VisibilityTracker;
 }
@@ -925,15 +925,16 @@ class GatewayConnection {
       return;
     }
     if (message.type === "visibility") {
-      // Page-visibility report: fire-and-forget and Host-answered, routed
-      // ahead of every lane (like ping) so it can never wait behind a long
-      // prompt — suppression accuracy depends on it arriving immediately.
+      // Page-attention report (visible + attended + optional push endpoint
+      // hash): fire-and-forget and Host-answered, routed ahead of every lane
+      // (like ping) so it can never wait behind a long prompt — suppression
+      // accuracy depends on it arriving immediately.
       if (!this.config.visibilityEnabled) {
         this.config.logger.warn?.("runtime gateway visibility frame without negotiated feature");
         this.failProtocol("visibility frame without negotiated visibility feature");
         return;
       }
-      this.visibilityRegistration?.report(message.payload.visible);
+      this.visibilityRegistration?.report(message.payload);
       return;
     }
     if (message.type === "interrupt") {

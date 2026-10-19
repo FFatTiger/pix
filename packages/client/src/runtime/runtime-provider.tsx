@@ -67,6 +67,15 @@ function detectPlatform(navigatorLike: Navigator): ClientPlatform {
  */
 export function createBrowserSocketDeps(overrides: Partial<RuntimeSocketDeps> = {}): RuntimeSocketDeps {
   const identity = overrides.identity ?? detectClientIdentity(globalThis.navigator, (q) => globalThis.matchMedia?.(q) ?? { matches: false });
+  // Adopt the page's REAL attention before any hook fires, so a connection
+  // opened from a hidden/background tab reports honestly from its first frame.
+  const initialAttention = overrides.initialAttention
+    ?? (typeof globalThis.document === "undefined"
+      ? undefined
+      : {
+          visible: globalThis.document.visibilityState === "visible",
+          focused: globalThis.document.hasFocus(),
+        });
   return {
     createWebSocket: overrides.createWebSocket ?? createBrowserWebSocket,
     now: overrides.now ?? (() => Date.now()),
@@ -79,13 +88,27 @@ export function createBrowserSocketDeps(overrides: Partial<RuntimeSocketDeps> = 
       globalThis.addEventListener("online", cb);
       return () => globalThis.removeEventListener("online", cb);
     }),
-    // ONE visibility subscription: the socket owns wake reconnect + probe +
-    // heartbeat restart + the visibility report in that order.
-    onVisibility: overrides.onVisibility ?? ((cb) => {
-      const handler = (): void => { cb(globalThis.document.visibilityState === "visible"); };
+    // ONE attention subscription: the socket owns wake reconnect + probe +
+    // heartbeat restart + the attention (visibility AND focus) report in that
+    // order. Focus changes only enrich the report (per-device push
+    // suppression); recovery keys on visibility exactly as before.
+    onAttention: overrides.onAttention ?? ((cb) => {
+      const handler = (): void => {
+        cb({
+          visible: globalThis.document.visibilityState === "visible",
+          focused: globalThis.document.hasFocus(),
+        });
+      };
       globalThis.document.addEventListener("visibilitychange", handler);
-      return () => globalThis.document.removeEventListener("visibilitychange", handler);
+      globalThis.addEventListener("focus", handler);
+      globalThis.addEventListener("blur", handler);
+      return () => {
+        globalThis.document.removeEventListener("visibilitychange", handler);
+        globalThis.removeEventListener("focus", handler);
+        globalThis.removeEventListener("blur", handler);
+      };
     }),
+    ...(initialAttention === undefined ? {} : { initialAttention }),
     ...(overrides.features === undefined ? {} : { features: overrides.features }),
   };
 }
