@@ -4,7 +4,9 @@ import type {
   SubagentTaskStatus,
   TodoItem,
   TodoItemStatus,
+  UserContent,
 } from "@fffattiger/pix-protocol";
+import { assistantUserMessageKind } from "@/lib/assistant-message";
 
 export type SubagentActivityStatus = SubagentTaskStatus;
 export type StatusTodoStatus = TodoItemStatus;
@@ -33,6 +35,69 @@ export interface StatusTodoItem {
   readonly id: number;
   readonly subject: string;
   readonly status: StatusTodoStatus;
+}
+
+/**
+ * Start of the current turn: the timestamp of the most recent user-authored
+ * message. Pixie's work notice and the messages Pixie sends on the user's
+ * behalf are `user`-role entries too, but they do not open a turn — only a
+ * message the user typed does.
+ *
+ * Returns `null` when no such message carries a usable timestamp (empty
+ * session, history not committed yet, older producer): callers keep the old
+ * unfiltered behavior instead of hiding work they cannot date.
+ */
+export function selectTurnStartedAt(
+  messages: readonly { readonly role: string; readonly content?: unknown; readonly timestamp?: number | undefined }[],
+): number | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message === undefined || message.role !== "user") continue;
+    if (assistantUserMessageKind(userMessageText(message.content)) !== null) continue;
+    const timestamp = message.timestamp;
+    return typeof timestamp === "number" && Number.isFinite(timestamp) ? timestamp : null;
+  }
+  return null;
+}
+
+function userMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return (content as UserContent as readonly { type: string; text?: string }[])
+    .filter((block) => block.type === "text")
+    .map((block) => block.text ?? "")
+    .join("\n");
+}
+
+/**
+ * What the status capsule may show of THIS turn: agents still running, plus the
+ * ones that ended at or after `turnStartedAt`. A session that has delegated a
+ * task once used to keep its whole delegation history in the capsule forever;
+ * the pane keeps that history, the capsule only carries the current turn.
+ *
+ * `turnStartedAt` is the timestamp of the session's most recent real user
+ * message. `null` = unknown (history not loaded yet / snapshot missing): every
+ * activity stays visible, never a silent hide.
+ */
+export function selectTurnActivities(
+  activities: readonly SubagentActivity[],
+  turnStartedAt: number | null,
+): SubagentActivity[] {
+  if (turnStartedAt === null) return [...activities];
+  return activities.filter((activity) =>
+    activity.status === "running"
+    || (activity.completedAt !== undefined && activity.completedAt >= turnStartedAt));
+}
+
+/**
+ * Todos stay off the capsule once the turn is over and everything is done — a
+ * finished checklist is the last turn's work, not current state. While the
+ * turn runs, a just-completed list stays visible so the user sees it land.
+ */
+export function shouldShowTodos(todos: readonly StatusTodoItem[], turnRunning: boolean): boolean {
+  if (todos.length === 0) return false;
+  if (turnRunning) return true;
+  return todos.some((item) => item.status !== "completed");
 }
 
 /**

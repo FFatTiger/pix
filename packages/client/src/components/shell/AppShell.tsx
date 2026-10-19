@@ -52,7 +52,8 @@ import {
 import type { FileViewerState } from "@/features/workspace/viewer/file-viewer-state";
 import { useSelectedWorkspaceAccess } from "@/features/session-history/use-selected-workspace-access";
 import { useSubagentActivity } from "@/features/subagents/use-subagent-activity";
-import type { SubagentActivity } from "@/lib/subagent-activity";
+import { useSessionTranscript } from "@/features/session-history/use-session-transcript";
+import { selectTurnActivities, selectTurnStartedAt, shouldShowTodos, type SubagentActivity } from "@/lib/subagent-activity";
 import { assistantPresentationKey, homePresentationKey, useRuntime, useRuntimeConnection, useRuntimeForegroundActivity, useRuntimeOwners, useSelectedRuntime, type PresentationProvenance } from "@/runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
 import { RUNTIME_OBSERVE_EXISTING_FEATURE } from "@fffattiger/pix-protocol";
@@ -720,6 +721,20 @@ export function AppShell({ search }: AppShellProps) {
     enabled: canBrowseSessions && viewSessionId !== null,
     live: selectionMatchesLive,
   });
+  // The capsule shows THIS turn only: agents delegated before the user's latest
+  // message left the capsule (the agents pane keeps the full history), and a
+  // fully completed todo list drops out once the turn is over. The turn starts
+  // at the newest user-authored message in the SAME merged transcript the chat
+  // renders; Pixie's notices are user-role entries but never open a turn.
+  const statusTranscript = useSessionTranscript({
+    sessionId: viewSessionId,
+    enabled: viewSessionId !== null,
+    live: selectionMatchesLive,
+  });
+  const turnStartedAt = useMemo(
+    () => selectTurnStartedAt(statusTranscript.entries.map((entry) => entry.message)),
+    [statusTranscript.entries],
+  );
   const runningAgentCount = useMemo(
     () => subagentActivity.activities.filter((activity) => activity.status === "running").length,
     [subagentActivity.activities],
@@ -749,6 +764,24 @@ export function AppShell({ search }: AppShellProps) {
     }
     return ids;
   }, [connection.runningSessionIds, foregroundActivity.optimisticRunningSessionId, activeRuntime]);
+  // Capsule payload for the turn in progress: the turn is over once its session
+  // is no longer in the authoritative running set.
+  const turnRunning = useMemo(
+    () => runningSessionIds.has(viewSessionId ?? ""),
+    [runningSessionIds, viewSessionId],
+  );
+  const capsuleActivities = useMemo(
+    () => selectTurnActivities(subagentActivity.activities, turnStartedAt),
+    [subagentActivity.activities, turnStartedAt],
+  );
+  const capsuleTodos = useMemo(() => {
+    // Without a dated user message the turn boundary is unknown (history still
+    // loading, older producer): keep the unfiltered list instead of guessing.
+    if (turnStartedAt === null || shouldShowTodos(subagentActivity.todos, turnRunning)) {
+      return subagentActivity.todos;
+    }
+    return [];
+  }, [subagentActivity.todos, turnRunning, turnStartedAt]);
 
   // ── Global liveness for sidebar/tab indicators ──
   // connection.liveSessionIds is the authoritative list of session ids with a
@@ -1546,8 +1579,8 @@ export function AppShell({ search }: AppShellProps) {
                 {viewSessionId === null ? null : (
                   <SubagentActivityCard
                     key={`status:${viewSessionId}`}
-                    activities={subagentActivity.activities}
-                    todos={subagentActivity.todos}
+                    activities={capsuleActivities}
+                    todos={capsuleTodos}
                     queuedMessages={queuedMessages}
                     onSteerQueued={(index) => composerRef.current?.steerQueued(index)}
                     onRecallQueue={() => composerRef.current?.recallQueue()}

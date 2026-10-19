@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { SubagentTask, TodoItem } from "@fffattiger/pix-protocol";
-import { selectChildStream, selectStatusTodos, selectSubagentActivity } from "./subagent-activity";
+import { ASSISTANT_NOTIFY_MESSAGE_PREFIX, ASSISTANT_SENT_MESSAGE_PREFIX } from "@/lib/assistant-message";
+import {
+  selectChildStream,
+  selectStatusTodos,
+  selectSubagentActivity,
+  selectTurnActivities,
+  selectTurnStartedAt,
+  shouldShowTodos,
+  type SubagentActivity,
+} from "./subagent-activity";
 
 const TASKS: readonly SubagentTask[] = [
   {
@@ -136,5 +145,96 @@ describe("selectChildStream", () => {
     expect(selectChildStream({}, "child-1")).toBeNull();
     expect(selectChildStream({ "child-other": { partial: PARTIAL } }, "child-1")).toBeNull();
     expect(selectChildStream({ "child-1": { partial: PARTIAL } }, null)).toBeNull();
+  });
+});
+
+const AGENT: SubagentActivity = {
+  key: "task:agent",
+  taskId: "agent",
+  title: "Inspect runtime",
+  agentType: "Explore",
+  status: "completed",
+};
+
+describe("selectTurnStartedAt", () => {
+  it("takes the timestamp of the newest user-authored message", () => {
+    const messages = [
+      { role: "user", content: "first", timestamp: 100 },
+      { role: "assistant", content: [], timestamp: 200 },
+      { role: "user", content: "second", timestamp: 300 },
+      { role: "assistant", content: [], timestamp: 400 },
+    ];
+    expect(selectTurnStartedAt(messages)).toBe(300);
+  });
+
+  it("reads text blocks of a structured user message", () => {
+    const messages = [{ role: "user", content: [{ type: "text", text: "typed" }], timestamp: 42 }];
+    expect(selectTurnStartedAt(messages)).toBe(42);
+  });
+
+  it("ignores Pixie's work notice and the messages Pixie sent for the user", () => {
+    const messages = [
+      { role: "user", content: "typed", timestamp: 100 },
+      { role: "user", content: `${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n会话完成`, timestamp: 200 },
+      { role: "user", content: `${ASSISTANT_SENT_MESSAGE_PREFIX}\n\n转发`, timestamp: 300 },
+    ];
+    expect(selectTurnStartedAt(messages)).toBe(100);
+  });
+
+  it("returns null when no dated user message exists", () => {
+    expect(selectTurnStartedAt([])).toEqual(null);
+    expect(selectTurnStartedAt([{ role: "assistant", content: [], timestamp: 10 }])).toEqual(null);
+    expect(selectTurnStartedAt([{ role: "user", content: "typed" }])).toEqual(null);
+    expect(selectTurnStartedAt([{ role: "user", content: "typed", timestamp: Number.NaN }])).toEqual(null);
+  });
+});
+
+describe("selectTurnActivities", () => {
+  const running: SubagentActivity = { ...AGENT, key: "task:running", taskId: "running", status: "running" };
+  const endedThisTurn: SubagentActivity = { ...AGENT, key: "task:now", taskId: "now", completedAt: 500 };
+  const endedBefore: SubagentActivity = { ...AGENT, key: "task:old", taskId: "old", completedAt: 100 };
+  const endedNoTimestamp: SubagentActivity = { ...AGENT, key: "task:none", taskId: "none" };
+
+  it("keeps running agents and the ones that ended in this turn", () => {
+    expect(selectTurnActivities([running, endedThisTurn, endedBefore, endedNoTimestamp], 200))
+      .toEqual([running, endedThisTurn]);
+  });
+
+  it("keeps an agent that ended exactly when the turn started", () => {
+    expect(selectTurnActivities([{ ...AGENT, completedAt: 200 }], 200)).toHaveLength(1);
+  });
+
+  it("keeps everything when the turn start is unknown", () => {
+    const all = [running, endedThisTurn, endedBefore, endedNoTimestamp];
+    expect(selectTurnActivities(all, null)).toEqual(all);
+  });
+
+  it("does not mutate its input", () => {
+    const input = [running, endedBefore];
+    selectTurnActivities(input, 200);
+    expect(input).toEqual([running, endedBefore]);
+  });
+});
+
+describe("shouldShowTodos", () => {
+  const done = [{ id: 1, subject: "Draft", status: "completed" as const }];
+  const unfinished = [...done, { id: 2, subject: "Ship", status: "in_progress" as const }];
+
+  it("hides a fully completed list once the turn is over", () => {
+    expect(shouldShowTodos(done, false)).toBe(false);
+  });
+
+  it("keeps a fully completed list while the turn still runs", () => {
+    expect(shouldShowTodos(done, true)).toBe(true);
+  });
+
+  it("keeps an unfinished list either way", () => {
+    expect(shouldShowTodos(unfinished, false)).toBe(true);
+    expect(shouldShowTodos(unfinished, true)).toBe(true);
+  });
+
+  it("shows nothing for an empty list", () => {
+    expect(shouldShowTodos([], true)).toBe(false);
+    expect(shouldShowTodos([], false)).toBe(false);
   });
 });

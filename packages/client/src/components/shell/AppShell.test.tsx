@@ -5095,6 +5095,85 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(countMockFetchCalls(fetchImpl, "parentSessionId=parent")).toBe(0);
   });
 
+  it("keeps an agent that ended before this turn out of the capsule, and a finished todo list off it once the turn is over", async () => {
+    const TURN_STARTED_AT = Date.parse("2026-09-27T01:00:00.000Z");
+    const userMessage = (text: string, timestamp: number): SessionEntry => ({
+      entryId: `u:${timestamp}`,
+      message: { role: "user", content: text, timestamp },
+    });
+    const parent: SessionHeader = {
+      sessionId: "parent",
+      sessionFile: "/sessions/parent.jsonl",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Parent",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 3,
+      workspaceAccess: AUTHORIZED,
+    };
+    const contextEntries = new Map<string, SessionEntry[]>([[
+      "parent",
+      // Pixie's work notice is a user-role entry too: it never opens a turn.
+      [
+        userMessage("for this turn", TURN_STARTED_AT),
+        userMessage(`${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n上一轮完成`, TURN_STARTED_AT + 60_000),
+      ],
+    ]]);
+    globalThis.fetch = controllableStubFetch({ sessions: [parent], contextEntries });
+    mountApp({ cwd: "/x", session: "parent" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("parent").catch(() => undefined);
+      const attach = await waitForAttach(ws, "parent");
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "parent",
+          capabilities: [...LIVE_CAPS, "runtime.subagents", "runtime.todo"],
+          subagents: {
+            revision: 1,
+            tasks: [
+              {
+                taskId: "task-old",
+                description: "Ended last turn",
+                agentType: "Explore",
+                status: "completed",
+                startedAt: TURN_STARTED_AT - 120_000,
+                completedAt: TURN_STARTED_AT - 60_000,
+              },
+              {
+                taskId: "task-now",
+                description: "Ended this turn",
+                agentType: "Explore",
+                status: "completed",
+                startedAt: TURN_STARTED_AT + 1_000,
+                completedAt: TURN_STARTED_AT + 2_000,
+              },
+            ],
+          },
+          todo: {
+            revision: 1,
+            items: [{ id: 1, subject: "Draft the capsule", blockedBy: [], status: "completed" }],
+          },
+        }),
+      });
+      await flush();
+    });
+    await settle();
+
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    // A finished checklist belongs to the turn that finished it.
+    expect(capsule.textContent).not.toContain("Draft the capsule");
+    expect(capsule.querySelector(".status-capsule-count")).toBeNull();
+    fireEvent.click(capsule);
+    const agents = screen.getByTestId("status-agents-section");
+    expect(within(agents).getByText("Ended this turn")).toBeTruthy();
+    expect(within(agents).queryByText("Ended last turn")).toBeNull();
+    expect(screen.queryByTestId("status-progress-section")).toBeNull();
+  });
+
   it("the right-pane rail toggles the Files panel without a mobile-only corner toggle", async () => {
     globalThis.fetch = fileFetch();
     mountApp({ cwd: "/x" });
