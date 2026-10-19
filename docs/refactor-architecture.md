@@ -660,11 +660,11 @@ packages/
   偏好动作已删除）。
 
 - **动作类**（open_session / organize_sessions / draft_to_session）工具只解析目标并返回
-  确认文本；客户端从 toolCall input 渲染 AssistantActionCard 按钮（打开 / 执行 / 填入
-  输入框），用户点击才执行——无 Worker→浏览器推送通道。organize 复用现有流程：
-  rename=PATCH /v1/sessions/:id、delete=DELETE + 卡内二次确认、pin/archive=本设备侧栏
-  偏好（现状如此，卡片提示"仅对本设备生效"）；draft 写目标会话的 draft-store 键后导航，
-  目标 composer 挂载时水合，永不自动发送。
+  确认文本。open / send / create / draft 不再渲染会话卡片，工具行只显示普通的输入/结果；
+  回答下方的 `TurnActionChips`（来自 toolResult 的 turn actions）负责跳转（draft 走
+  draft-store 水合，永不自动发送）。只有 organize_sessions 保留 `OrganizeSessionsCard`：
+  rename 已服务端完成只回报标题，delete=DELETE /v1/sessions/:id + 卡内二次确认
+  （删除是破坏性动作，必须留在卡片里点确认）。
 
 ### 统一整理状态（第 5 轮重做：会话 + 项目置顶/归档）
 

@@ -15,25 +15,15 @@ import { PaperPlaneTiltIcon } from "@phosphor-icons/react/PaperPlaneTilt";
 import { PlusIcon } from "@phosphor-icons/react/Plus";
 
 /**
- * Action card for the assistant's action tools (open_session /
- * organize_sessions / draft_to_session / send_to_session / create_session).
- *
- * open / draft still wait for a click. organize delete still takes a second
- * in-card confirmation. organize rename and send/create already executed
- * server-side — the card only reports what happened and offers navigation.
- * Execution reuses the client's existing flows: normal session navigation and
- * the remove mutation (DELETE /v1/sessions/:id); drafts are parked in the
- * draft store so the TARGET session's composer hydrates on mount — never sent.
+ * organize_sessions keeps an in-card card because delete is destructive and
+ * must be confirmed before it runs (DELETE /v1/sessions/:id). The navigation
+ * tools (open_session / draft_to_session / send_to_session / create_session)
+ * already executed server-side and are reported by TurnActionChips under the
+ * answer, so their tool rows show the plain input/result like any other tool.
  */
 
-type ActionToolName = "open_session" | "organize_sessions" | "draft_to_session" | "send_to_session" | "create_session";
-
-export function isAssistantActionTool(toolName: string): toolName is ActionToolName {
-  return toolName === "open_session"
-    || toolName === "organize_sessions"
-    || toolName === "draft_to_session"
-    || toolName === "send_to_session"
-    || toolName === "create_session";
+export function isOrganizeSessionsTool(toolName: string): boolean {
+  return toolName === "organize_sessions";
 }
 
 interface ResolvedTarget {
@@ -84,11 +74,6 @@ function useProjectSession(project: string): ResolvedTarget | null {
   }, [project, queryClient]);
 }
 
-function concise(value: string, limit: number): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
-}
-
 function toTarget(header: SessionHeader): ResolvedTarget {
   const title = (header.title ?? header.firstMessage ?? header.sessionId).replace(/\s+/g, " ").trim().slice(0, 80);
   return { sessionId: header.sessionId, cwd: header.cwd, title };
@@ -104,100 +89,14 @@ function resultTarget(details: unknown): ResolvedTarget | null {
   return { sessionId, cwd, title: typeof title === "string" && title.trim() !== "" ? title : sessionId };
 }
 
-export function AssistantActionCard({ toolName, input, resultDetails }: {
-  toolName: ActionToolName;
-  input: Record<string, unknown>;
-  resultDetails?: unknown;
-}) {
+export function OrganizeSessionsCard({ input }: { input: Record<string, unknown> }) {
   const { t } = useI18n();
-  const navigate = useNavigate();
-  const http = useHttpClient();
   const queryClient = useQueryClient();
+  const http = useHttpClient();
   const resolve = useTargetResolver();
   const [status, setStatus] = useState<CardStatus>("idle");
   const remove = useMutation(createMutationOptions(http, queryClient).sessions.remove());
 
-  if (toolName === "open_session") {
-    const selector = typeof input.session === "string" ? input.session : "";
-    const target = resultTarget(resultDetails) ?? resolve(selector);
-    return (
-      <div className="assistant-action-card" data-testid="assistant-action-card">
-        <div className="assistant-action-card-title">
-          {target ? target.title : t("desktop.assistantActionTargetMissing", { session: selector })}
-        </div>
-        <AssistantActionButton
-          label={t("desktop.assistantActionOpen")}
-          done={status === "done"}
-          disabled={target === null}
-          onClick={() => {
-            if (target === null) return;
-            void navigate({ to: "/", search: { session: target.sessionId, cwd: target.cwd } });
-            setStatus("done");
-          }}
-        />
-      </div>
-    );
-  }
-
-  if (toolName === "send_to_session") {
-    const selector = typeof input.session === "string" ? input.session : "";
-    const message = typeof input.message === "string" ? input.message : "";
-    const delivery = input.delivery === "steer" || input.delivery === "follow_up" ? input.delivery : "new";
-    const target = resultTarget(resultDetails) ?? resolve(selector);
-    return (
-      <div className="assistant-action-card" data-testid="assistant-action-card">
-        <div className="assistant-action-card-title">{t("desktop.assistantActionSentTitle")}</div>
-        <div className="assistant-action-card-note">
-          {t("desktop.assistantActionSentTarget", { session: target ? target.title : selector })}
-        </div>
-        <div className="assistant-action-card-note">{t(`desktop.assistantActionDelivery_${delivery}`)}</div>
-        {message !== "" ? <div className="assistant-action-card-note">{concise(message, 120)}</div> : null}
-        <AssistantActionButton
-          label={t("desktop.assistantActionOpen")}
-          done={status === "done"}
-          disabled={target === null}
-          onClick={() => {
-            if (target === null) return;
-            void navigate({ to: "/", search: { session: target.sessionId, cwd: target.cwd } });
-            setStatus("done");
-          }}
-        />
-      </div>
-    );
-  }
-
-  if (toolName === "create_session") {
-    return <CreateSessionCard input={input} resultDetails={resultDetails} />;
-  }
-
-  if (toolName === "draft_to_session") {
-    const selector = typeof input.session === "string" ? input.session : "";
-    const text = typeof input.text === "string" ? input.text : "";
-    const target = resultTarget(resultDetails) ?? resolve(selector);
-    return (
-      <div className="assistant-action-card" data-testid="assistant-action-card">
-        <div className="assistant-action-card-title">
-          {target ? t("desktop.assistantActionDraftTitle", { session: target.title }) : t("desktop.assistantActionTargetMissing", { session: selector })}
-        </div>
-        {text !== "" ? <div className="assistant-action-card-note">{text.slice(0, 400)}{text.length > 400 ? "…" : ""}</div> : null}
-        <AssistantActionButton
-          label={t("desktop.assistantActionFillDraft")}
-          done={status === "done"}
-          disabled={target === null || text === ""}
-          onClick={() => {
-            if (target === null || text === "") return;
-            // Park the draft under the TARGET session's draft key: its composer
-            // hydrates on mount after navigation. Nothing is ever sent.
-            setDraft(target.sessionId, { value: text, images: [] });
-            void navigate({ to: "/", search: { session: target.sessionId, cwd: target.cwd } });
-            setStatus("done");
-          }}
-        />
-      </div>
-    );
-  }
-
-  // organize_sessions
   const action = typeof input.action === "string" ? input.action : "";
   const rows = Array.isArray(input.sessions)
     ? input.sessions.filter((row): row is { session: string } =>
@@ -274,35 +173,6 @@ export function AssistantActionCard({ toolName, input, resultDetails }: {
   );
 }
 
-function CreateSessionCard({ input, resultDetails }: { input: Record<string, unknown>; resultDetails?: unknown }) {
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  const [opened, setOpened] = useState(false);
-  const project = typeof input.project === "string" ? input.project : "";
-  const message = typeof input.message === "string" ? input.message : "";
-  const projectSession = useProjectSession(project);
-  const target = resultTarget(resultDetails) ?? projectSession;
-  return (
-    <div className="assistant-action-card" data-testid="assistant-action-card">
-      <div className="assistant-action-card-title">{t("desktop.assistantActionCreatedTitle")}</div>
-      <div className="assistant-action-card-note">{t("desktop.assistantActionCreatedProject", { project })}</div>
-      {message !== "" ? <div className="assistant-action-card-note">{concise(message, 120)}</div> : null}
-      {target === null ? (
-        <div className="assistant-action-card-note">{t("desktop.assistantActionCreatedUnresolved")}</div>
-      ) : (
-        <AssistantActionButton
-          label={t("desktop.assistantActionOpen")}
-          done={opened}
-          onClick={() => {
-            void navigate({ to: "/", search: { session: target.sessionId, cwd: target.cwd } });
-            setOpened(true);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
 const CHIP_ICON = {
   send_to_session: PaperPlaneTiltIcon,
   create_session: PlusIcon,
@@ -341,7 +211,7 @@ function TurnActionChip({ action }: { action: TurnAction }) {
       disabled={target === null}
       onClick={() => {
         if (target === null) return;
-        // Same as the draft card: park it under the target's draft key, never send.
+        // Park it under the target's draft key so its composer hydrates there; never sent.
         if (draft !== "") setDraft(target.sessionId, { value: draft, images: [] });
         void navigate({ to: "/", search: { session: target.sessionId, cwd: target.cwd } });
       }}
