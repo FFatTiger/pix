@@ -152,6 +152,48 @@ describe("chat-projection — user → process → final", () => {
     expect(kinds(rows)).toEqual(["message", "process"]);
   });
 
+  it("puts a tool-only turn's session actions on the process row so they stay reachable", () => {
+    // The turn stops on the tool call: the group is the only row, and it
+    // collapses when it settles, so the chips ride beside its summary.
+    const rows = build([
+      user("发给另一个会话"),
+      assistant([{ type: "toolCall", toolCallId: "a1", toolName: "send_to_session", input: { session: "x", message: "go" } }]),
+      toolResult("a1", "ok", { details: { sessionId: "s-9", cwd: "/repos/other", title: "另一个会话" } }),
+    ]);
+    expect(kinds(rows)).toEqual(["message", "process"]);
+    const process = rows[1];
+    expect(process!.kind === "process" && process!.turnActions?.map((action) => action.toolCallId)).toEqual(["a1"]);
+  });
+
+  it("keeps session actions reachable on an interrupted turn (assistant entry, no answer text)", () => {
+    // The turn was interrupted after the tool call: an assistant entry exists
+    // (so there IS a final-assistant index) but it carries no answer text, and
+    // the group is the only row — chips must ride its summary.
+    const rows = build([
+      user("发给另一个会话"),
+      assistant([{ type: "toolCall", toolCallId: "a1", toolName: "send_to_session", input: { session: "x", message: "go" } }], { stopReason: "aborted" }),
+      toolResult("a1", "ok", { details: { sessionId: "s-9", cwd: "/repos/other", title: "另一个会话" } }),
+    ], { lastTurnAborted: true });
+    expect(kinds(rows)).toEqual(["message", "process"]);
+    const process = rows[1]!;
+    expect(process.kind === "process" && process.turnActions?.map((action) => action.toolCallId)).toEqual(["a1"]);
+  });
+
+  it("keeps session actions on the answer row when the turn has one", () => {
+    const rows = build([
+      user("发给另一个会话"),
+      assistant([{ type: "toolCall", toolCallId: "a1", toolName: "send_to_session", input: { session: "x", message: "go" } }]),
+      toolResult("a1", "ok", { details: { sessionId: "s-9", cwd: "/repos/other", title: "另一个会话" } }),
+      assistant([{ type: "text", text: "已发过去" }]),
+    ]);
+    const final = rows.find((row): row is Extract<ChatTranscriptRow, { kind: "message" }> =>
+      row.kind === "message" && row.message.role === "assistant");
+    expect(final!.turnActions?.map((action) => action.toolCallId)).toEqual(["a1"]);
+    // Never duplicated onto the process row as well.
+    const process = rows.find((row) => row.kind === "process");
+    expect(process!.kind === "process" && process!.turnActions).toBeFalsy();
+  });
+
   it("attaches the turn's written files to the final answer row", () => {
     const rows = build([
       user("write it"),

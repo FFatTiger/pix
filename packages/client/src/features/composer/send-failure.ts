@@ -39,3 +39,15 @@ export function isDefiniteSendFailure(cause: unknown): boolean {
   }
   return true;
 }
+
+/**
+ * A queued turn (steer / follow_up) whose `ok` receipt says an extension input
+ * handler CONSUMED the message: nothing was queued and no user entry will ever
+ * commit. The promise resolves, so a resolved `followUp` is not by itself
+ * proof that the message is now waiting in the queue.
+ */
+export function isConsumedQueuedReceipt(value: unknown): boolean {
+  if (value === null || typeof value !== "object") return false;
+  const receipt = (value as { result?: { ok?: unknown; disposition?: unknown } }).result;
+  return receipt?.ok === true && receipt.disposition === "handled";
+}

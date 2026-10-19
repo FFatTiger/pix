@@ -19,6 +19,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useSessionTranscript } from "@/features/session-history/use-session-transcript";
 import { MessageView } from "@/components/chat/MessageView";
 import { ProcessGroup } from "@/components/chat/ProcessGroup";
+import { TurnActionChips } from "@/components/chat/AssistantActionCard";
 import { ChatMinimap, useMessageRefs } from "@/components/chat/ChatMinimap";
 import {
   chatInputHandle,
@@ -720,7 +721,7 @@ export function ChatTranscriptRowView({
   loadDeferredThinking?: DeferredThinkingLoader;
 }): ReactNode {
   if (row.kind === "process") {
-    return (
+    const group = (
       <ProcessGroup
         blocks={row.blocks}
         isStreaming={row.isStreaming}
@@ -732,6 +733,15 @@ export function ChatTranscriptRowView({
         {...(sessionId === undefined ? {} : { sessionId })}
         {...(loadDeferredThinking === undefined ? {} : { loadDeferredThinking })}
       />
+    );
+    // A turn with no answer row still acted on other sessions: keep those
+    // actions reachable outside the collapsed group body.
+    if (row.turnActions === undefined || row.turnActions.length === 0) return group;
+    return (
+      <>
+        {group}
+        <TurnActionChips actions={row.turnActions} />
+      </>
     );
   }
   // Source-dom notice rows (readonly banner / live phase pulse) keep the exact

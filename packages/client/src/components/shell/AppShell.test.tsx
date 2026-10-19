@@ -3161,6 +3161,106 @@ describe("Composer — steer / follow-up settle like a send", () => {
     // notice returned to the queue.
     expect(composerTextarea().value).not.toContain("mine to steer");
   });
+
+  /** Queue one notice and one user message, open the card, and return it. */
+  async function queueNoticeAndMine(ws: FakeWebSocket): Promise<HTMLElement> {
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "runtime_capabilities_changed",
+          sessionId: "A",
+          epoch: "e1",
+          eventId: 3,
+          capabilities: { capabilities: [...LIVE_CAPS, "runtime.steer", "runtime.follow_up", "runtime.queue"], version: 2 },
+        },
+      });
+      await flush(12);
+    });
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "queue_update",
+          sessionId: "A",
+          epoch: "e1",
+          eventId: 4,
+          steering: [],
+          followUp: [
+            { message: `${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n会话完成` },
+            { message: "我自己的消息" },
+          ],
+        },
+      });
+      await flush(12);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
+      await flush();
+    });
+    return screen.getByTestId("status-queue-section");
+  }
+
+  it("recall re-queues Pixie's hidden notice even after the session switched away", async () => {
+    const ws = await mountRunningA();
+    const section = await queueNoticeAndMine(ws);
+    await act(async () => {
+      fireEvent.click(within(section).getByRole("button", { name: "Recall to input" }));
+      await flush();
+    });
+    const clear = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    // The clear ack lands after the user moved to another session: the queue is
+    // already empty, so the notice must still be put back.
+    await act(async () => {
+      void capturedStore!.openSession("B").catch(() => undefined);
+      await flush();
+    });
+    await act(async () => {
+      ws.serverSend({ type: "interrupt_result", id: clear.id, payload: { sessionId: "A", commandId: clear.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+      await flush(16);
+    });
+    const requeue = lastFrame<{ type: string; id: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
+    expect(requeue.payload.command.type).toBe("follow_up");
+    expect(requeue.payload.command.message).toContain(ASSISTANT_NOTIFY_MESSAGE_PREFIX);
+  });
+
+  it("a failed recall clear is reported instead of silently leaving the queue", async () => {
+    const ws = await mountRunningA();
+    const section = await queueNoticeAndMine(ws);
+    await act(async () => {
+      fireEvent.click(within(section).getByRole("button", { name: "Recall to input" }));
+      await flush();
+    });
+    const clear = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    await act(async () => {
+      ws.serverSend({ type: "interrupt_result", id: clear.id, payload: { sessionId: "A", commandId: clear.payload.commandId, interruptType: "clear_queue", result: { ok: false, error: { code: "session_busy", message: "another interrupt is in flight", retryable: false } } } });
+      await flush(12);
+    });
+    expect(screen.getByRole("alert").textContent).toContain("The message was not sent");
+  });
+
+  it("a Pixie notice that cannot be re-queued comes back without its marker line", async () => {
+    const ws = await mountRunningA();
+    const section = await queueNoticeAndMine(ws);
+    await act(async () => {
+      fireEvent.click(within(section).getByRole("button", { name: "Recall to input" }));
+      await flush();
+    });
+    const clear = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    await act(async () => {
+      ws.serverSend({ type: "interrupt_result", id: clear.id, payload: { sessionId: "A", commandId: clear.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+      await flush(12);
+    });
+    // Re-queueing the notice fails: its BODY is recoverable, its marker is not
+    // the user's text.
+    const requeue = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    await act(async () => {
+      ws.serverSend({ type: "response", id: requeue.id, payload: { ok: false, error: { code: "session_busy", message: "queue full", retryable: false } } });
+      await flush(12);
+    });
+    expect(composerTextarea().value).toContain("会话完成");
+    expect(composerTextarea().value).not.toContain(ASSISTANT_NOTIFY_MESSAGE_PREFIX);
+  });
 });
 
 const PROJECT_SESSIONS: readonly SessionHeader[] = [

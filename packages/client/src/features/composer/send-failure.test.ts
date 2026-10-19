@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isActivationSendFailure, isDefiniteSendFailure, isUncertainSendSettle } from "./send-failure";
+import { isActivationSendFailure, isConsumedQueuedReceipt, isDefiniteSendFailure, isUncertainSendSettle } from "./send-failure";
 
 const conflict = { code: "conflict", message: "session revision changed", retryable: false };
 const timeoutRetryable = { code: "timeout", message: "runtime not sendable in time", retryable: true };
@@ -35,5 +35,15 @@ describe("send-failure judgment", () => {
     expect(isDefiniteSendFailure("string")).toBe(true);
     expect(isUncertainSendSettle("string")).toBe(false);
     expect(isActivationSendFailure(42)).toBe(false);
+  });
+
+  it("a consumed queued-turn receipt is not a queue entry", () => {
+    // Pi 1.0: an extension input handler consumed the message, nothing queued.
+    expect(isConsumedQueuedReceipt({ result: { ok: true, type: "follow_up", disposition: "handled" } })).toBe(true);
+    expect(isConsumedQueuedReceipt({ result: { ok: true, type: "follow_up", disposition: "queued" } })).toBe(false);
+    expect(isConsumedQueuedReceipt({ result: { ok: true } })).toBe(false);
+    expect(isConsumedQueuedReceipt({ result: { ok: false } })).toBe(false);
+    expect(isConsumedQueuedReceipt(null)).toBe(false);
+    expect(isConsumedQueuedReceipt("handled")).toBe(false);
   });
 });

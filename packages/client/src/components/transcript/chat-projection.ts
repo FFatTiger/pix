@@ -54,6 +54,9 @@ export interface ChatTranscriptProcessRow {
   completedAt?: number | undefined;
   /** The final answer is streaming in a separate row, so pending thought UI must stop. */
   isAnswerStreaming?: boolean | undefined;
+  /** Session actions of a turn that produced no answer row (chips beside the
+   *  settled summary, since the group body is collapsed). */
+  turnActions?: TurnAction[] | undefined;
   visibleIndex?: number | undefined;
 }
 
@@ -88,6 +91,22 @@ function findFinalAssistantIndex(messages: readonly AgentMessage[], userIdx: num
     if (messages[candidateIdx]?.role === "assistant") return candidateIdx;
   }
   return -1;
+}
+
+/** Every assistant content block of a turn, in message order, up to `lastIdx`. */
+function collectAssistantBlocks(
+  messages: readonly AgentMessage[],
+  userIdx: number,
+  lastIdx: number,
+): AssistantContentBlock[] {
+  const blocks: AssistantContentBlock[] = [];
+  for (let i = userIdx + 1; i <= lastIdx; i++) {
+    const m = messages[i];
+    if (m?.role === "assistant") {
+      for (const b of (m as AssistantMessage).content ?? []) blocks.push(b);
+    }
+  }
+  return blocks;
 }
 
 function hasDisplayableProcessMessage(message: AgentMessage): boolean {
@@ -509,6 +528,13 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       }
       const interruptedBlocks = collectProcessContentBlocks(messages as AgentMessage[], [...entryIds], interruptedIndices, toolResults);
       if (interruptedBlocks.length > 0) {
+        // Same reasoning as the settled tail below: this group is the only row
+        // for the turn and it collapses, so a session action taken before the
+        // interruption still has to stay reachable beside its summary.
+        const interruptedActions = extractTurnActions(
+          collectAssistantBlocks(messages, userIdx, endIdx),
+          toolResults,
+        );
         const timing = processTiming(messages, userIdx, endIdx);
         rows.push({
           kind: "process",
@@ -516,6 +542,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
           blocks: interruptedBlocks,
           isStreaming: false,
           ...timing,
+          ...(interruptedActions.length === 0 ? {} : { turnActions: interruptedActions }),
         });
       }
       idx = endIdx;
@@ -564,6 +591,14 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
         toolResults,
       }).processBlocks);
     }
+    // Each tool call is stored as its own assistant entry, so the final answer
+    // alone carries no record of what the turn did. Gather the turn's assistant
+    // blocks and derive the file list / session actions from them.
+    const turnContent = collectAssistantBlocks(messages, userIdx, finalAssistantIdx);
+    const writtenFiles = extractTurnWrittenFiles(turnContent, toolResults, cwd);
+    const turnFiles = mergeTurnFileRows(writtenFiles, extractTurnShownFiles(turnContent, toolResults, cwd));
+    const turnActions = extractTurnActions(turnContent, toolResults);
+
     if (processBlocks.length > 0) {
       const processRefIdx = visibleProcessIndices
         .map((processIdx) => visibleRefIndexByMessage.get(processIdx))
@@ -577,24 +612,14 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
         isStreaming: false,
         ...timing,
         ...(processRefIdx === undefined ? {} : { visibleIndex: processRefIdx }),
+        // A turn that stops on a tool call has no answer row to carry them: the
+        // group is collapsed when it settles, so the chips live beside its
+        // summary instead of inside the folded body.
+        ...(finalAnswerMessage || turnActions.length === 0 ? {} : { turnActions }),
       });
     }
 
     if (finalAnswerMessage) {
-      // Each tool call is stored as its own assistant entry, so the final
-      // answer alone carries no record of what the turn wrote. Gather the
-      // turn's assistant blocks and derive the file list from the write/edit
-      // calls among them.
-      const turnContent: AssistantContentBlock[] = [];
-      for (let i = userIdx + 1; i <= finalAssistantIdx; i++) {
-        const m = messages[i];
-        if (m?.role === "assistant") {
-          for (const b of (m as AssistantMessage).content ?? []) turnContent.push(b);
-        }
-      }
-      const writtenFiles = extractTurnWrittenFiles(turnContent, toolResults, cwd);
-      const turnFiles = mergeTurnFileRows(writtenFiles, extractTurnShownFiles(turnContent, toolResults, cwd));
-      const turnActions = extractTurnActions(turnContent, toolResults);
       // The settled-tail "stopped" marker needs BOTH signals: the runtime's
       // last settle was aborted AND this turn's final assistant message was
       // the aborted one. The state flag alone could mislabel the previous

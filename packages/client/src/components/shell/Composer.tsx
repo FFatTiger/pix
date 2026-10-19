@@ -18,7 +18,7 @@ import {
   type StagingKey,
 } from "@/features/composer/session-staging-store";
 import { captureSubmitModel } from "@/features/composer/submit-activation";
-import { isActivationSendFailure, isDefiniteSendFailure, isUncertainSendSettle } from "@/features/composer/send-failure";
+import { isActivationSendFailure, isConsumedQueuedReceipt, isDefiniteSendFailure, isUncertainSendSettle } from "@/features/composer/send-failure";
 import { useHttpClient } from "@/app/http-context";
 import {
   configuredTitleModel,
@@ -47,6 +47,8 @@ import {
   type ContextCatalogModel,
 } from "@/components/chat/chat-runtime-view";
 import type { BuiltinSlashCommandResult, QueuedMessages as QueuedMessagesView } from "@/lib/chat-view-model";
+import { stripAssistantMarker } from "@/lib/assistant-message";
+import { getDraft, setDraft } from "@/lib/draft-store";
 import { useAutoEnablePush } from "@/lib/push-subscription";
 
 export interface ComposerHandle {
@@ -209,6 +211,34 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
   return history;
 }
 
+/**
+ * Put restored text back where the user can see it.
+ *
+ * The live editor is preferred (it merges with in-progress typing through its
+ * own draft-store write). When the editor is not mounted — a remount is in
+ * flight, or the composer already unmounted after a session switch — the text
+ * goes into the session's persisted draft so the next mount hydrates it.
+ * Returns false only when there is nowhere to put it.
+ */
+export function restoreQueueText(
+  handle: ChatInputHandle | null,
+  draftKey: string | undefined,
+  text: string,
+): boolean {
+  if (text.trim().length === 0) return false;
+  if (handle !== null) {
+    handle.prependText(text);
+    return true;
+  }
+  if (draftKey === undefined) return false;
+  const existing = getDraft(draftKey);
+  setDraft(draftKey, {
+    value: [text, existing?.value ?? ""].filter((part) => part.trim().length > 0).join("\n\n"),
+    images: existing?.images ?? [],
+  });
+  return true;
+}
+
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, projectRoots, onProjectChange, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, selectedSessionHasTitle, placeholder }, ref) {
   // Exact selected runtime: AppShell (and standalone mounts) pass the URL/
   // selected session as a prop. Never a facade "current holder" — a detached
@@ -233,6 +263,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const http = useHttpClient();
   const { t } = useI18n();
+
 
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   // First-message push auto-enable (device-once). The returned trigger is
@@ -1065,28 +1096,45 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   /** The queue was just cleared. Hand the user's own messages back as a draft
    *  and put every other queued item (Pixie notices / messages sent on the
    *  user's behalf) back into the runtime queue, so no queued input is lost.
-   *  A failed re-queue keeps its text in the draft. Returns true on failure. */
-  const restoreClearedQueue = useCallback(async (messages: readonly string[], options: { reverseDraft?: boolean } = {}): Promise<boolean> => {
-    if (exact === null) return false;
+   *
+   *  Restoring is unconditional: the runtime queue is already empty, so a
+   *  detached composer, a lost session, or a non-empty input box must never
+   *  swallow the cleared messages. A resolved `followUp` is not proof of a
+   *  queue entry — a Pi extension handler can consume it (`handled`).
+   *
+   *  Only the user's own text becomes a draft. A marker line is not the user's
+   *  words, so a Pixie item that cannot be re-queued is recovered as the body
+   *  it carried, never as a replayed marker. */
+  const restoreClearedQueue = useCallback(async (messages: readonly string[]): Promise<{ failed: boolean }> => {
     const draft: string[] = [];
     let failed = false;
     for (const message of messages) {
-      if (isUserQueuedMessage(message)) {
+      const userText = isUserQueuedMessage(message);
+      if (userText) {
         draft.push(message);
         continue;
       }
-      try {
-        if (!hasFollowUp) throw new Error("runtime.follow_up is not advertised");
-        await exact.followUp(message);
-      } catch {
-        failed = true;
-        draft.push(message);
+      // Pixie's own item: back into the runtime queue when we can.
+      if (exact !== null && hasFollowUp) {
+        try {
+          if (!isConsumedQueuedReceipt(await exact.followUp(message))) continue;
+        } catch {
+          // fall through: recover the body as a draft below
+        }
       }
+      failed = true;
+      draft.push(stripAssistantMarker(message));
     }
-    const restore = options.reverseDraft === true ? [...draft].reverse() : draft;
-    if (restore.length > 0) inputRef.current?.insertIfEmpty(restore.join("\n"));
-    return failed;
-  }, [exact, hasFollowUp]);
+    const text = draft.filter((item) => item.trim().length > 0).join("\n");
+    if (text.length > 0) {
+      // The editor can be unmounted while this async restore resumes (and a
+      // handle captured at click time belongs to the instance that may already
+      // be gone), so only the CURRENT ref is trusted; the helper falls back to
+      // the session's persisted draft, which a later mount hydrates.
+      if (!restoreQueueText(inputRef.current, draftKey, text)) failed = true;
+    }
+    return { failed };
+  }, [exact, hasFollowUp, draftKey]);
 
   const handleRecallQueue = useCallback(() => {
     if (!liveWorkspaceEnabled || !hasQueue || !exact) return;
@@ -1094,14 +1142,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     void exact
       .clearQueue()
       .then(async () => {
-        if (!isCurrent()) return;
-        // The draft keeps the established newest-first order.
-        const failed = await restoreClearedQueue(all, { reverseDraft: true });
+        // The queue is empty from here on: restore regardless of whether this
+        // composer still owns the selection, or the messages are gone.
+        const { failed } = await restoreClearedQueue([...all].reverse());
         if (!isCurrent()) return;
         if (failed) setSendError(t("desktop.sendFailed"));
       })
-      .catch(() => undefined);
-  }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent, restoreClearedQueue, t]);
+      .catch((cause: unknown) => {
+        // clearQueue failed: the runtime queue is intact, so nothing is
+        // restored. Say so instead of leaving a queue the UI claimed to recall.
+        if (isCurrent()) setSendError(describeSendFailure(cause));
+      });
+  }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent, restoreClearedQueue, describeSendFailure, t]);
 
   // The protocol can only clear the WHOLE queue, so steering one queued
   // message clears it, steers the chosen message, and re-queues the rest in
@@ -1123,7 +1175,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     void exact
       .clearQueue()
       .then(async () => {
-        if (!isCurrent()) return;
         const running = exact.snapshot?.state.isStreaming === true || exact.snapshot?.state.isPromptRunning === true;
         try {
           if (running) await exact.steer(chosen);
@@ -1133,29 +1184,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             await exact.sendPromptToSession(chosen);
           }
         } catch (cause) {
-          if (!isCurrent()) return;
-          setSendError(describeSendFailure(cause));
           // The chosen message may or may not have left. On a definite failure
           // the whole queue is restored; on an uncertain one it may already be
-          // queued, so only the untouched remainder is put back.
+          // queued, so only the untouched remainder is put back. Either way the
+          // queue is already empty, so this runs even after a session switch.
+          if (isCurrent()) setSendError(describeSendFailure(cause));
           await restoreClearedQueue(isDefiniteFailure(cause) ? [chosen, ...rest] : rest);
           return;
         }
+        // The chosen message left. Everything else still has to get back into
+        // the queue, whether or not this composer still owns the selection.
+        const { failed } = await restoreClearedQueue(rest);
         if (!isCurrent()) return;
-        const requeued: string[] = [];
-        for (const message of rest) {
-          try {
-            await exact.followUp(message);
-            requeued.push(message);
-          } catch (cause) {
-            if (!isCurrent()) return;
-            // The messages the queue never took back are restored instead of
-            // dropped; the failure is stated rather than swallowed.
-            setSendError(describeSendFailure(cause));
-            await restoreClearedQueue(isDefiniteFailure(cause) ? rest.slice(requeued.length) : rest.slice(requeued.length + 1));
-            return;
-          }
-        }
+        if (failed) setSendError(t("desktop.sendFailed"));
       })
       .catch((cause: unknown) => {
         // clearQueue itself failed: the runtime queue is intact, so restoring
@@ -1163,7 +1204,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         if (isCurrent()) setSendError(describeSendFailure(cause));
       })
       .finally(() => { steerOneInFlightRef.current = false; });
-  }, [liveWorkspaceEnabled, hasQueue, hasSteer, hasFollowUp, queuedMessages, exact, isCurrent, isDefiniteFailure, describeSendFailure, restoreClearedQueue]);
+  }, [liveWorkspaceEnabled, hasQueue, hasSteer, queuedMessages, exact, isCurrent, isDefiniteFailure, describeSendFailure, restoreClearedQueue, t]);
 
   useImperativeHandle(ref, () => ({
     recallQueue: handleRecallQueue,
