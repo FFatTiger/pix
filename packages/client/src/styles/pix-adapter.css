@@ -2626,7 +2626,12 @@ html.dark .catalog-meta-item--error {
   font: inherit;
   cursor: pointer;
 }
-.assistant-notice-open .assistant-notice-title { color: inherit; }
+.assistant-notice-open .assistant-notice-title {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+}
 .assistant-notice-open svg { flex: none; color: var(--text-dim); }
 .assistant-notice-open:hover { color: var(--accent); }
 .assistant-notice-open:hover svg { color: var(--accent); }
