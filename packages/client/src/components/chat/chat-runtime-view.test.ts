@@ -10,7 +10,9 @@ import {
   toImageAttachments,
   toLiveThinkingLevelOption,
   toQueuedMessagesView,
+  userQueuedMessagesView,
 } from "./chat-runtime-view";
+import { ASSISTANT_NOTIFY_MESSAGE_PREFIX, ASSISTANT_SENT_MESSAGE_PREFIX } from "@/lib/assistant-message";
 import type { AttachedImage } from "./ChatInput";
 
 function state(overrides: Partial<RuntimeState> = {}): RuntimeState {
@@ -337,5 +339,20 @@ describe("toBranchNavigatorTree", () => {
     ]);
     expect(tree[0]).not.toHaveProperty("compressedEntryIds");
     expect(tree[0]!.entry.type).toBe("system");
+  });
+});
+
+describe("userQueuedMessagesView", () => {
+  const notice = `${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n会话完成`;
+  const sent = `${ASSISTANT_SENT_MESSAGE_PREFIX}\n\n去修测试`;
+
+  it("shows only what the user typed", () => {
+    expect(userQueuedMessagesView({ steering: [sent, "mine"], followUp: [notice, "later"] }))
+      .toEqual({ steering: ["mine"], followUp: ["later"] });
+  });
+
+  it("hides the queue when only assistant items are waiting", () => {
+    expect(userQueuedMessagesView({ steering: [], followUp: [notice, sent] })).toBeNull();
+    expect(userQueuedMessagesView(null)).toBeNull();
   });
 });

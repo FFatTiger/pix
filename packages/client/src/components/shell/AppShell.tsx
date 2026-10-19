@@ -14,7 +14,7 @@ import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { SubagentActivityCard } from "@/components/chat/SubagentActivityCard";
 import { SubagentPanel } from "@/components/chat/SubagentPanel";
 import { Composer, type ComposerHandle } from "@/components/shell/Composer";
-import { toQueuedMessagesView } from "@/components/chat/chat-runtime-view";
+import { toQueuedMessagesView, userQueuedMessagesView } from "@/components/chat/chat-runtime-view";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { SessionSearchPalette } from "@/components/shell/SessionSearchPalette";
 import { AppTitleBar, RightPaneToggle } from "@/components/shell/AppTitleBar";
@@ -712,7 +712,7 @@ export function AppShell({ search }: AppShellProps) {
   const rightPaneAvailable = canFiles || canAgents || canSideChat;
   const composerRef = useRef<ComposerHandle>(null);
   const queuedMessages = useMemo(
-    () => (selectionMatchesLive ? toQueuedMessagesView(activeRuntime?.snapshot?.state.queuedMessages) : null),
+    () => (selectionMatchesLive ? userQueuedMessagesView(toQueuedMessagesView(activeRuntime?.snapshot?.state.queuedMessages)) : null),
     [selectionMatchesLive, activeRuntime?.snapshot?.state.queuedMessages],
   );
   const subagentActivity = useSubagentActivity({

@@ -21,6 +21,7 @@ import type { SessionTreeNode as ProtocolSessionTreeNode } from "@/lib/session-t
 import type { AttachedImage } from "./ChatInput";
 import type { QueuedMessages as QueuedMessagesView } from "@/lib/chat-view-model";
 import type { SessionTreeNode } from "@/lib/chat-view-model";
+import { assistantUserMessageKind } from "@/lib/assistant-message";
 
 /**
  * Narrow session-stats shape consumed by the ported SessionInfoBar (source
@@ -236,6 +237,22 @@ export function toQueuedMessagesView(
   if (!queued) return null;
   const steering = queued.steering.map((turn) => turn.message);
   const followUp = queued.followUp.map((turn) => turn.message);
+  if (steering.length === 0 && followUp.length === 0) return null;
+  return { steering, followUp };
+}
+
+/** Typed by the user, not a Pixie notice or a message Pixie sent on their behalf. */
+export function isUserQueuedMessage(text: string): boolean {
+  return assistantUserMessageKind(text) === null;
+}
+
+/** The queue as the user sees it: only their own messages. Assistant-marked
+ *  items still sit in the runtime queue and are delivered; they are just not
+ *  shown as if the user had typed them. */
+export function userQueuedMessagesView(view: QueuedMessagesView | null): QueuedMessagesView | null {
+  if (!view) return null;
+  const steering = view.steering.filter(isUserQueuedMessage);
+  const followUp = view.followUp.filter(isUserQueuedMessage);
   if (steering.length === 0 && followUp.length === 0) return null;
   return { steering, followUp };
 }

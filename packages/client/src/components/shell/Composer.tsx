@@ -41,6 +41,7 @@ import {
   toImageAttachments,
   toLiveThinkingLevelOption,
   toQueuedMessagesView,
+  isUserQueuedMessage,
   assembleHistoryContextUsage,
   type ContextCatalogModel,
 } from "@/components/chat/chat-runtime-view";
@@ -1062,13 +1063,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const handleRecallQueue = useCallback(() => {
     if (!liveWorkspaceEnabled || !hasQueue || !exact) return;
-    const queued = queuedMessages;
+    const all = queuedMessages ? [...queuedMessages.steering, ...queuedMessages.followUp] : [];
+    // Only the user's own messages come back to the input; Pixie notices and
+    // messages Pixie sent go back into the queue so they are still delivered.
     void exact
       .clearQueue()
-      .then(() => {
-        if (!isCurrent() || !queued) return;
-        const text = [...queued.steering, ...queued.followUp].reverse().join("\n");
+      .then(async () => {
+        if (!isCurrent()) return;
+        const text = all.filter(isUserQueuedMessage).reverse().join("\n");
         if (text) inputRef.current?.insertIfEmpty(text);
+        for (const message of all.filter((item) => !isUserQueuedMessage(item))) await exact.followUp(message);
       })
       .catch(() => undefined);
   }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent]);
@@ -1082,10 +1086,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const handleSteerQueued = useCallback((index: number) => {
     if (!liveWorkspaceEnabled || !hasQueue || !hasSteer || !exact) return;
     if (steerOneInFlightRef.current) return;
+    // `index` counts the visible (user-typed) items; the rest of the runtime
+    // queue, assistant items included, is re-queued in its original order.
     const all = queuedMessages ? [...queuedMessages.steering, ...queuedMessages.followUp] : [];
-    const chosen = all[index];
+    const at = all.flatMap((message, itemIndex) => (isUserQueuedMessage(message) ? [itemIndex] : []))[index];
+    const chosen = at === undefined ? undefined : all[at];
     if (chosen === undefined || chosen.trim().length === 0) return;
-    const rest = all.filter((_, itemIndex) => itemIndex !== index);
+    const rest = all.filter((_, itemIndex) => itemIndex !== at);
+    const draftOf = (messages: readonly string[]) => messages.filter(isUserQueuedMessage).join("\n");
     steerOneInFlightRef.current = true;
     void exact
       .clearQueue()
@@ -1102,7 +1110,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         } catch (cause) {
           // The chosen message never left. Put the whole queue back instead
           // of re-queuing the others and losing it.
-          if (isCurrent() && isDefiniteFailure(cause)) restoreDraft([chosen, ...rest].join("\n"));
+          if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(draftOf([chosen, ...rest]));
           return;
         }
         if (!isCurrent()) return;
@@ -1112,13 +1120,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             await exact.followUp(message);
             requeued.push(message);
           } catch (cause) {
-            if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(rest.slice(requeued.length).join("\n"));
+            if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(draftOf(rest.slice(requeued.length)));
             return;
           }
         }
       })
       .catch((cause: unknown) => {
-        if (isCurrent() && isDefiniteFailure(cause)) restoreDraft([chosen, ...rest].join("\n"));
+        if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(draftOf([chosen, ...rest]));
       })
       .finally(() => { steerOneInFlightRef.current = false; });
   }, [liveWorkspaceEnabled, hasQueue, hasSteer, hasFollowUp, queuedMessages, exact, isCurrent, isDefiniteFailure, restoreDraft]);
