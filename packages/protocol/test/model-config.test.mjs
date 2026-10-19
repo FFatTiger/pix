@@ -5,6 +5,7 @@ import {
   ModelDiscoveryResponseSchema,
   ModelMetadataRequestSchema,
   ModelMetadataResponseSchema,
+  ModelThinkingLevelMapSchema,
   ModelsConfigMutationSchema,
   ModelsConfigResponseSchema,
 } from "../dist/index.js";
@@ -109,8 +110,101 @@ describe("models.json editor wire DTO", () => {
     assert.equal(ModelMetadataResponseSchema.safeParse({ metadata: null }).success, false);
   });
 
-  it("rejects raw API keys in responses, unknown fields, and malformed revisions", () => {
-    assert.equal(ModelsConfigResponseSchema.safeParse({
+  it("round-trips the per-level thinking mapping, including null and custom values", () => {
+    // The snapshot carries the model's complete mapping.
+    const snapshot = ModelsConfigResponseSchema.parse({
+      revision,
+      providers: [{
+        sourceId: "custom",
+        id: "custom",
+        apiKeyConfigured: true,
+        modelsDefined: true,
+        models: [{
+          sourceIndex: 0,
+          id: "m1",
+          reasoning: true,
+          thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null, high: "high" },
+          visibleInPicker: true,
+        }],
+      }],
+      availableProviders: [],
+    });
+    assert.deepEqual(snapshot.providers[0].models[0].thinkingLevelMap, {
+      xhigh: "xhigh",
+      max: "max",
+      off: null,
+      high: "high",
+    });
+
+    // The mutation carries the same mapping verbatim (a custom provider
+    // string and an explicit `null` both survive).
+    const mutation = ModelsConfigMutationSchema.parse({
+      expectedRevision: revision,
+      providers: [{
+        sourceId: "custom",
+        id: "custom",
+        apiKey: { mode: "preserve" },
+        modelsDefined: true,
+        models: [{ sourceIndex: 0, id: "m1", thinkingLevelMap: { xhigh: "high", off: null } }],
+      }],
+    });
+    assert.deepEqual(mutation.providers[0].models[0].thinkingLevelMap, { xhigh: "high", off: null });
+
+    // An empty mapping is legal: it states "no level mapping" (the stored
+    // field is removed), and a missing mapping stays missing.
+    assert.equal(ModelsConfigMutationSchema.safeParse({
+      expectedRevision: revision,
+      providers: [{
+        sourceId: "custom",
+        id: "custom",
+        apiKey: { mode: "preserve" },
+        modelsDefined: true,
+        models: [{ sourceIndex: 0, id: "m1", thinkingLevelMap: {} }],
+      }],
+    }).success, true);
+    assert.equal(ModelsConfigMutationSchema.safeParse({
+      expectedRevision: revision,
+      providers: [{
+        sourceId: "custom",
+        id: "custom",
+        apiKey: { mode: "preserve" },
+        modelsDefined: true,
+        models: [{ sourceIndex: 0, id: "m1" }],
+      }],
+    }).success, true);
+  });
+
+  it("fails closed on malformed thinking-level mappings", () => {
+    const badMaps = [
+      { ultra: "x" },          // unknown level
+      { xhigh: "" },           // empty provider string
+      { xhigh: 5 },            // not a string
+      { xhigh: { level: "x" } },
+      { xhigh: "x", off: false },
+      "xhigh",
+      null,
+    ];
+    for (const thinkingLevelMap of badMaps) {
+      assert.equal(ModelThinkingLevelMapSchema.safeParse(thinkingLevelMap).success, false, JSON.stringify(thinkingLevelMap));
+      assert.equal(ModelsConfigMutationSchema.safeParse({
+        expectedRevision: revision,
+        providers: [{
+          sourceId: "custom",
+          id: "custom",
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: [{ sourceIndex: 0, id: "m1", thinkingLevelMap }],
+        }],
+      }).success, false, JSON.stringify(thinkingLevelMap));
+    }
+    // An empty mapping is a legal "no level mapping" statement; a model row
+    // without the field stays valid too (the client says nothing about the
+    // mapping and the stored one is kept).
+    assert.equal(ModelThinkingLevelMapSchema.safeParse({}).success, true);
+    assert.equal(ModelThinkingLevelMapSchema.safeParse(undefined).success, false);
+  });
+
+  it("rejects raw API keys in responses, unknown fields, and malformed revisions", () => {    assert.equal(ModelsConfigResponseSchema.safeParse({
       revision,
       providers: [{ sourceId: "p", id: "p", apiKeyConfigured: true, apiKey: "secret", modelsDefined: false, models: [] }],
       availableProviders: [],

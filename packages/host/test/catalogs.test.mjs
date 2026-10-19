@@ -456,6 +456,79 @@ test("GET/PUT /v1/models/config are global, strict, credential-blind, and capabi
   assert.ok((await health.json()).capabilities.includes("models.configure"));
 });
 
+test("GET/PUT /v1/models/config carry the per-level thinking mapping and reject a malformed one", async () => {
+  const root = temp("pix-cat-model-thinking-");
+  const roots = await rootsFor(root);
+  const seen = [];
+  const revision = "a".repeat(64);
+  const snapshot = {
+    revision,
+    providers: [{
+      sourceId: "custom",
+      id: "custom",
+      apiKeyConfigured: true,
+      modelsDefined: true,
+      models: [{
+        sourceIndex: 0,
+        id: "m1",
+        reasoning: true,
+        thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null, high: "high" },
+        visibleInPicker: true,
+      }],
+    }],
+    availableProviders: [],
+  };
+  const app = appWithCatalogs({
+    roots,
+    modelsMutation: fakeModelsMutation({
+      readConfig: async () => snapshot,
+      writeConfig: async (input) => { seen.push(input); return snapshot; },
+    }),
+  });
+
+  // The read projection carries the mapping verbatim (custom provider string
+  // and explicit `null` included).
+  const get = await call(app, "/v1/models/config");
+  assert.equal(get.status, 200);
+  const body = await get.json();
+  assert.deepEqual(body.providers[0].models[0].thinkingLevelMap, {
+    xhigh: "xhigh",
+    max: "max",
+    off: null,
+    high: "high",
+  });
+
+  // The write path accepts the same mapping and hands it to the seam.
+  const put = async (thinkingLevelMap) => {
+    const response = await app.request("http://localhost/v1/models/config", {
+      method: "PUT",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedRevision: revision,
+        providers: [{
+          sourceId: "custom",
+          id: "custom",
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: [{ sourceIndex: 0, id: "m1", thinkingLevelMap }],
+        }],
+      }),
+    });
+    return response;
+  };
+  const accepted = await put({ xhigh: "high", off: null });
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(seen[0].providers[0].models[0].thinkingLevelMap, { xhigh: "high", off: null });
+
+  // A malformed mapping fails closed before the seam is called.
+  for (const thinkingLevelMap of [{ ultra: "x" }, { xhigh: "" }, { xhigh: 5 }, { xhigh: "x", off: false }, "xhigh"]) {
+    const rejected = await put(thinkingLevelMap);
+    assert.equal(rejected.status, 400, JSON.stringify(thinkingLevelMap));
+    assert.equal((await rejected.json()).code, "INVALID_MODELS_CONFIG");
+  }
+  assert.equal(seen.length, 1, "a rejected body never reaches the seam");
+});
+
 test("PUT /v1/models/config maps stale revisions to a fixed conflict", async () => {
   const root = temp("pix-cat-model-conflict-");
   const roots = await rootsFor(root);

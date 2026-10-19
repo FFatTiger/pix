@@ -769,6 +769,8 @@ export const zhCNLocale = {
     "desktop.modelsDisplayName": "显示名称",
     "desktop.modelsApiOverride": "覆盖 API",
     "desktop.modelsReasoningThinking": "支持推理",
+    "desktop.modelsThinkingXhigh": "支持 xhigh 思考",
+    "desktop.modelsThinkingMax": "支持 max 思考",
     "desktop.modelsImageInput": "图片输入",
     "desktop.thinkingLevelClamped": "模型不支持 {requested}，已调整为 {effective}",
     "desktop.modelsLimitsAndCost": "限制与费用",

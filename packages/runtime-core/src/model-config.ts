@@ -1,3 +1,5 @@
+import type { ThinkingLevel } from "./messages.js";
+
 /**
  * Canonical editable models.json projection.
  *
@@ -10,6 +12,15 @@
 
 /** Pi API adapter id. Extensible: unknown future ids must round-trip losslessly. */
 export type ModelConfigApi = string;
+
+/**
+ * Per-level thinking mapping (models.json `thinkingLevelMap`): the string sent
+ * to the provider for a Pi thinking level, or `null` for a level the model
+ * does not support. The level vocabulary is the canonical `THINKING_LEVELS`
+ * list (runtime-core `messages.ts`); `xhigh`/`max` are only selectable for a
+ * model that maps them.
+ */
+export type ModelThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
 
 export interface ModelConfigCost {
   input?: number;
@@ -25,6 +36,12 @@ export interface EditableModelConfig {
   name?: string;
   api?: ModelConfigApi;
   reasoning?: boolean;
+  /**
+   * Per-level thinking mapping (models.json `thinkingLevelMap`): the string
+   * sent to the provider for each Pi thinking level, `null` for a level the
+   * model does not support. `xhigh`/`max` are only selectable when mapped.
+   */
+  thinkingLevelMap?: ModelThinkingLevelMap;
   input?: readonly ("text" | "image")[];
   contextWindow?: number;
   maxTokens?: number;

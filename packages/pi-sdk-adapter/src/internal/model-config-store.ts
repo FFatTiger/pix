@@ -9,6 +9,7 @@ import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi
 import type { Provider } from "@earendil-works/pi-ai";
 import {
   makeRuntimeError,
+  THINKING_LEVELS,
   type AvailableModelProvider,
   type DiscoveredModelConfig,
   type EditableModelConfig,
@@ -18,6 +19,7 @@ import {
   type ModelConfigStorePort,
   type ModelDiscoveryInput,
   type ModelMetadataEntry,
+  type ModelThinkingLevelMap,
   type ModelsConfigMutation,
   type ModelsConfigSnapshot,
 } from "@fffattiger/pix-runtime-core";
@@ -106,6 +108,27 @@ function asCost(value: unknown): EditableModelConfig["cost"] {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * Per-level thinking mapping of a raw models.json row (models.json
+ * `thinkingLevelMap`). Only the canonical Pi levels are projected: a level
+ * Pix does not know stays in the file (the merge below never drops it) and a
+ * malformed value fails closed instead of being silently ignored.
+ */
+function asThinkingLevelMap(value: unknown): ModelThinkingLevelMap | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw runtimeError("invalid_input", "model configuration is invalid");
+  const out: ModelThinkingLevelMap = {};
+  for (const level of THINKING_LEVELS) {
+    const mapped = value[level];
+    if (mapped === undefined) continue;
+    if (mapped !== null && (typeof mapped !== "string" || mapped.length === 0)) {
+      throw runtimeError("invalid_input", "model configuration is invalid");
+    }
+    out[level] = mapped;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function projectModel(raw: Record<string, unknown>, sourceIndex: number): EditableModelConfig {
   const id = asOptionalString(raw.id);
   if (!id) throw runtimeError("invalid_input", "model configuration is invalid");
@@ -113,12 +136,14 @@ function projectModel(raw: Record<string, unknown>, sourceIndex: number): Editab
     ? raw.input.filter((value): value is "text" | "image" => value === "text" || value === "image")
     : undefined;
   const cost = asCost(raw.cost);
+  const thinkingLevelMap = asThinkingLevelMap(raw.thinkingLevelMap);
   return {
     sourceIndex,
     id,
     ...(asOptionalString(raw.name) ? { name: raw.name as string } : {}),
     ...(asApi(raw.api) ? { api: raw.api as ModelConfigApi } : {}),
     ...(typeof raw.reasoning === "boolean" ? { reasoning: raw.reasoning } : {}),
+    ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap }),
     ...(input && input.length > 0 ? { input } : {}),
     ...(asPositiveInt(raw.contextWindow) ? { contextWindow: raw.contextWindow as number } : {}),
     ...(asPositiveInt(raw.maxTokens) ? { maxTokens: raw.maxTokens as number } : {}),
@@ -256,6 +281,19 @@ function assertMutation(input: ModelsConfigMutation): void {
       if (model.api !== undefined && !model.api.length) {
         throw runtimeError("invalid_input", "model configuration input is invalid");
       }
+      if (model.thinkingLevelMap !== undefined) {
+        if (!isRecord(model.thinkingLevelMap)) {
+          throw runtimeError("invalid_input", "model configuration input is invalid");
+        }
+        for (const [level, mapped] of Object.entries(model.thinkingLevelMap)) {
+          if (!(THINKING_LEVELS as readonly string[]).includes(level)) {
+            throw runtimeError("invalid_input", "model configuration input is invalid");
+          }
+          if (mapped !== null && (typeof mapped !== "string" || mapped.length === 0)) {
+            throw runtimeError("invalid_input", "model configuration input is invalid");
+          }
+        }
+      }
     }
   }
 }
@@ -292,12 +330,31 @@ function modelEntryAtPath(raw: unknown, provider: string, index: number): string
   return isRecord(entry) && typeof entry.id === "string" && entry.id.trim() ? entry.id : undefined;
 }
 
+/**
+ * Apply the mutation's thinking-level mapping onto the stored one. The
+ * mutation is authoritative for the canonical Pi levels (a level it omits is
+ * removed — unchecking a level deletes its key, it never writes `null`); a
+ * level Pix does not know stays in the file untouched.
+ */
+function mergeThinkingLevelMap(source: unknown, mutation: ModelThinkingLevelMap): ModelThinkingLevelMap | undefined {
+  const next = isRecord(source) ? { ...source } : {};
+  for (const level of THINKING_LEVELS) {
+    const mapped = mutation[level];
+    if (mapped === undefined) delete next[level];
+    else next[level] = mapped;
+  }
+  return Object.keys(next).length > 0 ? (next as ModelThinkingLevelMap) : undefined;
+}
+
 function mergeModel(source: unknown, model: ModelConfigProviderMutation["models"][number]): Record<string, unknown> {
   const next = isRecord(source) ? structuredClone(source) : {};
   next.id = model.id;
   setOptional(next, "name", model.name);
   setOptional(next, "api", model.api);
   setOptional(next, "reasoning", model.reasoning);
+  if (model.thinkingLevelMap !== undefined) {
+    setOptional(next, "thinkingLevelMap", mergeThinkingLevelMap(next.thinkingLevelMap, model.thinkingLevelMap));
+  }
   setOptional(next, "input", model.input ? [...model.input] : undefined);
   setOptional(next, "contextWindow", model.contextWindow);
   setOptional(next, "maxTokens", model.maxTokens);

@@ -107,6 +107,10 @@ function mutationFromDraft(revision: string, providers: DraftProvider[]): Models
       models: provider.models.map(({ key: _key, visibleInPicker: _visible, pickerVisible: _desired, ...model }) => ({
         ...model,
         id: model.id,
+        // The thinking-level mapping is stated in full on every row: present
+        // means "this is the model's complete mapping" (an empty map removes
+        // the field), absent would mean "keep whatever the server has".
+        thinkingLevelMap: model.thinkingLevelMap ?? {},
       })),
     })),
   };
@@ -269,6 +273,30 @@ function ModelDetail({
     }
     onChange({ cost: Object.keys(cost).length ? cost : undefined });
   };
+  // Per-level thinking mapping (models.json `thinkingLevelMap`): a level is
+  // offered when the model maps it to a provider string; `null` hides the
+  // level, so an unchecked box and a `null` mapping agree. Levels this page
+  // does not offer (off/minimal/low/medium/high) are carried through
+  // untouched — the draft keeps the server's mapping verbatim.
+  const thinkingMap = model.thinkingLevelMap ?? {};
+  const supportsThinkingLevel = (level: "xhigh" | "max") => {
+    const mapped = thinkingMap[level];
+    return typeof mapped === "string" && mapped.length > 0;
+  };
+  const setThinkingLevel = (level: "xhigh" | "max", enabled: boolean) => {
+    const next = { ...thinkingMap };
+    if (enabled) {
+      // Keep a hand-written provider string; otherwise map the level to its
+      // own name (the provider's usual name for that effort).
+      const existing = next[level];
+      next[level] = typeof existing === "string" && existing.length > 0 ? existing : level;
+    } else {
+      // Unchecking REMOVES the level (Pi hides an unmapped xhigh/max too);
+      // it never writes an explicit `null`.
+      delete next[level];
+    }
+    onChange({ thinkingLevelMap: next });
+  };
   return (
     <div className="models-detail-page">
       <button type="button" className="models-back-link" onClick={onBack}>
@@ -301,6 +329,18 @@ function ModelDetail({
             <label className="models-check"><input type="checkbox" checked={model.reasoning ?? false} onChange={(event) => onChange({ reasoning: event.target.checked || undefined })} />{t("desktop.modelsReasoningThinking")}</label>
             <label className="models-check"><input type="checkbox" checked={model.input?.includes("image") ?? false} onChange={(event) => onChange({ input: event.target.checked ? ["text", "image"] : undefined })} />{t("desktop.modelsImageInput")}</label>
           </div>
+          {model.reasoning ? (
+            <div className="models-check-row">
+              <label className="models-check">
+                <input type="checkbox" checked={supportsThinkingLevel("xhigh")} onChange={(event) => setThinkingLevel("xhigh", event.target.checked)} />
+                {t("desktop.modelsThinkingXhigh")}
+              </label>
+              <label className="models-check">
+                <input type="checkbox" checked={supportsThinkingLevel("max")} onChange={(event) => setThinkingLevel("max", event.target.checked)} />
+                {t("desktop.modelsThinkingMax")}
+              </label>
+            </div>
+          ) : null}
         </div>
       </SettingsSection>
 

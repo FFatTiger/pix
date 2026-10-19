@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { NonEmptyStringSchema } from "./common.js";
+import { NonEmptyStringSchema, ThinkingLevelSchema } from "./common.js";
 
 /** Extensible Pi API adapter id; future ids must round-trip without data loss. */
 export const ModelConfigApiSchema = NonEmptyStringSchema;
@@ -12,12 +12,28 @@ export const ModelConfigCostSchema = z.strictObject({
   cacheWrite: z.number().finite().nonnegative().optional(),
 });
 
+/**
+ * Per-level thinking mapping (models.json `thinkingLevelMap`): the string sent
+ * to the provider for a Pi thinking level, or `null` for a level the model
+ * does not support. Partial by design — a level without a key keeps Pi's
+ * default behaviour. The level vocabulary is the canonical
+ * {@link ThinkingLevelSchema}; a level outside it fails closed.
+ */
+export const ModelThinkingLevelMapSchema = z.partialRecord(ThinkingLevelSchema, z.string().min(1).nullable());
+export type ModelThinkingLevelMap = z.infer<typeof ModelThinkingLevelMapSchema>;
+
 export const EditableModelConfigSchema = z.strictObject({
   sourceIndex: z.number().int().nonnegative().safe().nullable(),
   id: NonEmptyStringSchema,
   name: NonEmptyStringSchema.optional(),
   api: ModelConfigApiSchema.optional(),
   reasoning: z.boolean().optional(),
+  /**
+   * Per-level thinking mapping (models.json `thinkingLevelMap`). Present means
+   * "this is the model's complete mapping" (an empty map removes the field);
+   * absent means the client says nothing about it and the stored value stays.
+   */
+  thinkingLevelMap: ModelThinkingLevelMapSchema.optional(),
   input: z.array(z.enum(["text", "image"])).optional(),
   contextWindow: z.number().int().positive().safe().optional(),
   maxTokens: z.number().int().positive().safe().optional(),

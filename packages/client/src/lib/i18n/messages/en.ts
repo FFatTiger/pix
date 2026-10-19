@@ -769,6 +769,8 @@ export const enLocale = {
     "desktop.modelsDisplayName": "Display name",
     "desktop.modelsApiOverride": "API override",
     "desktop.modelsReasoningThinking": "Supports reasoning",
+    "desktop.modelsThinkingXhigh": "Supports xhigh thinking",
+    "desktop.modelsThinkingMax": "Supports max thinking",
     "desktop.modelsImageInput": "Image input",
     "desktop.thinkingLevelClamped": "Model does not support {requested}, using {effective}",
     "desktop.modelsLimitsAndCost": "Limits and cost",

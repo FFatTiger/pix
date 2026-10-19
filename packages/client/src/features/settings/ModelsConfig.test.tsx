@@ -64,6 +64,30 @@ const visibilitySnapshot = {
   defaultModel: { provider: "acme-deepseek", id: "deepseek-v4-flash" },
 };
 
+/** A model that already declares a hand-written level mapping. */
+const thinkingSnapshot = {
+  ...snapshot,
+  providers: [{
+    ...snapshot.providers[0],
+    models: [
+      {
+        sourceIndex: 0,
+        id: "deepseek-v4-flash",
+        reasoning: true,
+        thinkingLevelMap: { xhigh: "high", off: null },
+        visibleInPicker: true,
+      },
+      {
+        sourceIndex: 1,
+        id: "deepseek-v4.1",
+        reasoning: true,
+        thinkingLevelMap: { xhigh: "xhigh" },
+        visibleInPicker: true,
+      },
+    ],
+  }],
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.clear();
@@ -287,6 +311,104 @@ describe("ModelsConfig", () => {
     const id = screen.getByText("ID *").parentElement!.querySelector("input")!;
     fireEvent.change(id, { target: { value: "fixed-model" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
+  });
+
+  it("declares the xhigh / max thinking levels without touching the levels it does not offer", async () => {
+    let putBody: unknown;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putBody = JSON.parse(String(init.body));
+        return json({ ...thinkingSnapshot, revision: "b".repeat(64) });
+      }
+      return json(thinkingSnapshot);
+    });
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    fireEvent.click(screen.getByText("deepseek-v4-flash").closest("button")!);
+
+    // The stored mapping decides the checkbox state: a mapped level is on,
+    // an unmapped one is off.
+    const xhigh = await screen.findByLabelText("Supports xhigh thinking");
+    const max = screen.getByLabelText("Supports max thinking");
+    expect((xhigh as HTMLInputElement).checked).toBe(true);
+    expect((max as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(max);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(putBody).toBeTruthy());
+    // The hand-written mapping (a custom provider string and an explicit
+    // `null`) survives; the new level is added with its own name.
+    expect((putBody as { providers: { models: { thinkingLevelMap?: unknown }[] }[] }).providers[0]!.models[0]!.thinkingLevelMap)
+      .toEqual({ xhigh: "high", off: null, max: "max" });
+  });
+
+  it("removes a thinking level by deleting its key", async () => {
+    let putBody: unknown;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putBody = JSON.parse(String(init.body));
+        return json({ ...thinkingSnapshot, revision: "b".repeat(64) });
+      }
+      return json(thinkingSnapshot);
+    });
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    fireEvent.click(screen.getByText("deepseek-v4-flash").closest("button")!);
+
+    fireEvent.click(await screen.findByLabelText("Supports xhigh thinking"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(putBody).toBeTruthy());
+    // Unchecking DELETES the key (it never writes an explicit `null`); the
+    // levels this page does not offer stay untouched.
+    expect((putBody as { providers: { models: { thinkingLevelMap?: unknown }[] }[] }).providers[0]!.models[0]!.thinkingLevelMap)
+      .toEqual({ off: null });
+  });
+
+  it("states an empty mapping when the last declared level is removed", async () => {
+    let putBody: unknown;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putBody = JSON.parse(String(init.body));
+        return json({ ...thinkingSnapshot, revision: "b".repeat(64) });
+      }
+      return json(thinkingSnapshot);
+    });
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    fireEvent.click(screen.getByText("deepseek-v4.1").closest("button")!);
+
+    fireEvent.click(await screen.findByLabelText("Supports xhigh thinking"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(putBody).toBeTruthy());
+    // An empty mapping is stated explicitly: the stored field is removed.
+    expect((putBody as { providers: { models: { thinkingLevelMap?: unknown }[] }[] }).providers[0]!.models[1]!.thinkingLevelMap)
+      .toEqual({});
+  });
+
+  it("hides the thinking-level checkboxes when reasoning is off and keeps the mapping", async () => {
+    let putBody: unknown;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putBody = JSON.parse(String(init.body));
+        return json({ ...thinkingSnapshot, revision: "b".repeat(64) });
+      }
+      return json(thinkingSnapshot);
+    });
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    fireEvent.click(screen.getByText("deepseek-v4-flash").closest("button")!);
+
+    fireEvent.click(await screen.findByLabelText("Supports reasoning"));
+    expect(screen.queryByLabelText("Supports xhigh thinking")).toBeNull();
+    expect(screen.queryByLabelText("Supports max thinking")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(putBody).toBeTruthy());
+    // Turning reasoning off does not clear the mapping (Pi ignores it while
+    // reasoning is off).
+    const models = (putBody as { providers: { models: { thinkingLevelMap?: unknown; reasoning?: unknown }[] }[] }).providers[0]!.models;
+    expect(models[0]!.reasoning).toBeUndefined();
+    expect(models[0]!.thinkingLevelMap).toEqual({ xhigh: "high", off: null });
   });
 
   it("shows model-specific conflict copy instead of a catalog or project-path error", async () => {

@@ -258,6 +258,172 @@ describe("writable models.json config store", () => {
   });
 });
 
+describe("models.json thinking-level mapping (thinkingLevelMap)", () => {
+  /** Three rows: a full mapping, a custom provider string, and no mapping. */
+  async function thinkingFixture() {
+    const agentDir = await mkdtemp(join(tmpdir(), "pix-model-config-thinking-"));
+    await writeFile(join(agentDir, "models.json"), JSON.stringify({
+      providers: {
+        "custom-old": {
+          baseUrl: "http://127.0.0.1:8080/v1",
+          api: "openai-completions",
+          apiKey: "sk-thinking-canary",
+          models: [
+            { id: "m1", reasoning: true, thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null } },
+            { id: "m2", reasoning: true, thinkingLevelMap: { xhigh: "high" } },
+            { id: "m3", reasoning: true },
+          ],
+        },
+      },
+    }, null, 2), { mode: 0o600 });
+    return agentDir;
+  }
+
+  it("projects the stored mapping and keeps it through a save of other fields", async () => {
+    const agentDir = await thinkingFixture();
+    try {
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const before = await store.readConfig();
+      const models = before.providers[0]?.models ?? [];
+      assert.deepEqual(models[0]?.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+      assert.deepEqual(models[1]?.thinkingLevelMap, { xhigh: "high" });
+      assert.equal(models[2]?.thinkingLevelMap, undefined);
+
+      // Saving an unrelated field (the display name) must NOT drop the
+      // hand-written mapping: the merge writes onto the stored row.
+      await store.writeConfig({
+        expectedRevision: before.revision,
+        providers: [{
+          sourceId: "custom-old",
+          id: "custom-old",
+          ...(before.providers[0]?.baseUrl === undefined ? {} : { baseUrl: before.providers[0].baseUrl }),
+          ...(before.providers[0]?.api === undefined ? {} : { api: before.providers[0].api }),
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: models.map((model) => (model.id === "m1" ? { ...model, name: "Model One" } : { ...model })),
+        }],
+      });
+      const persisted = JSON.parse(await readFile(join(agentDir, "models.json"), "utf8"));
+      assert.deepEqual(persisted.providers["custom-old"].models[0].thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+      assert.deepEqual(persisted.providers["custom-old"].models[1].thinkingLevelMap, { xhigh: "high" });
+      assert.equal(persisted.providers["custom-old"].models[0].name, "Model One");
+
+      // A client that says NOTHING about the mapping (the field is absent
+      // from the mutation) never wipes the stored one.
+      const current = await store.readConfig();
+      await store.writeConfig({
+        expectedRevision: current.revision,
+        providers: [{
+          sourceId: "custom-old",
+          id: "custom-old",
+          ...(current.providers[0]?.baseUrl === undefined ? {} : { baseUrl: current.providers[0].baseUrl }),
+          ...(current.providers[0]?.api === undefined ? {} : { api: current.providers[0].api }),
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: current.providers[0]!.models.map((model) => {
+            const { thinkingLevelMap: _omitted, ...rest } = model;
+            return rest;
+          }),
+        }],
+      });
+      const afterOmission = JSON.parse(await readFile(join(agentDir, "models.json"), "utf8"));
+      assert.deepEqual(afterOmission.providers["custom-old"].models[0].thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+      assert.deepEqual(afterOmission.providers["custom-old"].models[1].thinkingLevelMap, { xhigh: "high" });
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes a mapping, removes a level by deleting its key, and drops the field when empty", async () => {
+    const agentDir = await thinkingFixture();
+    try {
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const before = await store.readConfig();
+      const provider = before.providers[0]!;
+      const saved = await store.writeConfig({
+        expectedRevision: before.revision,
+        providers: [{
+          sourceId: provider.sourceId,
+          id: provider.id,
+          ...(provider.baseUrl === undefined ? {} : { baseUrl: provider.baseUrl }),
+          ...(provider.api === undefined ? {} : { api: provider.api }),
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: [
+            // Unchecking a level REMOVES its key (never an explicit `null`).
+            { ...provider.models[0]!, thinkingLevelMap: { xhigh: "xhigh", off: null } },
+            // An empty mapping states "no level mapping" at all.
+            { ...provider.models[1]!, thinkingLevelMap: {} },
+            { ...provider.models[2]! },
+          ],
+        }],
+      });
+      assert.deepEqual(saved.providers[0]?.models[0]?.thinkingLevelMap, { xhigh: "xhigh", off: null });
+      assert.equal(saved.providers[0]?.models[1]?.thinkingLevelMap, undefined);
+      const persisted = JSON.parse(await readFile(join(agentDir, "models.json"), "utf8"));
+      assert.deepEqual(persisted.providers["custom-old"].models[0].thinkingLevelMap, { xhigh: "xhigh", off: null });
+      assert.equal("thinkingLevelMap" in persisted.providers["custom-old"].models[1], false);
+      assert.equal("thinkingLevelMap" in persisted.providers["custom-old"].models[2], false);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a level Pix does not know and rejects a malformed mapping", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pix-model-config-thinking-unknown-"));
+    try {
+      await writeFile(join(agentDir, "models.json"), JSON.stringify({
+        providers: {
+          "custom-old": {
+            baseUrl: "http://127.0.0.1:8080/v1",
+            api: "openai-completions",
+            models: [{ id: "m1", reasoning: true, thinkingLevelMap: { ultra: "ultra", xhigh: "xhigh" } }],
+          },
+        },
+      }, null, 2), { mode: 0o600 });
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const before = await store.readConfig();
+      // Only the canonical levels are projected...
+      assert.deepEqual(before.providers[0]?.models[0]?.thinkingLevelMap, { xhigh: "xhigh" });
+      // ...and a level Pix does not know stays in the file.
+      await store.writeConfig({
+        expectedRevision: before.revision,
+        providers: [{
+          sourceId: "custom-old",
+          id: "custom-old",
+          baseUrl: "http://127.0.0.1:8080/v1",
+          api: "openai-completions",
+          apiKey: { mode: "remove" },
+          modelsDefined: true,
+          models: [{ ...before.providers[0]!.models[0]!, thinkingLevelMap: { xhigh: "xhigh" } }],
+        }],
+      });
+      const persisted = JSON.parse(await readFile(join(agentDir, "models.json"), "utf8"));
+      assert.deepEqual(persisted.providers["custom-old"].models[0].thinkingLevelMap, { ultra: "ultra", xhigh: "xhigh" });
+
+      // A malformed mapping fails closed instead of being written through.
+      const current = await store.readConfig();
+      await assert.rejects(
+        store.writeConfig({
+          expectedRevision: current.revision,
+          providers: [{
+            sourceId: "custom-old",
+            id: "custom-old",
+            baseUrl: "http://127.0.0.1:8080/v1",
+            api: "openai-completions",
+            apiKey: { mode: "remove" },
+            modelsDefined: true,
+            models: [{ ...current.providers[0]!.models[0]!, thinkingLevelMap: { ultra: "ultra" } as never }],
+          }],
+        }),
+        (error: unknown) => (error as { code?: string }).code === "invalid_input",
+      );
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("model discovery for built-in providers (blank Base URL)", () => {
   /** Stub global fetch for exactly one discovery and record every requested URL. */
   async function withStubbedFetch<T>(body: unknown, run: (urls: URL[]) => Promise<T>): Promise<T> {

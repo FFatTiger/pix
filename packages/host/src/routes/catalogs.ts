@@ -12,7 +12,7 @@
  * throws, proxies, or extra nested material never reach the wire as raw data.
  */
 import type { Hono } from "hono";
-import { ModelsConfigFieldErrorSchema, type ModelsConfigFieldError } from "@fffattiger/pix-protocol";
+import { ModelsConfigFieldErrorSchema, ModelThinkingLevelMapSchema, type ModelsConfigFieldError } from "@fffattiger/pix-protocol";
 import { BUILT_IN_CAPABILITY_IDS } from "@fffattiger/pix-protocol/built-in-capabilities";
 import { CompactionSettingsResponseSchema, CompactionSettingsMutationSchema, SubagentSettingsResponseSchema, SubagentSettingsMutationSchema } from "@fffattiger/pix-protocol/settings-config";
 import {
@@ -523,6 +523,12 @@ function projectModelConfigModel(raw: unknown): Record<string, unknown> {
     if (typeof reasoning !== "boolean") throw catalogUnavailable();
     out.reasoning = reasoning;
   }
+  const thinkingLevelMap = readField(raw, "thinkingLevelMap");
+  if (thinkingLevelMap !== undefined) {
+    const parsed = ModelThinkingLevelMapSchema.safeParse(thinkingLevelMap);
+    if (!parsed.success) throw catalogUnavailable();
+    out.thinkingLevelMap = parsed.data;
+  }
   const input = readField(raw, "input");
   if (input !== undefined) {
     if (!Array.isArray(input) || input.some((value) => value !== "text" && value !== "image")) throw catalogUnavailable();
@@ -716,7 +722,7 @@ function mapLoreConnectionError(error: unknown): HttpError {
 
 function parseModelsConfigModel(raw: unknown): Record<string, unknown> {
   if (!isPlainObject(raw)) invalidModelsConfigBody();
-  const allowed = ["sourceIndex", "id", "name", "api", "reasoning", "input", "contextWindow", "maxTokens", "cost"];
+  const allowed = ["sourceIndex", "id", "name", "api", "reasoning", "thinkingLevelMap", "input", "contextWindow", "maxTokens", "cost"];
   if (Object.keys(raw).some((key) => !allowed.includes(key))) invalidModelsConfigBody();
   const sourceIndex = raw.sourceIndex;
   if (sourceIndex !== null && (typeof sourceIndex !== "number" || !Number.isSafeInteger(sourceIndex) || sourceIndex < 0)) invalidModelsConfigBody();
@@ -732,6 +738,11 @@ function parseModelsConfigModel(raw: unknown): Record<string, unknown> {
   if (raw.reasoning !== undefined) {
     if (typeof raw.reasoning !== "boolean") invalidModelsConfigBody();
     out.reasoning = raw.reasoning;
+  }
+  if (raw.thinkingLevelMap !== undefined) {
+    const parsed = ModelThinkingLevelMapSchema.safeParse(raw.thinkingLevelMap);
+    if (!parsed.success) invalidModelsConfigBody();
+    out.thinkingLevelMap = parsed.data;
   }
   if (raw.input !== undefined) {
     if (!Array.isArray(raw.input) || raw.input.some((value) => value !== "text" && value !== "image")) invalidModelsConfigBody();
