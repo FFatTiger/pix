@@ -4371,3 +4371,15 @@ Pix 侧同步：`vendor/pi-claude-subagents-0.4.0.tgz` 取代 `0.3.9-pi1-eccf9bc
 - `resolveNpmRegistryLatestUrl()` 产出 `<registry>/@fffattiger%2fpix-cli/latest`；CLI 的 `fetchLatestVersion` 和 About 路由的 `POST /v1/about/check-update` 都走它，测试仍可用 `registryLatestUrl` 注入 mock。
 
 **测试**：Host 新增 `test/npm-registry.test.mjs`（自定义镜像生效且 scoped 优先、npm 给不出值时用默认值、非 http(s) 值拒绝、静态守卫断言全模块只有一处 npmjs 常量且没有回退分支）；About 路由测试新增「按 npm 配置解析」「scoped 优先」「仅 npm 无值时回退默认」三例；CLI `update.test.ts` 新增静态守卫，禁止 update 路径再出现硬编码 registry URL。
+
+## 120. 门禁登录页重做 + 首次访问网页设置密码 + 选项目不再清草稿
+
+**登录页**：原 `/login` 是 “pix Gate / Authenticate to the host. LAN deployments require gate credentials.” 的英文调试页，还把 `required: true · authenticated: false` 直接打给用户。现在重做为与主界面同一套视觉的入口：复用 `.pix-mark` 品牌标记（与 home stack 同一个像素 P 标记，样式只留一份）、既有 token/圆角/按钮语言，居中单列、Pix 标记 + 一句标题 + 密钥框 + 登录按钮；调试字段与无实际意义的 “Back to workstation” 删除（开放主机的状态改为一个真正可点的 “打开工作台”）。全部文案走 i18n（zh-CN/en），失败提示用固定 copy（`describeLoginError` / `describeSetupError` 按 HttpError code/status 映射），绝不显示 host 原始 message；深浅色都只用既有 CSS 变量。
+
+**首次访问设置密码**：host 没配置密码（gate 状态 `unconfigured`）时，登录页不再只是教用户去改环境变量/配置文件，而是直接显示「设置访问密码」表单（密码 + 确认 + 按钮，确认不一致前端直接提示，规则沿用修改密钥接口：非空、≤128 字符），提交到新增的 `POST /v1/gate/setup`：仅在 `unconfigured` 时可用，把密码经现有 passwordStore 写入 `~/.pi/pix.json` 的 `auth` 配置（原子写、保留文件里其他字段如 preferences，见 `packages/host/src/gate/config.ts` 的 `writeGatePassword`），立即生效，并直接给这个浏览器下发登录 cookie（复用现有 token 签发），无需重启、无需再输一遍。竞态：请求在 host 内串行化（先到先得，只有第一次成功）；已有密码（409 `AUTH_ALREADY_CONFIGURED`）、PIX_PASSWORD 托管（409 `PASSWORD_ENV_MANAGED`）、显式 disabled（409 `AUTH_DISABLED`）都拒绝，页面提示后重读状态切到登录表单。setup 接口加入 gate 公开路径（仅 unconfigured 时真正可用），其他接口在 unconfigured 时继续拒绝。表单下方一行小字：不想用密码可在 `~/.pi/pix.json` 写 `{"auth":{"disabled":true}}` 后重启。配置损坏（error 状态）给一句明确说明。
+
+**允许局域网关闭密码**：`packages/host/src/gate/decision.ts` 原本 LAN 模式 + disabled 会 fail closed（`AUTH_REQUIRED_FOR_LAN`）。现在用户在配置里**显式** disabled 时 LAN 也放行（本人明确选择）；unconfigured 依旧不放行（走上面的设置流程）。`isGateRequired`（status !== "disabled"，与 mode 无关）成为 status/bootstrap 接口 `required` 字段的唯一判定。根因连带修正：`packages/cli/src/commands/host-runner.ts` 的 boot gate source 原把 `unconfigured` 一律映射成 `disabled`（为让无密码本地启动开放），这会同时藏掉首次设置流程、让局域网主机看起来“故意关闭认证”；现在直接透传 host env source 的真实状态。`docs/refactor-architecture.md` 的 LAN 安全行同步更新。
+
+**草稿**：新建会话页在还没选项目时 composer 没有 draft key（`Composer.tsx`：`draftKey = selectedSessionId ?? (cwd ? \`new:${cwd}\` : undefined)`），输入框内容只存在于组件状态；点“选择项目”后 draft key 变成 `new:<cwd>`，`ChatInput` 的 draft-key 切换 effect 用新 key 的（空）草稿覆盖编辑器，用户已输入的内容被静默丢弃。现在：切换前没有 draft key 时，编辑器内容是这份草稿的唯一副本，被原样带进新 key 并写回 draft store；两个已识别的草稿之间仍按原语义恢复目标草稿（每个项目各存一份的隔离不变）。同时 composer 的目标（session 或 cwd）变化时清掉过期的发送错误，“请先选择项目”在选完项目后不再挂着。
+
+**测试**：host `gate.test.mjs` 覆盖 setup 成功写入+cookie+立即生效、已配置/PIX_PASSWORD/disabled/error 拒绝、并发两次只有一次成功、非法密码、写入失败诚实报错、unconfigured（含 LAN）时仅 setup 可达、LAN+显式 disabled 放行；bootstrap/themes/trust/ws-guard 同步更新 LAN 语义；client `LoginPage.test.tsx` 覆盖设置/登录/错误三种状态、确认不一致、设置成功直接进入、409 后切登录表单；`ChatInput.draft.test.tsx` 覆盖 draft key 变化时的草稿保留与已识别草稿的恢复语义；`AppShell.test.tsx` 覆盖“先输入 → 自定义路径选项目 → 草稿仍在、错误消失”的真实流程；cli `host.test.ts` 覆盖 boot gate source 透传真实状态。

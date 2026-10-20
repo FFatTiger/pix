@@ -57,8 +57,7 @@ a:hover {
 /* —— pix-owned component styles (migrated from the deleted styles/app.css) —— */
 
 .icon-btn,
-.composer-send,
-.login-submit {
+.composer-send {
   border: 1px solid var(--border);
   background: var(--bg-card);
   border-radius: var(--radius-md);
@@ -67,8 +66,7 @@ a:hover {
 }
 
 .icon-btn:hover,
-.composer-send:hover:not(:disabled),
-.login-submit:hover:not(:disabled) {
+.composer-send:hover:not(:disabled) {
   background: var(--bg-hover);
 }
 
@@ -353,14 +351,18 @@ a:hover {
   text-align: center;
 }
 
-.transcript-home-logo {
+/* The Pix wordmark: one owner for the brand mark so the home stack and the
+   gate login screen render the same pixel "P". */
+.transcript-home-logo,
+.pix-mark {
   width: 56px;
   height: 56px;
   border-radius: 14px;
   background: var(--text) url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' fill='%23ffffff' fill-rule='evenodd' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath clip-rule='evenodd' d='M1 1h16.5v11H12v5.5H6.5V23H1V1zm5.5 5.5V12H12V6.5H6.5z'/%3E%3Cpath d='M17.5 12H23v11h-5.5V12z'/%3E%3C/svg%3E") center / 32px no-repeat;
 }
 
-html.dark .transcript-home-logo {
+html.dark .transcript-home-logo,
+html.dark .pix-mark {
   background-color: #fff;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' fill='%23111111' fill-rule='evenodd' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath clip-rule='evenodd' d='M1 1h16.5v11H12v5.5H6.5V23H1V1zm5.5 5.5V12H12V6.5H6.5z'/%3E%3Cpath d='M17.5 12H23v11h-5.5V12z'/%3E%3C/svg%3E");
 }
@@ -743,81 +745,176 @@ html.dark .extension-request-error {
   }
 }
 
+/* —— gate login screen —— */
+
 .login-page {
   min-height: 100%;
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: var(--bg-secondary);
+  padding: 48px 24px;
+  background: var(--bg);
 }
 
-.login-card {
-  width: min(100%, 400px);
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 24px;
+.login-panel {
+  width: min(100%, 360px);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
 }
 
-.login-card h1 {
-  margin: 0;
+.login-title {
+  margin: 4px 0 0;
   font-size: 20px;
+  font-weight: var(--text-weight-strong);
+  letter-spacing: -0.02em;
+  color: var(--text);
 }
 
-.login-lead,
-.login-meta,
-.login-footer {
+.login-subtitle {
   margin: 0;
-  color: var(--text-muted);
-  font-size: 13px;
+  font-size: 13.5px;
   line-height: 1.5;
+  color: var(--text-muted);
 }
 
-.login-meta--warn {
-  color: #b45309;
+.login-form {
+  width: 100%;
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .login-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  text-align: left;
+}
+
+.login-label {
   font-size: 12px;
   color: var(--text-muted);
 }
 
-.login-field input {
+.login-input {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
-  background: var(--bg);
+  padding: 9px 12px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.login-input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ui-focus-ring);
 }
 
 .login-error {
   margin: 0;
-  color: #b91c1c;
-  font-size: 13px;
-}
-
-html.dark .login-error {
-  color: #fca5a5;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--status-danger) 10%, transparent);
+  color: var(--status-danger);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
 }
 
 .login-submit {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 9px 14px;
   background: var(--accent);
-  color: white;
-  border-color: transparent;
-  padding: 10px 12px;
-  font-weight: var(--text-weight-strong);
+  color: #fff;
+  font-size: 14px;
+  font-weight: var(--text-weight-medium);
+  cursor: pointer;
+  transition: background 0.12s;
 }
 
 .login-submit:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
-.login-next {
+.login-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-note {
+  width: 100%;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+
+.login-note-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.login-note-text--warn {
+  color: var(--status-warning);
+}
+
+.login-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-steps li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
+.login-step-title {
+  font-size: 12.5px;
+  font-weight: var(--text-weight-medium);
+  color: var(--text);
+}
+
+.login-code {
+  max-width: 100%;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 12px;
+  /* The snippet never breaks across lines — the surrounding sentence wraps. */
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.login-step-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.login-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
   color: var(--text-dim);
 }
 

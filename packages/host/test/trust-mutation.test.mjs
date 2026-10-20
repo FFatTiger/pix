@@ -187,7 +187,7 @@ test("gate runs first: an unauthenticated POST never reaches the seam", async ()
   assert.equal(calls.length, 0, "seam must not be called before the gate authenticates");
 });
 
-test("LAN exposure is always gated even with auth disabled", async () => {
+test("LAN exposure serves a trusted mutation when auth is explicitly disabled", async () => {
   const root = temp("pix-trust-lan-");
   const roots = await rootsFor(root);
   const { readSeam, mutationSeam, calls } = fakeTrustSeams();
@@ -196,9 +196,9 @@ test("LAN exposure is always gated even with auth disabled", async () => {
     { exposureMode: "lan", gate: { config: DISABLED_GATE } },
   );
   const res = await post(app, "/v1/trust", { cwd: root, level: "trusted" });
-  assert.equal(res.status, 403);
-  assert.equal((await res.json()).code, "AUTH_REQUIRED_FOR_LAN");
-  assert.equal(calls.length, 0, "unauthenticated LAN request must be rejected before the seam");
+  // The operator turned the gate off: the host serves the LAN request.
+  assert.equal(res.status, 200);
+  assert.equal(calls.filter(([name]) => name === "setTrusted").length, 1);
 });
 
 // ---------------------------------------------------------------------------

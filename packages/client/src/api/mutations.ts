@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { HttpClient } from "./http-client";
-import { createGateApi, type GateLoginInput, type GatePasswordChangeInput } from "./gate";
+import { createGateApi, type GateLoginInput, type GateSetupInput, type GatePasswordChangeInput } from "./gate";
 import { createPreferencesApi, type PreferencesPatchInput } from "./preferences";
 import { createPushApi } from "./push";
 import { createResourcesApi, type UploadInput } from "./resources";
@@ -121,6 +121,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
     },
     gate: {
       login: () => ({ mutationKey: ["pix", "gate", "login"] as const, mutationFn: (input: GateLoginInput) => gate.login(input), onSuccess: () => invalidate(queryClient, queryKeys.gate.all, queryKeys.capabilities.all) }),
+      setup: () => ({ mutationKey: ["pix", "gate", "setup"] as const, mutationFn: (input: GateSetupInput) => gate.setup(input), onSuccess: () => invalidate(queryClient, queryKeys.gate.all, queryKeys.capabilities.all) }),
       logout: () => ({ mutationKey: ["pix", "gate", "logout"] as const, mutationFn: () => gate.logout(), onSuccess: () => invalidate(queryClient, queryKeys.gate.all, queryKeys.capabilities.all) }),
       changePassword: () => ({ mutationKey: ["pix", "gate", "change-password"] as const, mutationFn: (input: GatePasswordChangeInput) => gate.changePassword(input), onSuccess: () => invalidate(queryClient, queryKeys.gate.all, queryKeys.capabilities.all) }),
       preferences: {

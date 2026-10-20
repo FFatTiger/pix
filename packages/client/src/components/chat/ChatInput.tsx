@@ -918,21 +918,51 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
 
     const draft = draftKey ? getDraft(draftKey) : null;
+    // The editor content the store already holds (the save effect skips a
+    // write that matches this snapshot).
+    let restoredSnapshot: { value: string; imageCount: number };
     if (keyChanged) {
-      setValue(draft?.value ?? "");
+      // The composer had NO draft identity before (the new-session surface
+      // before a project is picked): its editor content was never persisted,
+      // so it is the ONLY copy of that draft. Restoring the new key's stored
+      // draft would silently drop the user's text — carry it over instead.
+      // The user's own edit is the newest write, so it also wins over a draft
+      // the new key happens to hold from an earlier visit.
+      const carriedFromUnidentified = previousDraftKey === undefined
+        && draftKey !== undefined
+        && (valueRef.current.length > 0
+          || attachedImagesRef.current.length > 0
+          || pendingFilesRef.current.length > 0);
+      const nextValue = carriedFromUnidentified ? valueRef.current : draft?.value ?? "";
+      const nextImages = carriedFromUnidentified
+        ? attachedImagesRef.current
+        : draft?.images.map(draftImageToAttachedImage) ?? [];
+      const nextFiles = carriedFromUnidentified
+        ? pendingFilesRef.current
+        : draftKey ? getDraftFiles(draftKey) : [];
+      setValue(nextValue);
       setAtQuery(null);
       setFileAttachmentError(null);
-      setPendingFiles(draftKey ? getDraftFiles(draftKey) : []);
+      setPendingFiles(nextFiles);
       setAttachedImages((prev) => {
-        prev.forEach(revokeImagePreview);
-        return draft?.images.map(draftImageToAttachedImage) ?? [];
+        if (!carriedFromUnidentified) prev.forEach(revokeImagePreview);
+        return nextImages;
       });
+      if (carriedFromUnidentified && draftKey) {
+        // Persist the carried draft under its new key: the editor state alone
+        // would not survive a remount.
+        setDraft(draftKey, { value: nextValue, images: nextImages.map(imageToDraftImage) });
+        setDraftFiles(draftKey, nextFiles);
+      }
+      restoredSnapshot = { value: nextValue, imageCount: nextImages.length };
+    } else {
+      restoredSnapshot = draft
+        ? { value: draft.value, imageCount: draft.images.length }
+        : { value: "", imageCount: 0 };
     }
     draftKeyRef.current = draftKey;
     draftRestoredRef.current = draftKey ?? null;
-    restoredSnapshotRef.current = draft
-      ? { value: draft.value, imageCount: draft.images.length }
-      : { value: "", imageCount: 0 };
+    restoredSnapshotRef.current = restoredSnapshot;
   }, [draftKey]);
 
   useEffect(() => {

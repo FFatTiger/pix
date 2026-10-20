@@ -748,7 +748,7 @@ packages/
 | 场景 | 策略 |
 |------|------|
 | `127.0.0.1` | Host/Origin 防护；gate 可配 |
-| **LAN** | **强制 gate / 配对**；禁止裸奔 |
+| **LAN** | **默认必须有 gate**：未配置密码时 fail-closed（仅登录页与首次设置接口可达，网页引导设置访问密码）；用户在配置里显式 `auth.disabled` 时视为本人明确选择，LAN 也放行 |
 | 文件 | allow-root；worker 只能碰授权路径 |
 | sessiond | 默认只监听本机；不随 LAN 暴露；由 Web 网关统一对外 |
 

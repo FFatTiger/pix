@@ -51,7 +51,9 @@ test("malformed injected gate configs fail closed across status, API and login",
     });
     assert.equal(status.status, 200, injected.source);
     assert.deepEqual(await status.json(), {
-      required: false,
+      // A broken configuration blocks the host, so the client must show the
+      // gate screen (never the app).
+      required: true,
       authenticated: false,
       mode: "local",
       status: "error",
@@ -333,7 +335,7 @@ test("session cookie expires (token invalid after TTL)", async () => {
   assert.equal(res.status, 401);
 });
 
-test("disabled gate still requires auth for LAN (D-020)", async () => {
+test("an explicitly disabled gate is open on a LAN bind too (the operator opted out)", async () => {
   const { app } = createHostApp({
     logger: {},
     gate: { config: DISABLED },
@@ -341,15 +343,12 @@ test("disabled gate still requires auth for LAN (D-020)", async () => {
   const lanApi = await app.request("http://192.168.1.50/v1/capabilities", {
     headers: { host: "192.168.1.50" },
   });
-  assert.equal(lanApi.status, 403);
-  const body = await lanApi.json();
-  assert.equal(body.code, "AUTH_REQUIRED_FOR_LAN");
+  assert.equal(lanApi.status, 200);
 
   const lanPage = await app.request("http://192.168.1.50/", {
     headers: { host: "192.168.1.50", accept: "text/html" },
   });
-  assert.equal(lanPage.status, 302);
-  assert.ok((lanPage.headers.get("location") ?? "").startsWith("/login"));
+  assert.notEqual(lanPage.status, 302);
 
   // Local host with disabled gate stays open.
   const local = await app.request("http://localhost/v1/capabilities", {
@@ -358,28 +357,61 @@ test("disabled gate still requires auth for LAN (D-020)", async () => {
   assert.equal(local.status, 200);
 });
 
+test("LAN exposure with an unconfigured gate still fails closed", async () => {
+  const { app } = createHostApp({
+    logger: {},
+    exposureMode: "lan",
+    gate: { config: UNCONFIGURED },
+  });
+  const api = await app.request("http://localhost/v1/capabilities", {
+    headers: { host: "192.168.1.50" },
+  });
+  assert.equal(api.status, 503);
+  assert.equal((await api.json()).code, "AUTH_NOT_CONFIGURED");
+
+  // The page requests are sent to the gate screen (which offers the setup).
+  const page = await app.request("http://localhost/", {
+    headers: { host: "192.168.1.50", accept: "text/html" },
+  });
+  assert.equal(page.status, 302);
+  assert.ok((page.headers.get("location") ?? "").startsWith("/login"));
+});
+
+test("an unconfigured gate fails closed on a local bind too", async () => {
+  const { app } = createHostApp({
+    logger: {},
+    gate: { config: UNCONFIGURED },
+  });
+  const api = await app.request("http://localhost/v1/capabilities", {
+    headers: { host: "localhost" },
+  });
+  assert.equal(api.status, 503);
+  assert.equal((await api.json()).code, "AUTH_NOT_CONFIGURED");
+});
+
 test("LAN exposure cannot be downgraded with a spoofed loopback Host", async () => {
   const { app } = createHostApp({
     logger: {},
     exposureMode: "lan",
-    gate: { config: DISABLED },
+    gate: { config: ENABLED },
   });
   for (const host of ["localhost", "127.0.0.1"]) {
     const api = await app.request("http://localhost/v1/capabilities", {
       headers: { host },
     });
-    assert.equal(api.status, 403, host);
-    assert.equal((await api.json()).code, "AUTH_REQUIRED_FOR_LAN");
+    // The LAN exposure is authoritative: a loopback Host header never turns
+    // a gated host into a local one.
+    assert.equal(api.status, 401, host);
   }
 });
 
 test("gate status is consistent for disabled, unconfigured, and error states", async () => {
   const cases = [
     { config: DISABLED, exposureMode: "local", status: "disabled", required: false },
-    { config: DISABLED, exposureMode: "lan", status: "disabled", required: true },
-    { config: UNCONFIGURED, exposureMode: "local", status: "unconfigured", required: false },
+    { config: DISABLED, exposureMode: "lan", status: "disabled", required: false },
+    { config: UNCONFIGURED, exposureMode: "local", status: "unconfigured", required: true },
     { config: UNCONFIGURED, exposureMode: "lan", status: "unconfigured", required: true },
-    { config: ERROR_CONFIG, exposureMode: "local", status: "error", required: false },
+    { config: ERROR_CONFIG, exposureMode: "local", status: "error", required: true },
     { config: ERROR_CONFIG, exposureMode: "lan", status: "error", required: true },
   ];
   for (const item of cases) {
@@ -469,6 +501,196 @@ test("tampered session cookie is rejected (signature check)", async () => {
     headers: { host: "localhost", cookie: tampered },
   });
   assert.equal(res.status, 401);
+});
+
+// ── POST /v1/gate/setup (first-visit access key) ───────────────────────────
+
+/**
+ * A gate whose state changes when the access key is written (the real gate
+ * re-reads pix.json per request). The password store is always a fake: the
+ * real one would write the developer's own pix.json.
+ */
+function setupApp({
+  status = "unconfigured",
+  password,
+  exposureMode = "local",
+  envManaged = false,
+  storeError = null,
+} = {}) {
+  const mutable = { status, password };
+  const written = [];
+  const app = createHostApp({
+    logger: {},
+    exposureMode,
+    gate: {
+      config: {
+        read: () => (mutable.status === "enabled"
+          ? { status: "enabled", password: mutable.password, source: "test" }
+          : { status: mutable.status, source: "test" }),
+      },
+      envPasswordManaged: () => envManaged,
+      rateLimiter: { retryAfterSeconds: () => 0, recordFailure() {}, clear() {} },
+      passwordStore: {
+        write(newPassword) {
+          if (storeError) throw storeError;
+          written.push(newPassword);
+          mutable.password = newPassword;
+          mutable.status = "enabled";
+        },
+      },
+    },
+  }).app;
+  return { app, written };
+}
+
+function setupRequest(app, body, extra = {}) {
+  return app.request("http://localhost/v1/gate/setup", {
+    method: "POST",
+    headers: { host: "localhost", "content-type": "application/json", "x-forwarded-for": "127.0.0.1", ...extra },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+}
+
+test("setup writes the first access key, signs this browser in and is live at once", async () => {
+  const { app, written } = setupApp();
+  const res = await setupRequest(app, { password: "first-key", next: "/?session=s1" });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true, next: "/?session=s1" });
+  assert.deepEqual(written, ["first-key"]);
+  const cookie = (res.headers.get("set-cookie") ?? "").split(";")[0];
+  assert.match(cookie, /^pix_session=/);
+
+  // The key is live: this browser is authenticated and the host serves APIs.
+  const session = await app.request("http://localhost/v1/capabilities", {
+    headers: { host: "localhost", cookie },
+  });
+  assert.equal(session.status, 200);
+
+  const status = await app.request("http://localhost/v1/gate/status", {
+    headers: { host: "localhost", cookie },
+  });
+  const body = await status.json();
+  assert.equal(body.status, "enabled");
+  assert.equal(body.authenticated, true);
+  assert.equal(body.required, true);
+});
+
+test("setup is refused once an access key exists", async () => {
+  const { app, written } = setupApp({ status: "enabled", password: "secret" });
+  const res = await setupRequest(app, { password: "other-key" });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).code, "AUTH_ALREADY_CONFIGURED");
+  assert.equal(res.headers.get("set-cookie"), null);
+  assert.deepEqual(written, []);
+});
+
+test("setup is refused when the access key is managed by PIX_PASSWORD", async () => {
+  const { app, written } = setupApp({ envManaged: true });
+  const res = await setupRequest(app, { password: "other-key" });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).code, "PASSWORD_ENV_MANAGED");
+  assert.deepEqual(written, []);
+});
+
+test("setup is refused when authentication is explicitly disabled", async () => {
+  const { app, written } = setupApp({ status: "disabled" });
+  const res = await setupRequest(app, { password: "other-key" });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).code, "AUTH_DISABLED");
+  assert.deepEqual(written, []);
+});
+
+test("setup is refused when the configuration is broken", async () => {
+  const { app, written } = setupApp({ status: "error" });
+  const res = await setupRequest(app, { password: "other-key" });
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).code, "AUTH_CONFIG_ERROR");
+  assert.deepEqual(written, []);
+});
+
+test("concurrent setups: only the first one wins", async () => {
+  const { app, written } = setupApp();
+  const results = await Promise.all([
+    setupRequest(app, { password: "key-a" }),
+    setupRequest(app, { password: "key-b" }),
+  ]);
+  const statuses = results.map((result) => result.status).sort();
+  assert.deepEqual(statuses, [200, 409]);
+  assert.equal(written.length, 1);
+
+  // The winner's cookie is the one that works.
+  const winner = results.find((result) => result.status === 200);
+  const cookie = (winner.headers.get("set-cookie") ?? "").split(";")[0];
+  const session = await app.request("http://localhost/v1/capabilities", {
+    headers: { host: "localhost", cookie },
+  });
+  assert.equal(session.status, 200);
+});
+
+test("setup rejects an empty, oversized or malformed access key", async () => {
+  const { app, written } = setupApp();
+  const empty = await setupRequest(app, { password: "" });
+  assert.equal(empty.status, 400);
+  assert.equal((await empty.json()).code, "INVALID_INPUT");
+
+  const oversized = await setupRequest(app, { password: "x".repeat(129) });
+  assert.equal(oversized.status, 400);
+  assert.equal((await oversized.json()).code, "INVALID_INPUT");
+
+  const wrongType = await setupRequest(app, { password: 42 });
+  assert.equal(wrongType.status, 400);
+
+  const wrongMedia = await setupRequest(app, JSON.stringify({ password: "x" }), { "content-type": "text/plain" });
+  assert.equal(wrongMedia.status, 415);
+  assert.equal((await wrongMedia.json()).code, "UNSUPPORTED_MEDIA_TYPE");
+
+  assert.deepEqual(written, []);
+});
+
+test("setup reports a failed write instead of pretending it worked", async () => {
+  const { app, written } = setupApp({ storeError: new Error("disk full") });
+  const res = await setupRequest(app, { password: "first-key" });
+  assert.equal(res.status, 500);
+  assert.equal((await res.json()).code, "PASSWORD_WRITE_FAILED");
+  assert.equal(res.headers.get("set-cookie"), null);
+  assert.deepEqual(written, []);
+});
+
+test("while unconfigured only the setup endpoint is reachable", async () => {
+  const { app } = setupApp();
+  const api = await app.request("http://localhost/v1/capabilities", {
+    headers: { host: "localhost" },
+  });
+  assert.equal(api.status, 503);
+  assert.equal((await api.json()).code, "AUTH_NOT_CONFIGURED");
+
+  const page = await app.request("http://localhost/x", {
+    headers: { host: "localhost", accept: "text/html" },
+  });
+  assert.equal(page.status, 302);
+  assert.equal(page.headers.get("location"), "/login");
+
+  // The setup endpoint itself answers with its own verdict, not a gate error.
+  const setup = await setupRequest(app, { password: "first-key" });
+  assert.equal(setup.status, 200);
+});
+
+test("LAN + unconfigured: only the login page and the setup endpoint are reachable", async () => {
+  const { app } = setupApp({ exposureMode: "lan" });
+  const api = await app.request("http://localhost/v1/capabilities", {
+    headers: { host: "192.168.1.50" },
+  });
+  assert.equal(api.status, 503);
+  assert.equal((await api.json()).code, "AUTH_NOT_CONFIGURED");
+
+  const page = await app.request("http://localhost/", {
+    headers: { host: "192.168.1.50", accept: "text/html" },
+  });
+  assert.equal(page.status, 302);
+  assert.equal(page.headers.get("location"), "/login");
+
+  const setup = await setupRequest(app, { password: "first-key" });
+  assert.equal(setup.status, 200);
 });
 
 // ── PUT /v1/gate/password (access key change) ───────────────────────────────

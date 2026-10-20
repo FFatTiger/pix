@@ -49,6 +49,7 @@ export const GateStatusSchema = z.strictObject({
 });
 export type GateStatus = z.infer<typeof GateStatusSchema>;
 export const GateLoginResultSchema = z.strictObject({ ok: z.literal(true), next: z.string() });
+export const GateSetupResultSchema = z.strictObject({ ok: z.literal(true), next: z.string() });
 export const GateLogoutResultSchema = z.strictObject({ ok: z.literal(true), revoked: z.boolean() });
 export const GatePasswordChangeResultSchema = z.strictObject({ ok: z.literal(true) });
 export const PreferencesMapSchema = z.record(z.string(), z.string());

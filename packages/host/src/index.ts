@@ -18,7 +18,7 @@ export { consoleLogger, silentLogger } from "./logger.js";
 
 export { readGateConfig, createEnvGateConfigSource, createNormalizedGateConfigSource, normalizeGateConfig, defaultGateConfigPath, createFileGatePreferencesStore, createFileGatePasswordStore } from "./gate/config.js";
 export type { ReadGateConfigOptions } from "./gate/config.js";
-export { decideGateRequest } from "./gate/decision.js";
+export { decideGateRequest, isGateRequired } from "./gate/decision.js";
 export type { GateDecision, GateDecisionInput } from "./gate/decision.js";
 export { gateMiddleware } from "./gate/middleware.js";
 export { isGatePublicPath, isPublicPwaAssetPath, isPublicViteAssetPath, sanitizeNextPath, PUBLIC_PWA_ASSETS } from "./gate/paths.js";

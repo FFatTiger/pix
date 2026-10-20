@@ -93,26 +93,19 @@ function openBrowser(url: string): void {
 }
 
 /**
- * Gate config for the boot composition. The host gate intentionally fails
- * closed for non-public APIs when no credential is configured, but a local
- * single-user boot with no password should expose the full local surface (e.g.
- * /v1/capabilities) out of the box. So an `unconfigured` local read is mapped to
- * `disabled`. LAN binds remain fail-closed: decideGateRequest forces
- * AUTH_REQUIRED_FOR_LAN for non-public paths whenever mode === "lan" and the
- * credential is not `enabled`, regardless of this mapping. Explicit `enabled`
- * (password set) and explicit `disabled` are passed through unchanged.
+ * Gate config for the boot composition.
+ *
+ * The host owns the gate decision; the boot composition must not rewrite the
+ * operator's configuration. The previous mapping turned an `unconfigured` read
+ * (no access key yet) into `disabled` so a local single-user boot would open
+ * its surface — but `disabled` now means "the operator explicitly turned the
+ * gate off", so the mapping both hid the first-visit setup flow and made a
+ * network-reachable host look deliberately open. The host's own env-backed
+ * source reports the true state instead: `unconfigured` (set a key from the
+ * web), `disabled` (the operator opted out), `enabled` (a key exists).
  */
 export function createBootGateConfigSource(): GateConfigSource {
-  const env = createEnvGateConfigSource();
-  return {
-    read(): GateConfig {
-      const base = env.read();
-      if (base.status === "unconfigured") {
-        return { status: "disabled", source: base.source };
-      }
-      return base;
-    },
-  };
+  return createEnvGateConfigSource();
 }
 
 /** Format an IPv6 bind address as a valid URL authority. */

@@ -14,6 +14,13 @@ export function useGateLogin() {
   return useMutation(createMutationOptions(http, queryClient).gate.login());
 }
 
+/** First-visit access key: writes the key and signs this browser in. */
+export function useGateSetup() {
+  const http = useHttpClient();
+  const queryClient = useQueryClient();
+  return useMutation(createMutationOptions(http, queryClient).gate.setup());
+}
+
 export function useGateLogout() {
   const http = useHttpClient();
   const queryClient = useQueryClient();

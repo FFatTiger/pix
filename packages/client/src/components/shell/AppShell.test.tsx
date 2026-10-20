@@ -3681,6 +3681,60 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(picker().textContent).toBe("Select project");
   });
 
+  it("keeps the typed draft when a project is picked afterwards", async () => {
+    // The new-session composer has no draft identity until a project is
+    // chosen; picking one must not throw the pending text away.
+    const cwd = "/Users/alice/Documents/program/demo-app";
+    const view = mountApp({});
+    navigateMock.mockImplementation(async (options: { search: WorkspaceSearch }) => {
+      view.rerender(options.search);
+      await flush();
+    });
+    await connectReady();
+    await settle();
+
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "keep this draft" } });
+
+    fireEvent.click(screen.getByLabelText("Select project"));
+    fireEvent.click(screen.getByRole("button", { name: "Custom path…" }));
+    const input = screen.getByRole("textbox", { name: "Custom path…" });
+    fireEvent.change(input, { target: { value: cwd } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await settle();
+
+    expect(navigateMock).toHaveBeenLastCalledWith({ to: "/", search: { cwd } });
+    expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("keep this draft");
+  });
+
+  it("drops the select-a-project error once a project is picked", async () => {
+    const cwd = "/Users/alice/Documents/program/demo-app";
+    const view = mountApp({});
+    navigateMock.mockImplementation(async (options: { search: WorkspaceSearch }) => {
+      view.rerender(options.search);
+      await flush();
+    });
+    await connectReady();
+    await settle();
+
+    // Sending without a project fails closed with invalid_input.
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "hello" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    await act(async () => { await flush(8); });
+    expect(screen.getByRole("alert").textContent).toContain("Select a project first");
+
+    fireEvent.click(screen.getByLabelText("Select project"));
+    fireEvent.click(screen.getByRole("button", { name: "Custom path…" }));
+    const input = screen.getByRole("textbox", { name: "Custom path…" });
+    fireEvent.change(input, { target: { value: cwd } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await settle();
+
+    // The precondition is gone: the stale error must not keep hanging.
+    expect(screen.queryByText(/Select a project first/)).toBeNull();
+  });
+
   it("creates a new session for the first home prompt even while A remains attached", async () => {
     const view = mountApp({ cwd: "/x" });
     navigateMock.mockImplementation(async (options: { search: WorkspaceSearch }) => {
