@@ -84,9 +84,17 @@ describe("SubagentActivityCard", () => {
     // Rows render steering entries first (delivery order), then follow-ups.
     const rows = within(section).getAllByRole("listitem");
     expect(rows.map((row) => row.textContent)).toEqual([
-      "Steersteer me now",
-      "Steersecond steer",
-      "Queueafter this turn",
+      "steer me nowSteer",
+      "second steerSteer",
+      "after this turnQueue",
+    ]);
+    // The message body sits on the left; the delivery-type label sits on the right.
+    expect(
+      rows.map((row) => Array.from(row.querySelectorAll("button")).map((button) => button.className)),
+    ).toEqual([
+      ["status-queue-text", "status-queue-kind is-steer"],
+      ["status-queue-text", "status-queue-kind is-steer"],
+      ["status-queue-text", "status-queue-kind is-follow-up"],
     ]);
     const labels = within(section).getAllByRole("button", { name: /Steer: inserted|Queue: sent/ });
     expect(labels.map((label) => label.className)).toEqual([

@@ -413,6 +413,15 @@ export function SubagentActivityCard({
                     const kind = queuedKinds[index] === "steer" ? "steer" : "followUp";
                     return (
                       <li key={`${index}:${text}`} className="status-queue-row">
+                        <button
+                          type="button"
+                          className="status-queue-text"
+                          aria-expanded={expanded}
+                          title={text}
+                          onClick={() => setExpandedQueuedIndex(expanded ? null : index)}
+                        >
+                          <span className={expanded ? "is-expanded" : undefined}>{text}</span>
+                        </button>
                         {onToggleQueuedDelivery ? (
                           <button
                             type="button"
@@ -424,15 +433,6 @@ export function SubagentActivityCard({
                             {kind === "steer" ? t("desktop.queueKindSteer") : t("desktop.queueKindFollowUp")}
                           </button>
                         ) : null}
-                        <button
-                          type="button"
-                          className="status-queue-text"
-                          aria-expanded={expanded}
-                          title={text}
-                          onClick={() => setExpandedQueuedIndex(expanded ? null : index)}
-                        >
-                          <span className={expanded ? "is-expanded" : undefined}>{text}</span>
-                        </button>
                       </li>
                     );
                   })}
