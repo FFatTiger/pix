@@ -3,6 +3,7 @@ import type {
   BuiltInRuntimeState,
   ImageAttachment,
   ModelRef,
+  QueuedMessages,
   QuestionnaireAnswer,
   QuestionnaireQuestion,
   RuntimeCapability,
@@ -73,6 +74,8 @@ import {
   resolveModelScopeWithDiagnostics,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { UserMessage } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent, EventBus, ExtensionAPI, ExtensionUIContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type {
@@ -203,6 +206,121 @@ function createSmartCompactMemoryGuard(): InlineExtension {
 
 function images(value: readonly ImageAttachment[] | undefined): ImageContent[] | undefined {
   return value?.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
+}
+
+/**
+ * Text of a queued agent message, using the SDK's own contentText semantics
+ * (string content passes through; block content joins text blocks). Queued
+ * turns carry exactly one text block, so this equals the text that went in.
+ */
+function queuedMessageText(message: AgentMessage): string {
+  if (message.role !== "user") return "";
+  const content = (message as UserMessage).content;
+  if (typeof content === "string") return content;
+  return content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+}
+
+/** Outcome of planning a queued-delivery switch before any queue is touched. */
+export type QueuedDeliverySwitchPlan =
+  | { status: "switched"; steering: string[]; followUp: string[] }
+  | { status: "in_delivery" }
+  | { status: "stale" }
+  | { status: "unavailable" };
+
+/**
+ * Plan one queued-delivery switch from the SDK's TWO queue views.
+ *
+ * The session mirror (getSteeringMessages / getFollowUpMessages) is what the
+ * client addressed; the agent's physical peek (peekQueuedMessages) tells which
+ * entries are still queued. Between a queue drain and the delivered message's
+ * message_start, ONE entry (the SDK drains one-at-a-time) exists only in the
+ * mirror — it is mid-delivery and must never be re-queued, or it would be
+ * delivered twice. The plan therefore rebuilds from the PHYSICAL entries only:
+ *
+ * - mirror steering non-empty: peek head === mirror steering head → nothing is
+ *   mid-delivery (physical = mirror); otherwise the steering head is
+ *   mid-delivery (physical steering = mirror minus its head, follow-up
+ *   untouched — a follow-up drain cannot start while a steering entry exists).
+ * - mirror steering empty: same rule against the follow-up head.
+ * - peek empty: both physical queues are empty; only the one mirror head can
+ *   remain (anything more is impossible under one-at-a-time and fails closed
+ *   as `unavailable` rather than guessing).
+ *
+ * The address is a revision fence: index + exact text against the MIRROR list.
+ * A mismatch is `stale`; addressing the mid-delivery head is `in_delivery`.
+ */
+export function planQueuedDeliverySwitch(input: {
+  address: { list: "steering" | "followUp"; index: number; message: string };
+  mirrorSteering: readonly string[];
+  mirrorFollowUp: readonly string[];
+  peeked: readonly string[];
+}): QueuedDeliverySwitchPlan {
+  const { address } = input;
+  const mirror = address.list === "steering" ? input.mirrorSteering : input.mirrorFollowUp;
+  if (address.index >= mirror.length || mirror[address.index] !== address.message) {
+    return { status: "stale" };
+  }
+  const ms = input.mirrorSteering;
+  const mf = input.mirrorFollowUp;
+  const peekHead = input.peeked[0];
+  let steeringMidDelivery = false;
+  let followUpMidDelivery = false;
+  if (ms.length > 0) {
+    if (input.peeked.length === 0) {
+      // Both physical queues empty: at most the steering mirror head can be
+      // mid-delivery under one-at-a-time; anything else is an impossible state.
+      if (ms.length > 1 || mf.length > 0) return { status: "unavailable" };
+      steeringMidDelivery = true;
+    } else if (peekHead !== ms[0]) {
+      steeringMidDelivery = true;
+    }
+  } else if (mf.length > 0) {
+    if (input.peeked.length === 0) {
+      if (mf.length > 1) return { status: "unavailable" };
+      followUpMidDelivery = true;
+    } else if (peekHead !== mf[0]) {
+      followUpMidDelivery = true;
+    }
+  }
+  const midDelivery = address.list === "steering" ? steeringMidDelivery : followUpMidDelivery;
+  const shift = address.list === "steering"
+    ? (steeringMidDelivery ? 1 : 0)
+    : (followUpMidDelivery ? 1 : 0);
+  if (midDelivery && address.index === 0) return { status: "in_delivery" };
+  const physicalIndex = address.index - shift;
+  const steering = (steeringMidDelivery ? ms.slice(1) : [...ms]) as string[];
+  const followUp = (followUpMidDelivery ? mf.slice(1) : [...mf]) as string[];
+  const from = address.list === "steering" ? steering : followUp;
+  if (physicalIndex < 0 || physicalIndex >= from.length) return { status: "stale" };
+  const [moved] = from.splice(physicalIndex, 1);
+  (address.list === "steering" ? followUp : steering).push(moved!);
+  return { status: "switched", steering, followUp };
+}
+
+/**
+ * Re-attach images to rebuilt queue texts from the adapter's previous
+ * image-bearing mirror. Matching runs over the WHOLE previous queue
+ * (steering entries then follow-up entries — delivery order) so a moved
+ * entry keeps the images its ORIGINAL list carried; the k-th occurrence of a
+ * text takes the k-th unconsumed previous entry with that text, so duplicate
+ * texts never steal each other's images.
+ */
+export function attachQueueImages(
+  previous: readonly { message: string; images?: readonly ImageAttachment[] }[],
+  texts: readonly string[],
+): { message: string; images?: readonly ImageAttachment[] }[] {
+  const consumed = new Set<number>();
+  return texts.map((text) => {
+    let match: number | undefined;
+    for (let candidate = 0; candidate < previous.length; candidate += 1) {
+      if (consumed.has(candidate)) continue;
+      if (previous[candidate]!.message === text) { match = candidate; break; }
+    }
+    if (match === undefined) return { message: text };
+    consumed.add(match);
+    const images = previous[match]!.images;
+    return images === undefined ? { message: text } : { message: text, images };
+  });
 }
 
 /**
@@ -734,6 +852,46 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   }
   async steer(message: string, attached?: readonly ImageAttachment[]): Promise<QueuedInputDisposition> { return this.session.steer(message, images(attached), { source: "rpc" }); }
   async followUp(message: string, attached?: readonly ImageAttachment[]): Promise<QueuedInputDisposition> { return this.session.followUp(message, images(attached), { source: "rpc" }); }
+  async switchQueuedDelivery(input: {
+    address: { list: "steering" | "followUp"; index: number; message: string };
+    previous: QueuedMessages;
+  }): Promise<
+    | { status: "switched"; queue: QueuedMessages }
+    | { status: "in_delivery" }
+    | { status: "stale" }
+    | { status: "unavailable" }
+  > {
+    // The one-at-a-time drain modes are the SDK default and the only modes Pix
+    // ever runs; the physical reconstruction below leans on "at most one entry
+    // mid-delivery". Any other configuration fails closed instead of risking a
+    // duplicated or dropped message.
+    if (this.session.steeringMode !== "one-at-a-time" || this.session.followUpMode !== "one-at-a-time") {
+      return { status: "unavailable" };
+    }
+    const plan = planQueuedDeliverySwitch({
+      address: input.address,
+      mirrorSteering: this.session.getSteeringMessages(),
+      mirrorFollowUp: this.session.getFollowUpMessages(),
+      peeked: this.session.agent.peekQueuedMessages().map(queuedMessageText),
+    });
+    if (plan.status !== "switched") return plan;
+    // Images ride from the previous adapter mirror across the whole queue
+    // (steering entries first) so a moved entry keeps its original images.
+    const rebuilt = attachQueueImages(
+      [...input.previous.steering, ...input.previous.followUp],
+      [...plan.steering, ...plan.followUp],
+    );
+    const steering = rebuilt.slice(0, plan.steering.length);
+    const followUp = rebuilt.slice(plan.steering.length);
+    // clearQueue + re-queue runs without a macrotask boundary (queue input
+    // handlers of the bundled plugins never await I/O), so the agent loop
+    // cannot drain mid-rebuild; entries already mid-delivery were excluded by
+    // the plan and simply stay on their way into the transcript.
+    this.session.clearQueue();
+    for (const turn of steering) await this.session.steer(turn.message, turn.images === undefined ? undefined : images(turn.images), { source: "rpc" });
+    for (const turn of followUp) await this.session.followUp(turn.message, turn.images === undefined ? undefined : images(turn.images), { source: "rpc" });
+    return { status: "switched", queue: { steering, followUp } };
+  }
   async abort(): Promise<void> { await this.session.abort(); }
   async setModel(model: ModelRef): Promise<void> {
     let resolved = this.session.modelRuntime.getModel(model.provider, model.id);

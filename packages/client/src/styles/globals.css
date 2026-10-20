@@ -2672,26 +2672,48 @@ span.linenumber {
   overflow-wrap: anywhere;
 }
 
-/* A small filled pill: the one action on a queued message, readable at a glance. */
-.status-queue-steer {
+/* The delivery-type label on a queued row. Click toggles steer ↔ follow-up:
+ * steer reads as the accent pill, follow-up as the neutral one. Both labels
+ * share one fixed min-width so the two words align across rows. */
+.status-queue-kind {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   height: 22px;
-  padding: 0 10px;
+  min-width: 44px;
+  padding: 0 8px;
   border: 0;
   border-radius: 999px;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
 }
 
-.status-queue-steer:hover {
+.status-queue-kind.is-steer {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.status-queue-kind.is-steer:hover {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.status-queue-kind.is-follow-up {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.status-queue-kind.is-follow-up:hover {
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+/* Light failure notice under the queue rows (fixed copy from the owner). */
+.status-queue-error {
+  padding: 2px 12px 6px;
+  color: var(--accent-red);
+  font-size: 12px;
 }
 
 .subagent-activity-capsule:hover,
@@ -2706,7 +2728,7 @@ span.linenumber {
 .subagent-directory-row:focus-visible,
 .status-queue-recall:focus-visible,
 .status-queue-text:focus-visible,
-.status-queue-steer:focus-visible {
+.status-queue-kind:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

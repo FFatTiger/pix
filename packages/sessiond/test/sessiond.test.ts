@@ -2045,6 +2045,28 @@ test("steer/follow_up/clear_queue never trigger an authority snapshot refresh (D
   await service.shutdown();
 });
 
+test("switch_queued_delivery round-trips to the worker and converges the queue projection via queue_update", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+
+  const result = await service.command("s", { type: "switch_queued_delivery", commandId: "switch-1", list: "followUp", index: 0, message: "mine" });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "switch_queued_delivery");
+  // The exact fence address reached the worker untouched.
+  const sent = worker.sent.find((item) => item.type === "worker.command" && item.payload.command.commandId === "switch-1");
+  assert.ok(sent, "the switch command must reach the worker");
+  assert.deepEqual(
+    (sent as { payload: { command: { list?: string; index?: number; message?: string } } }).payload.command,
+    { commandId: "switch-1", type: "switch_queued_delivery", list: "followUp", index: 0, message: "mine" },
+  );
+  // The queue projection follows the switch's queue_update, never the ack.
+  assert.deepEqual(service.getSnapshot("s").state.queuedMessages, { steering: [], followUp: [] });
+  worker.emitEvent({ type: "queue_update", sessionId: "s", steering: [{ message: "mine" }], followUp: [] });
+  assert.deepEqual(service.getSnapshot("s").state.queuedMessages?.steering, [{ message: "mine" }]);
+  await service.shutdown();
+});
+
 test("ordinary rename does not issue extra post-command snapshot refresh", async () => {
   const { service, workers } = harness();
   await service.activate("s");

@@ -86,6 +86,21 @@ export interface FollowUpCommand {
   images?: readonly ImageAttachment[];
 }
 
+/**
+ * Move one still-queued turn between the steering and follow-up queues.
+ * The address is a revision fence: `list` + `index` name the entry the
+ * caller saw and `message` must equal its text, so a queue that changed
+ * underneath the click fails closed (`conflict`) instead of moving the
+ * wrong message. Delivery order stays steering-then-follow-up; the moved
+ * entry lands at the end of its new list.
+ */
+export interface SwitchQueuedDeliveryCommand {
+  type: "switch_queued_delivery";
+  list: "steering" | "followUp";
+  index: number;
+  message: string;
+}
+
 export interface GetToolsCommand {
   type: "get_tools";
 }
@@ -193,6 +208,7 @@ export type RuntimeCommand =
   | ClearQueueCommand
   | SteerCommand
   | FollowUpCommand
+  | SwitchQueuedDeliveryCommand
   | GetToolsCommand
   | GetCommandsCommand
   | SetToolsCommand
@@ -226,6 +242,7 @@ export const RUNTIME_COMMAND_TYPES = [
   "clear_queue",
   "steer",
   "follow_up",
+  "switch_queued_delivery",
   "get_tools",
   "get_commands",
   "set_tools",

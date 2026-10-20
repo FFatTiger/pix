@@ -428,8 +428,21 @@ describe("ChatInput pending file attachments", () => {
     expect(screen.queryByText("notes.txt")).toBeNull();
   });
 
-  it("queues Enter while streaming as a follow-up even when the steer preference is stored", () => {
+  it("queues Enter while streaming as the stored streaming-send mode, falling back to whichever queue is admitted", () => {
+    const onSteer = vi.fn();
+    const onFollowUp = vi.fn();
+    // Stored preference: steer → Enter queues a steer.
     window.localStorage.setItem("pi-streaming-send-mode", "steer");
+    renderInput({ isStreaming: true, onSteer, onFollowUp });
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "during run" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSteer).toHaveBeenCalledWith("during run", undefined);
+    expect(onFollowUp).not.toHaveBeenCalled();
+  });
+
+  it("queues Enter as a follow-up by default (queue preference)", () => {
+    window.localStorage.removeItem("pi-streaming-send-mode");
     const onSteer = vi.fn();
     const onFollowUp = vi.fn();
     renderInput({ isStreaming: true, onSteer, onFollowUp });
@@ -438,6 +451,16 @@ describe("ChatInput pending file attachments", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onFollowUp).toHaveBeenCalledWith("during run", undefined);
     expect(onSteer).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the other queue when the preferred one is unavailable", () => {
+    window.localStorage.setItem("pi-streaming-send-mode", "steer");
+    const onFollowUp = vi.fn();
+    renderInput({ isStreaming: true, onFollowUp });
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "during run" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onFollowUp).toHaveBeenCalledWith("during run", undefined);
   });
 
   it("references an in-project desktop file and uploads one outside the project", async () => {

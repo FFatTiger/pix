@@ -54,8 +54,11 @@ import { useAutoEnablePush } from "@/lib/push-subscription";
 export interface ComposerHandle {
   /** Clear the queue and put every queued message back into the input. */
   recallQueue: () => void;
-  /** Steer one queued message now and re-queue the rest in order. */
-  steerQueued: (index: number) => void;
+  /** Switch one capsule row's queued delivery type (steer ↔ follow-up).
+   *  Resolves with the runtime's switch_queued_delivery outcome; rejects on
+   *  transport/authority failures so the caller can revert its optimistic
+   *  label from the projection. */
+  toggleQueuedDelivery: (index: number) => Promise<unknown>;
 }
 import type { FileIndexEntry } from "@/lib/file-fuzzy";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
@@ -1172,62 +1175,30 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       });
   }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent, restoreClearedQueue, describeSendFailure, t, draftKey]);
 
-  // The protocol can only clear the WHOLE queue, so steering one queued
-  // message clears it, steers the chosen message, and re-queues the rest in
-  // their original order. If the turn ended between the click and the clear
-  // (steer is no longer admitted), the chosen message goes out as an ordinary
-  // prompt and the rest stay queued — nothing is dropped or sent twice.
-  const steerOneInFlightRef = useRef(false);
-  const handleSteerQueued = useCallback((index: number) => {
-    if (!liveWorkspaceEnabled || !hasQueue || !hasSteer || !exact) return;
-    if (steerOneInFlightRef.current) return;
-    // `index` counts the visible (user-typed) items; the rest of the runtime
-    // queue, assistant items included, is re-queued in its original order.
-    const all = queuedMessages ? [...queuedMessages.steering, ...queuedMessages.followUp] : [];
-    const at = queuedIndexForUserItem(all, index);
-    const chosen = at === undefined ? undefined : all[at];
-    if (chosen === undefined || chosen.trim().length === 0) return;
-    const rest = all.filter((_, itemIndex) => itemIndex !== at);
-    const sourceDraftKey = draftKey;
-    steerOneInFlightRef.current = true;
-    void exact
-      .clearQueue()
-      .then(async () => {
-        const running = exact.snapshot?.state.isStreaming === true || exact.snapshot?.state.isPromptRunning === true;
-        try {
-          if (running) await exact.steer(chosen);
-          else {
-            // The turn ended before the click landed. Send through the same
-            // path as an ordinary message, so it still goes out.
-            await exact.sendPromptToSession(chosen);
-          }
-        } catch (cause) {
-          // The chosen message may or may not have left. On a definite failure
-          // the whole queue is restored; on an uncertain one it may already be
-          // queued, so only the untouched remainder is put back. Either way the
-          // queue is already empty, so this runs even after a session switch.
-          if (isCurrent()) setSendError(describeSendFailure(cause));
-          await restoreClearedQueue(isDefiniteFailure(cause) ? [chosen, ...rest] : rest, sourceDraftKey);
-          return;
-        }
-        // The chosen message left. Everything else still has to get back into
-        // the queue, whether or not this composer still owns the selection.
-        const { failed } = await restoreClearedQueue(rest, sourceDraftKey);
-        if (!isCurrent()) return;
-        if (failed) setSendError(t("desktop.sendFailed"));
-      })
-      .catch((cause: unknown) => {
-        // clearQueue itself failed: the runtime queue is intact, so restoring
-        // the text would duplicate it. Only report the failure.
-        if (isCurrent()) setSendError(describeSendFailure(cause));
-      })
-      .finally(() => { steerOneInFlightRef.current = false; });
-  }, [liveWorkspaceEnabled, hasQueue, hasSteer, queuedMessages, exact, isCurrent, isDefiniteFailure, describeSendFailure, restoreClearedQueue, t, draftKey]);
+  // The queue switch is ONE explicit runtime command (switch_queued_delivery)
+  // with a revision fence: the row's (list, index, exact text) as the capsule
+  // sees it. The runtime fails closed when the queue changed or the entry is
+  // already being delivered — the caller reverts its optimistic label from
+  // the rejection and the queue_update projection stays authoritative.
+  const handleToggleQueuedDelivery = useCallback(
+    (index: number): Promise<unknown> => {
+      if (!liveWorkspaceEnabled || !hasQueue || !exact) return Promise.resolve();
+      const steering = queuedMessages?.steering ?? [];
+      const all = [...steering, ...(queuedMessages?.followUp ?? [])];
+      const at = queuedIndexForUserItem(all, index);
+      const message = at === undefined ? undefined : all[at];
+      if (message === undefined || at === undefined) return Promise.resolve();
+      const list = at < steering.length ? "steering" : "followUp";
+      const listIndex = list === "steering" ? at : at - steering.length;
+      return exact.switchQueuedDelivery({ list, index: listIndex, message });
+    },
+    [liveWorkspaceEnabled, hasQueue, queuedMessages, exact],
+  );
 
   useImperativeHandle(ref, () => ({
     recallQueue: handleRecallQueue,
-    steerQueued: handleSteerQueued,
-  }), [handleRecallQueue, handleSteerQueued]);
+    toggleQueuedDelivery: handleToggleQueuedDelivery,
+  }), [handleRecallQueue, handleToggleQueuedDelivery]);
 
   const handleBuiltinCommand = useCallback(
     async (message: string): Promise<BuiltinSlashCommandResult> => {

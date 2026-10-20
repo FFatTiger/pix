@@ -8,6 +8,7 @@ import type {
   ModelInfo,
   ModelRef,
   PluginInfo,
+  QueuedMessages,
   RuntimeCapability,
   RuntimeCloseReason,
   RuntimeEvent,
@@ -228,6 +229,30 @@ class ScriptedSdkDriver implements PiRuntimeDriver {
   }
   async steer(message: string, images?: readonly ImageAttachment[]): Promise<"handled" | "queued"> { if (this.status === "prompt") { this.steering.push({ message, ...(images === undefined ? {} : { images }) }); this.emit({ type: "queue_update" }); return "queued"; } await this.runTurn(message, images, true); return "queued"; }
   async followUp(message: string, images?: readonly ImageAttachment[]): Promise<"handled" | "queued"> { if (this.status === "prompt") { this.follow.push({ message, ...(images === undefined ? {} : { images }) }); this.emit({ type: "queue_update" }); return "queued"; } await this.runTurn(message, images, true); return "queued"; }
+  async switchQueuedDelivery(input: {
+    address: { list: "steering" | "followUp"; index: number; message: string };
+    previous: QueuedMessages;
+  }): Promise<
+    | { status: "switched"; queue: QueuedMessages }
+    | { status: "in_delivery" }
+    | { status: "stale" }
+    | { status: "unavailable" }
+  > {
+    // Works idle or running: the queues persist either way (this fake drains
+    // only on idle, so a switch normally happens mid-prompt).
+    const mirror = input.address.list === "steering" ? this.steering : this.follow;
+    const entry = mirror[input.address.index];
+    if (entry === undefined || entry.message !== input.address.message) return { status: "stale" };
+    const nextSteering = [...this.steering];
+    const nextFollow = [...this.follow];
+    const from = input.address.list === "steering" ? nextSteering : nextFollow;
+    from.splice(input.address.index, 1);
+    (input.address.list === "steering" ? nextFollow : nextSteering).push(entry);
+    this.steering = nextSteering;
+    this.follow = nextFollow;
+    this.emit({ type: "queue_update" });
+    return { status: "switched", queue: { steering: structuredClone(nextSteering), followUp: structuredClone(nextFollow) } };
+  }
   async abort() { this.abortPrompt = true; this.pendingUi?.cancel(); this.pendingUi = undefined; }
   async setModel(model: ModelRef) { await this.store.resolveModel(model.provider, model.id); this.model = model; this.session.model = model; this.thinking = "off"; }
   setThinkingLevel(level: ThinkingLevel) { this.thinking = level; }

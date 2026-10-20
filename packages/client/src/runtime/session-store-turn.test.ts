@@ -139,6 +139,31 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     expect(h.store.getSnapshot().turnActive).toBe(true);
   });
 
+  it("switch_queued_delivery stays independent of the in-flight turn — never session_busy while streaming", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    // An ACCEPTED but not-yet-terminal turn is exactly the streaming window in
+    // which users toggle a queued message's type. The switch must go out on
+    // the ordinary command envelope instead of rejecting session_busy behind
+    // the turn (the runtime's revision fence fails it closed if stale).
+    const sendP = h.store.sendPrompt("long running prompt");
+    await flush();
+    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
+    await flush();
+    await sendP;
+    expect(h.store.getSnapshot().turnActive).toBe(true);
+
+    const switchP = h.store.switchQueuedDelivery({ list: "followUp", index: 0, message: "toggle me" });
+    await flush();
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; list: string; index: number; message: string } } }>(ws, "command")!;
+    expect(frame.payload.command).toMatchObject({ type: "switch_queued_delivery", list: "followUp", index: 0, message: "toggle me" });
+    ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: "switch_queued_delivery" } } } });
+    await expect(switchP).resolves.toBeUndefined();
+    // An ordinary MUTATION command still rejects session_busy behind the turn.
+    await expect(h.store.sendCommand({ commandId: "busy-1", type: "set_auto_retry", enabled: true })).rejects.toMatchObject({ code: "session_busy" });
+  });
+
   it("accepted turn keeps the optimistic bubble until authority correlation and does NOT occupy pendingCommand; reads stay independent", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);

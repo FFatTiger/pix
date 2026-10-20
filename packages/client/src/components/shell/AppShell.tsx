@@ -717,6 +717,58 @@ export function AppShell({ search }: AppShellProps) {
     () => (selectionMatchesLive ? userQueuedMessagesView(toQueuedMessagesView(activeRuntime?.snapshot?.state.queuedMessages)) : null),
     [selectionMatchesLive, activeRuntime?.snapshot?.state.queuedMessages],
   );
+  // --- queued-delivery type toggle (capsule rows) ----------------------------
+  // The label flip is optimistic UI in its own transaction layer: it paints on
+  // click, is removed when the runtime's switch_queued_delivery settles either
+  // way, and NEVER writes into the authoritative queue projection — the next
+  // queue_update remains the single source of truth for the queue.
+  const [queuedSwitchOverlay, setQueuedSwitchOverlay] = useState<{ list: "steering" | "followUp"; message: string } | null>(null);
+  const [queuedSwitchError, setQueuedSwitchError] = useState<string | null>(null);
+  const queuedSwitchInFlight = useRef(false);
+  const canSwitchQueued = selectionMatchesLive
+    && activeRuntime?.capabilities?.capabilities.includes("runtime.queue") === true;
+  const queuedMessagesView = useMemo(() => {
+    if (queuedMessages === null || queuedSwitchOverlay === null) return queuedMessages;
+    // Remove ONE occurrence (the first) of the message from its list and append
+    // it to the other list: that is exactly what the runtime command does.
+    const removeOne = (list: readonly string[], text: string): string[] => {
+      const at = list.indexOf(text);
+      return at === -1 ? [...list] : [...list.slice(0, at), ...list.slice(at + 1)];
+    };
+    const steering = queuedSwitchOverlay.list === "steering"
+      ? removeOne(queuedMessages.steering, queuedSwitchOverlay.message)
+      : [...queuedMessages.steering, queuedSwitchOverlay.message];
+    const followUp = queuedSwitchOverlay.list === "followUp"
+      ? removeOne(queuedMessages.followUp, queuedSwitchOverlay.message)
+      : [...queuedMessages.followUp, queuedSwitchOverlay.message];
+    return { steering, followUp };
+  }, [queuedMessages, queuedSwitchOverlay]);
+  const handleToggleQueuedDelivery = useCallback((index: number) => {
+    if (!canSwitchQueued || queuedSwitchInFlight.current) return;
+    const steering = queuedMessages?.steering ?? [];
+    const followUp = queuedMessages?.followUp ?? [];
+    const all = [...steering, ...followUp];
+    const message = all[index];
+    if (message === undefined) return;
+    const list = index < steering.length ? "steering" : "followUp";
+    queuedSwitchInFlight.current = true;
+    setQueuedSwitchError(null);
+    setQueuedSwitchOverlay({ list, message });
+    const done = (): void => {
+      queuedSwitchInFlight.current = false;
+      setQueuedSwitchOverlay(null);
+    };
+    void Promise.resolve(composerRef.current?.toggleQueuedDelivery(index))
+      .catch((cause: unknown) => {
+        done();
+        // Light, fixed copy (never raw error text): the label reverts to the
+        // authoritative queue projection on the next queue_update.
+        void cause;
+        setQueuedSwitchError(t("desktop.queueSwitchFailed"));
+        return undefined;
+      })
+      .then(done);
+  }, [canSwitchQueued, queuedMessages, t]);
   const subagentActivity = useSubagentActivity({
     sessionId: viewSessionId,
     enabled: canBrowseSessions && viewSessionId !== null,
@@ -1582,8 +1634,8 @@ export function AppShell({ search }: AppShellProps) {
                     key={`status:${viewSessionId}`}
                     activities={capsuleActivities}
                     todos={capsuleTodos}
-                    queuedMessages={queuedMessages}
-                    onSteerQueued={(index) => composerRef.current?.steerQueued(index)}
+                    queuedMessages={queuedMessagesView}
+                    {...(canSwitchQueued ? { onToggleQueuedDelivery: handleToggleQueuedDelivery, queueSwitchError: queuedSwitchError } : {})}
                     onRecallQueue={() => composerRef.current?.recallQueue()}
                     onOpenActivity={handleOpenSubagentActivity}
                   />

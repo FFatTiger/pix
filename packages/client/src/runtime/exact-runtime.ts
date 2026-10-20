@@ -146,6 +146,9 @@ export interface ExactRuntimeApi extends ExactRuntimeView {
   readonly steer: (message: string, images?: readonly ImageAttachment[]) => Promise<unknown>;
   readonly followUp: (message: string, images?: readonly ImageAttachment[]) => Promise<unknown>;
   readonly clearQueue: () => Promise<unknown>;
+  /** Switch one queued turn between the steering and follow-up queues
+   *  (switch_queued_delivery; revision-fenced address). */
+  readonly switchQueuedDelivery: (address: { list: "steering" | "followUp"; index: number; message: string }) => Promise<unknown>;
   readonly runBash: (command: string, options?: { excludeFromContext?: boolean }) => Promise<void>;
   readonly abortBash: () => Promise<unknown>;
   readonly abort: () => Promise<unknown>;
@@ -288,6 +291,7 @@ export function createExactActions(
     steer: (message, images) => withController((controller) => controller.steer(message, images)),
     followUp: (message, images) => withController((controller) => controller.followUp(message, images)),
     clearQueue: () => withController((controller) => controller.clearQueue()),
+    switchQueuedDelivery: (address) => withController((controller) => controller.switchQueuedDelivery(address)),
     runBash: (command, options) => withController((controller) => controller.runBash(command, options)),
     abortBash: () => withController((controller) => controller.abortBash()),
     abort: () => withController((controller) => controller.abort()),

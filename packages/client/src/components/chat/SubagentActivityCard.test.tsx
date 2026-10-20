@@ -40,7 +40,8 @@ function renderCard(
         activities={props.activities ?? [RUNNING, COMPLETED]}
         todos={props.todos ?? TODOS}
         {...(props.queuedMessages === undefined ? {} : { queuedMessages: props.queuedMessages })}
-        {...(props.onSteerQueued === undefined ? {} : { onSteerQueued: props.onSteerQueued })}
+        {...(props.onToggleQueuedDelivery === undefined ? {} : { onToggleQueuedDelivery: props.onToggleQueuedDelivery })}
+        {...(props.queueSwitchError === undefined ? {} : { queueSwitchError: props.queueSwitchError })}
         {...(props.onRecallQueue === undefined ? {} : { onRecallQueue: props.onRecallQueue })}
         onOpenActivity={onOpenActivity}
       />
@@ -63,33 +64,57 @@ describe("SubagentActivityCard", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("shows the capsule for queued messages alone and lists them in the card", () => {
-    const onSteerQueued = vi.fn();
+  it("lists queued rows in delivery order with their type labels, and a label click toggles the type", () => {
+    const onToggleQueuedDelivery = vi.fn();
     const onRecallQueue = vi.fn();
     renderCard({
       activities: [],
       todos: [],
-      queuedMessages: { steering: ["steer me now"], followUp: ["after this turn"] },
-      onSteerQueued,
+      queuedMessages: { steering: ["steer me now", "second steer"], followUp: ["after this turn"] },
+      onToggleQueuedDelivery,
       onRecallQueue,
     });
     const capsule = screen.getByRole("button", { name: "Expand status" });
-    expect(capsule.textContent).toContain("2 queued");
+    expect(capsule.textContent).toContain("3 queued");
     expect(capsule.querySelector(".status-capsule-queue")).toBeNull();
 
     fireEvent.click(capsule);
     const section = screen.getByTestId("status-queue-section");
     expect(within(section).getByText("Queued")).toBeTruthy();
-    expect(within(section).getByText("steer me now")).toBeTruthy();
-    expect(within(section).getByText("after this turn")).toBeTruthy();
+    // Rows render steering entries first (delivery order), then follow-ups.
+    const rows = within(section).getAllByRole("listitem");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "Steersteer me now",
+      "Steersecond steer",
+      "Queueafter this turn",
+    ]);
+    const labels = within(section).getAllByRole("button", { name: /Steer: inserted|Queue: sent/ });
+    expect(labels.map((label) => label.className)).toEqual([
+      "status-queue-kind is-steer",
+      "status-queue-kind is-steer",
+      "status-queue-kind is-follow-up",
+    ]);
 
+    // Clicking a text row still expands it; clicking a label toggles the type.
     fireEvent.click(within(section).getByText("steer me now"));
     expect(within(section).getByText("steer me now").className).toContain("is-expanded");
-
-    fireEvent.click(within(section).getAllByRole("button", { name: "Steer this message now" })[1]!);
-    expect(onSteerQueued).toHaveBeenCalledWith(1);
+    fireEvent.click(labels[2]!);
+    expect(onToggleQueuedDelivery).toHaveBeenCalledWith(2);
     fireEvent.click(within(section).getByRole("button", { name: "Recall to input" }));
     expect(onRecallQueue).toHaveBeenCalledOnce();
+  });
+
+  it("renders the queue-switch failure notice inside the queue section", () => {
+    renderCard({
+      activities: [],
+      todos: [],
+      queuedMessages: { steering: [], followUp: ["later"] },
+      onToggleQueuedDelivery: () => undefined,
+      queueSwitchError: "Could not switch the message type; restored",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
+    const section = screen.getByTestId("status-queue-section");
+    expect(within(section).getByRole("alert").textContent).toBe("Could not switch the message type; restored");
   });
 
   it("counts queued messages beside the todo and agent counts", () => {

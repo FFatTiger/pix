@@ -80,6 +80,13 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
         message: command.message,
         ...(command.images === undefined ? {} : { images: mapImages(command.images) }),
       };
+    case "switch_queued_delivery":
+      return {
+        type: "switch_queued_delivery",
+        list: command.list,
+        index: command.index,
+        message: command.message,
+      };
     case "get_tools":
       return { type: "get_tools" };
     case "get_commands":

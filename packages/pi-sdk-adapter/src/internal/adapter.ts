@@ -259,6 +259,11 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private thinkingPinned = false;
   private pinnedThinkingLevel: RuntimeState["thinkingLevel"] | undefined;
   private queued: QueuedMessages = { steering: [], followUp: [] };
+  /** True while a switch_queued_delivery rebuild is in flight: intermediate SDK
+   *  queue_update events (empty / partial mirrors) are suppressed and ONE final
+   *  event is emitted from the settled queue, so consumers never observe the
+   *  clear-then-requeue flicker. */
+  private queueSwitchInFlight = false;
 
   private readyPromise: Promise<void>;
 
@@ -458,6 +463,44 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
             };
           }
           return { ok: true, type: "follow_up", disposition };
+        }
+        case "switch_queued_delivery": {
+          // One explicit queue command: the driver validates the fence against
+          // the SDK's mirror + physical views and rebuilds the queues so only
+          // physically-queued turns are re-queued (a mid-delivery entry can
+          // never be duplicated). Intermediate SDK queue_update events are
+          // suppressed; exactly ONE event with the settled queue follows.
+          // A driver without queue-rebuild support fails closed.
+          if (this.driver.switchQueuedDelivery === undefined) {
+            return this.failure(command.type, makeRuntimeError("unavailable", "queued-delivery switching is not supported by this runtime"));
+          }
+          this.queueSwitchInFlight = true;
+          let outcome: Awaited<ReturnType<NonNullable<PiRuntimeDriver["switchQueuedDelivery"]>>>;
+          try {
+            outcome = await this.driver.switchQueuedDelivery({ address: { list: command.list, index: command.index, message: command.message }, previous: this.queued });
+          } catch (error) {
+            this.queueSwitchInFlight = false;
+            // The rebuild threw midway: publish the queue's ACTUAL state (some
+            // entries may already be re-queued) — never a fake success.
+            this.reconcileQueuedFromDriver();
+            return this.failure(command.type, mapDriverError(error));
+          }
+          this.queueSwitchInFlight = false;
+          if (outcome.status === "switched") {
+            this.queued = { steering: [...outcome.queue.steering], followUp: [...outcome.queue.followUp] };
+            this.emit({ type: "queue_update", sessionId: this.identity.sessionId, steering: this.queued.steering, followUp: this.queued.followUp });
+            return { ok: true, type: "switch_queued_delivery" };
+          }
+          // No mutation happened; publish the queue's ACTUAL state (the views
+          // may have moved between the client's click and now).
+          this.reconcileQueuedFromDriver();
+          if (outcome.status === "in_delivery") {
+            return this.failure(command.type, makeRuntimeError("not_found", "the queued message is already being delivered", { retryable: false }));
+          }
+          if (outcome.status === "stale") {
+            return this.failure(command.type, makeRuntimeError("conflict", "the queued message changed before the switch", { retryable: false }));
+          }
+          return this.failure(command.type, makeRuntimeError("unavailable", "queued-delivery switching is unavailable for this queue configuration"));
         }
         case "abort":
           await this.driver.abort();
@@ -1372,6 +1415,11 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         return;
       }
       case "queue_update": {
+        // A switch rebuild owns the queue narrative while in flight: the SDK's
+        // intermediate events describe clear/partial states that must never
+        // reach consumers; the switch case emits ONE event from the settled
+        // queue instead.
+        if (this.queueSwitchInFlight) return;
         const state = this.driver.getState();
         this.queued = {
           steering: this.reconcileQueue(this.queued.steering, state.steering),
@@ -1636,6 +1684,18 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           : { images: turn.images }),
       };
     });
+  }
+
+  /** Re-seed the adapter queue mirror from the driver's authoritative view and
+   *  emit ONE queue_update with it. Used where the adapter must publish the
+   *  queue's ACTUAL state (switch failure paths) instead of a computed one. */
+  private reconcileQueuedFromDriver(): void {
+    const state = this.driver.getState();
+    this.queued = {
+      steering: this.reconcileQueue(this.queued.steering, state.steering),
+      followUp: this.reconcileQueue(this.queued.followUp, state.followUp),
+    };
+    this.emit({ type: "queue_update", sessionId: this.identity.sessionId, steering: this.queued.steering, followUp: this.queued.followUp });
   }
 
   /**

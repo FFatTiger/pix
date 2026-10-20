@@ -223,10 +223,11 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
   // selected tab is not attached yet. The exact controller's optimistic set is
   // already session-scoped (no sessionId filter needed); the same identity
   // merge below removes duplicate optimistic ids.
-  // Queued steer / follow-up bubbles stay in the status capsule until the
-  // agent takes them (see OptimisticSessionEntry.queued).
+  // Queued steer / follow-up turns carry NO optimistic entry at all: they
+  // surface in the status capsule (queue_update) and enter the transcript
+  // only when the runtime delivers them.
   const optimisticCandidates = useMemo(
-    () => (runtime === null ? [] : runtime.optimisticEntries.filter((candidate) => candidate.queued !== true)),
+    () => (runtime === null ? [] : runtime.optimisticEntries),
     [runtime],
   );
 

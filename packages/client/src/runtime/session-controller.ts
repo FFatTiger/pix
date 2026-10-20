@@ -147,12 +147,6 @@ export interface OptimisticSessionEntry {
   readonly baseEntryId?: string | null | undefined;
   /** Phase 5A authority identity (negotiated submit-turn path only). */
   readonly identity?: OptimisticTurnIdentity | undefined;
-  /**
-   * A steer / follow-up still waiting in the runtime queue. The status capsule
-   * lists it; the transcript shows it only once the agent takes it (its user
-   * message_end), so it never appears ahead of the reply it follows.
-   */
-  readonly queued?: true | undefined;
 }
 
 /**
@@ -1342,8 +1336,14 @@ export class SessionController implements RuntimeControllerPort {
     // uncertain, not yet terminal) conflicting ordinary MUTATION commands
     // reject `session_busy`. Reads (read lane), steer/follow_up (queued-turn
     // slot), extension UI (dedicated slots) and abort (interrupt path) are
-    // deliberately NOT blocked — they stay independent of the turn.
-    if (this.pendingTurn && !this.pendingTurn.terminal) {
+    // deliberately NOT blocked — they stay independent of the turn. The same
+    // independence applies to switch_queued_delivery: queue surgery on a
+    // turn that is STREAMING is exactly when the user toggles a queued
+    // message's type, so it must never wait behind the turn (the runtime's
+    // revision fence fails it closed if the queue changed).
+    if (
+      this.pendingTurn && !this.pendingTurn.terminal && command.type !== "switch_queued_delivery"
+    ) {
       return Promise.reject({
         code: "session_busy",
         message: "a prompt turn is already active",
@@ -1407,14 +1407,11 @@ export class SessionController implements RuntimeControllerPort {
         retryable: false,
       } satisfies ProtocolError);
     }
-    // Optimistic UI parity with sendPrompt: a queued turn's user bubble also
-    // appears immediately (it commits as a user message_end once the current
-    // turn reaches it). The RUNNING indicator is NOT touched: a queued turn by
-    // definition rides an already-running turn (real isStreaming is on), and
-    // optimistically setting isPromptRunning here would flip stop's honest
-    // abort-first ordering. Pushed only after the definite-failure checks so
-    // an early reject never leaks an optimistic bubble.
-    const optimisticId = this.appendOptimisticUserEntry(this.sessionId, trimmed, true);
+    // NO optimistic transcript bubble: a queued turn surfaces ONLY in the
+    // status capsule (via queue_update) and enters the transcript when the
+    // runtime actually delivers it (its user message_end lands as a live
+    // entry). The RUNNING indicator is not touched either: a queued turn by
+    // definition rides an already-running turn.
     const commandId = this.id();
     const imagePayload = images === undefined || images.length === 0 ? {} : { images: [...images] as ImageAttachment[] };
     const command: RuntimeCommand = type === "steer"
@@ -1422,34 +1419,17 @@ export class SessionController implements RuntimeControllerPort {
       : { commandId, type: "follow_up", message: trimmed, ...imagePayload };
     const sessionId = this.sessionId;
     const wsMessage: WsClientMessage = { type: "command", id: this.id(), payload: this.withEpoch({ sessionId, command }) };
-    const dispatch = new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       const pending: QueuedTurnPending = { commandId: command.commandId, attempt: null, reconcileTimer: null, resendCount: 0, resendDeadline: null, resendTimer: null, sessionId, command: wsMessage, type, resolve, reject };
       this.pendingQueuedTurn = pending;
       this.notify();
       if (this.attached) this.sendQueuedTurnAttempt(pending);
       else this.sendQueuedTurnAfterResume(pending);
     });
-    return this.withOptimisticGuard(optimisticId, dispatch.then((value) => {
-      // Pi 1.0 receipt: "handled" means an extension input handler consumed
-      // the message — nothing was queued and no user entry will ever commit,
-      // so THIS operation's optimistic bubble must go. "queued" keeps it (the
-      // message commits as a user message_end when the queue drains).
-      const disposition = value !== null && typeof value === "object"
-        && (value as { result?: { ok?: unknown; disposition?: unknown } }).result?.ok === true
-        ? (value as { result: { disposition?: unknown } }).result.disposition
-        : undefined;
-      if (disposition === "handled") {
-        this.optimisticUserEntries = this.optimisticUserEntries.filter(
-          (candidate) => candidate.entry.entryId !== optimisticId,
-        );
-        this.notify();
-      }
-      return value;
-    }));
   }
 
   /** Append the optimistic user bubble (bounded) and return its local id. */
-  private appendOptimisticUserEntry(sessionId: string, message: string, queued = false): string {
+  private appendOptimisticUserEntry(sessionId: string, message: string): string {
     const optimisticId = `optimistic:${(this.optimisticSeq += 1)}`;
     this.optimisticUserEntries = [
       ...this.optimisticUserEntries.slice(-4),
@@ -1459,7 +1439,6 @@ export class SessionController implements RuntimeControllerPort {
         ...(sessionId === this.sessionId
           ? { baseEntryId: this.liveEntries.at(-1)?.entryId ?? this.historyAnchorLeafId ?? this.snapshot?.state.leafId ?? null }
           : {}),
-        ...(queued ? { queued: true as const } : {}),
       },
     ];
     return optimisticId;
@@ -1501,32 +1480,6 @@ export class SessionController implements RuntimeControllerPort {
         },
       };
     });
-  }
-
-  /**
-   * Definite failure → drop the optimistic bubble (the turn never started) and
-   * the speculative running overlay. Retryable failure (timeout / transport)
-   * keeps it: the turn is usually already running server-side and the real
-   * message_end (or a rebase) settles it. NOTE: this guard ONLY owns the
-   * optimistic USER ENTRY for QUEUED TURNS (steer/follow_up never set the
-   * running overlay by design); PROMPTS use the prompt-transaction helpers
-   * below (single-flight, explicit phase).
-   */
-  private withOptimisticGuard(optimisticId: string, promise: Promise<unknown>): Promise<unknown> {
-    return promise.then(
-      (value) => value,
-      (cause: unknown) => {
-        const retryable = cause !== null && typeof cause === "object"
-          && (cause as { retryable?: unknown }).retryable === true;
-        if (!retryable) {
-          this.optimisticUserEntries = this.optimisticUserEntries.filter(
-            (candidate) => candidate.entry.entryId !== optimisticId,
-          );
-          this.notify();
-        }
-        throw cause;
-      },
-    );
   }
 
   /**
@@ -2344,6 +2297,39 @@ export class SessionController implements RuntimeControllerPort {
    */
   clearQueue(): Promise<unknown> {
     return this.sendInterrupt({ type: "clear_queue" });
+  }
+
+  /**
+   * Switch one queued message between the steering and follow-up queues via
+   * the explicit `switch_queued_delivery` runtime command (requires
+   * `runtime.queue`). The address is a revision fence — (list, index, exact
+   * text) of the entry the caller saw; the runtime fails closed (`conflict` /
+   * `not_found`) when the queue changed underneath or the entry is already
+   * being delivered. Uses the ordinary single command slot: quick queue
+   * surgery, independent of the steer/follow-up queued-turn slot.
+   */
+  switchQueuedDelivery(address: { list: "steering" | "followUp"; index: number; message: string }): Promise<void> {
+    const message = address.message.trim();
+    if (message.length === 0) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "message cannot be empty",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    if (!Number.isInteger(address.index) || address.index < 0) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "queue index must be a non-negative integer",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    return this.runTypedCommand(
+      { type: "switch_queued_delivery", list: address.list, index: address.index, message },
+      (outcome) => {
+        if (outcome.type !== "switch_queued_delivery") throw new Error("unexpected switch_queued_delivery result");
+      },
+    );
   }
 
   // --- D2-P1 typed runtime command helpers -----------------------------------
@@ -5164,7 +5150,6 @@ export class SessionController implements RuntimeControllerPort {
         entry: candidate.entry,
         ...(candidate.baseEntryId === undefined ? {} : { baseEntryId: candidate.baseEntryId }),
         ...(candidate.identity === undefined ? {} : { identity: candidate.identity }),
-        ...(candidate.queued === undefined ? {} : { queued: candidate.queued }),
       })),
       error: this.error,
       fatal: transport.fatal || this.fatal,

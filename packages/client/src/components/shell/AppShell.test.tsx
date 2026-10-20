@@ -3104,7 +3104,7 @@ describe("Composer — steer / follow-up settle like a send", () => {
     expect(composerTextarea().value).toBe("queued while running");
   });
 
-  it("steering a visible row leaves Pixie's hidden queue items in the runtime queue", async () => {
+  it("toggling a visible row sends one switch_queued_delivery addressing the runtime queue, not the visible row", async () => {
     const ws = await mountRunningA();
     await act(async () => {
       ws.serverSend({
@@ -3138,32 +3138,56 @@ describe("Composer — steer / follow-up settle like a send", () => {
     });
     const section = screen.getByTestId("status-queue-section");
     // Row 0 is the user's message even though the assistant notice sits first
-    // in the runtime queue: steering must address the message the row shows.
+    // in the runtime queue: the switch must address the message the row shows,
+    // at its FULL-queue coordinates (list followUp, index 1).
     await act(async () => {
-      fireEvent.click(within(section).getAllByRole("button", { name: "Steer this message now" })[0]!);
+      fireEvent.click(within(section).getByRole("button", { name: /Queue: sent after this run/ }));
       await flush();
     });
-    const clear = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
-    expect(clear.payload).toMatchObject({ interrupt: { type: "clear_queue" } });
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; list: string; index: number; message: string } } }>(ws, "command")!;
+    expect(frame.payload.command).toMatchObject({ type: "switch_queued_delivery", list: "followUp", index: 1, message: "mine to steer" });
     await act(async () => {
-      ws.serverSend({ type: "interrupt_result", id: clear.id, payload: { sessionId: "A", commandId: clear.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+      ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: "switch_queued_delivery" } } } });
+      // The authoritative queue_update moves the entry into steering.
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "queue_update",
+          sessionId: "A",
+          epoch: "e1",
+          eventId: 5,
+          steering: [{ message: "mine to steer" }],
+          followUp: [{ message: `${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n\n会话完成` }],
+        },
+      });
       await flush(12);
     });
-    // The steered message goes out as steer (the turn is still running)…
-    const steer = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(steer.payload.command).toMatchObject({ type: "steer", message: "mine to steer" });
-    await act(async () => {
-      ws.serverSend({ type: "response", id: steer.id, payload: { ok: true, result: { commandId: steer.payload.command.commandId, result: { ok: true, type: "steer" } } } });
-      await flush(12);
-    });
-    // …and the hidden assistant notice is re-queued rather than dropped.
-    await act(async () => { await flush(12); });
-    const requeue = lastFrame<{ type: string; id: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
-    expect(requeue.payload.command).toMatchObject({ type: "follow_up" });
-    expect(requeue.payload.command.message).toContain(ASSISTANT_NOTIFY_MESSAGE_PREFIX);
-    // Nothing was pushed back into the input: the steered message left and the
-    // notice returned to the queue.
+    // Delivery order follows the queue: the moved entry now renders as steer.
+    const labels = within(section).getAllByRole("button", { name: /Steer: inserted|Queue: sent/ });
+    expect(labels.map((label) => label.className)).toEqual(["status-queue-kind is-steer"]);
+    // Nothing was pushed into the input and no clear/steer frames were sent.
     expect(composerTextarea().value).not.toContain("mine to steer");
+    expect(lastFrame(ws, "interrupt")).toBeUndefined();
+  });
+
+  it("a failed queue switch reverts the label to the authoritative queue and shows the light notice", async () => {
+    const ws = await mountRunningA();
+    const section = await queueNoticeAndMine(ws);
+    await act(async () => {
+      fireEvent.click(within(section).getByRole("button", { name: /Queue: sent after this run/ }));
+      await flush();
+    });
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    // The queue changed server-side (stale fence): the runtime refuses.
+    await act(async () => {
+      ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: false, type: "switch_queued_delivery", error: { code: "conflict", message: "the queued message changed before the switch", retryable: false } } } } });
+      await flush(12);
+    });
+    // The label reverts to follow-up (the projection never changed) and the
+    // fixed notice renders inside the queue section.
+    const labels = within(section).getAllByRole("button", { name: /Steer: inserted|Queue: sent/ });
+    expect(labels.map((label) => label.className)).toEqual(["status-queue-kind is-follow-up"]);
+    expect(within(section).getByRole("alert").textContent).toBe("Could not switch the message type; restored");
   });
 
   /** Queue one notice and one user message, open the card, and return it. */

@@ -29,6 +29,7 @@ import { tokenizeMentions } from "@/lib/mention-tokens";
 // props (fileIndexSnapshot / skillNames); caching + singleflight belong to
 // the future integration (react-query), not the component.
 import { getUiScale } from "@/lib/ui-scale";
+import { getStreamingSendMode } from "@/lib/chat-input-preferences";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -1643,10 +1644,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (isStreaming && (onSteer || onFollowUp)) {
-          // While the agent runs, Enter always queues the message. It shows
-          // in the status capsule and is delivered after this turn finishes.
-          // Steering one queued message is an action on that capsule row.
-          sendQueued(onFollowUp ? "followup" : "steer");
+          // While the agent runs, Enter queues the message; the status capsule
+          // lists it with its type (引导/排队) until the runtime delivers it.
+          // The default type follows the「运行中按 Enter」setting, falling
+          // back to whichever queue the runtime admits.
+          const preferSteer = getStreamingSendMode() === "steer";
+          const mode = preferSteer
+            ? (onSteer ? "steer" : "followup")
+            : (onFollowUp ? "followup" : "steer");
+          sendQueued(mode);
         } else {
           handleSend();
         }

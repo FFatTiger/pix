@@ -263,6 +263,13 @@ describe("RuntimeCommand", () => {
       commandId: "c-fu",
       message: "then do this",
     },
+    switch_queued_delivery: {
+      type: "switch_queued_delivery",
+      commandId: "c-switch",
+      list: "followUp",
+      index: 0,
+      message: "then do this",
+    },
     get_tools: { type: "get_tools", commandId: "c-tools" },
     get_commands: { type: "get_commands", commandId: "c-cmds" },
     set_tools: {
@@ -310,9 +317,9 @@ describe("RuntimeCommand", () => {
     side_chat_set_model: { type: "side_chat_set_model", commandId: "c-side-model", conversationId: "side-1", provider: "test", modelId: "model", thinkingLevel: "medium" },
   };
 
-  it("enumerates exactly 30 command types", () => {
-    assert.equal(RUNTIME_COMMAND_TYPES.length, 30);
-    assert.equal(Object.keys(samples).length, 30);
+  it("enumerates exactly 31 command types", () => {
+    assert.equal(RUNTIME_COMMAND_TYPES.length, 31);
+    assert.equal(Object.keys(samples).length, 31);
   });
 
   it("parses every command type with commandId", () => {
