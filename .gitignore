@@ -26,3 +26,4 @@ tests/e2e/.artifacts/
 *.sock
 *.pid
 *.secret
+.playwright-cli/

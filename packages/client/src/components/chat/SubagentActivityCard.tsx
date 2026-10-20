@@ -15,8 +15,13 @@ export interface SubagentActivityCardProps {
   todos?: readonly StatusTodoItem[];
   /** Steering messages first, then follow-ups, in queue order. */
   queuedMessages?: QueuedMessages | null;
-  /** Steer one queued message now (clear the queue, steer it, re-queue the rest). */
-  onSteerQueued?: (index: number) => void;
+  /** Toggle one queued row's delivery type (steer ↔ follow-up). The index
+   *  counts the visible rows in the same order they render. */
+  onToggleQueuedDelivery?: (index: number) => void;
+  /** Light failure notice for the last type toggle (fixed copy from the
+   *  owner; cleared by the next attempt). Rendered only inside the queue
+   *  section. */
+  queueSwitchError?: string | null;
   /** Clear the queue and put every message back into the composer. */
   onRecallQueue?: () => void;
   onOpenActivity: (activity: SubagentActivity) => void;
@@ -131,7 +136,8 @@ export function SubagentActivityCard({
   activities,
   todos = EMPTY_TODOS,
   queuedMessages = null,
-  onSteerQueued,
+  onToggleQueuedDelivery,
+  queueSwitchError = null,
   onRecallQueue,
   onOpenActivity,
 }: SubagentActivityCardProps) {
@@ -144,8 +150,17 @@ export function SubagentActivityCard({
   const [tabWidth, setTabWidth] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [expandedQueuedIndex, setExpandedQueuedIndex] = useState<number | null>(null);
+  // Delivery order: every steering entry first, then the follow-ups — the
+  // same order the runtime drains the queues in.
   const queued = useMemo(
     () => [...(queuedMessages?.steering ?? []), ...(queuedMessages?.followUp ?? [])],
+    [queuedMessages],
+  );
+  const queuedKinds = useMemo(
+    () => [
+      ...(queuedMessages?.steering ?? []).map(() => "steer" as const),
+      ...(queuedMessages?.followUp ?? []).map(() => "followUp" as const),
+    ],
     [queuedMessages],
   );
   const running = useMemo(() => activities.filter((activity) => activity.status === "running"), [activities]);
@@ -395,8 +410,20 @@ export function SubagentActivityCard({
                 <ul className="status-queue-list">
                   {queued.map((text, index) => {
                     const expanded = expandedQueuedIndex === index;
+                    const kind = queuedKinds[index] === "steer" ? "steer" : "followUp";
                     return (
                       <li key={`${index}:${text}`} className="status-queue-row">
+                        {onToggleQueuedDelivery ? (
+                          <button
+                            type="button"
+                            className={`status-queue-kind${kind === "steer" ? " is-steer" : " is-follow-up"}`}
+                            aria-label={kind === "steer" ? t("desktop.queueKindSteerTitle") : t("desktop.queueKindFollowUpTitle")}
+                            title={kind === "steer" ? t("desktop.queueKindSteerTitle") : t("desktop.queueKindFollowUpTitle")}
+                            onClick={() => onToggleQueuedDelivery(index)}
+                          >
+                            {kind === "steer" ? t("desktop.queueKindSteer") : t("desktop.queueKindFollowUp")}
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className="status-queue-text"
@@ -406,21 +433,11 @@ export function SubagentActivityCard({
                         >
                           <span className={expanded ? "is-expanded" : undefined}>{text}</span>
                         </button>
-                        {onSteerQueued ? (
-                          <button
-                            type="button"
-                            className="status-queue-steer"
-                            aria-label={t("desktop.steerQueuedMessage")}
-                            title={t("desktop.steerQueuedMessage")}
-                            onClick={() => onSteerQueued(index)}
-                          >
-                            {t("desktop.steer")}
-                          </button>
-                        ) : null}
                       </li>
                     );
                   })}
                 </ul>
+                {queueSwitchError ? <div className="status-queue-error" role="alert">{queueSwitchError}</div> : null}
               </section>
             ) : null}
           </div>

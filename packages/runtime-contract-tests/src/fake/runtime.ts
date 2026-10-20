@@ -326,6 +326,25 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         return this.executeSteerOrFollowUp(command);
       case "follow_up":
         return this.executeSteerOrFollowUp(command);
+      case "switch_queued_delivery": {
+        const list = command.list === "steering" ? this.queue.steering : this.queue.followUp;
+        const entry = list[command.index];
+        if (entry === undefined || entry.message !== command.message) {
+          return {
+            ok: false,
+            type: "switch_queued_delivery",
+            error: makeRuntimeError("conflict", "the queued message changed before the switch"),
+          };
+        }
+        const steering = [...this.queue.steering];
+        const followUp = [...this.queue.followUp];
+        const from = command.list === "steering" ? steering : followUp;
+        from.splice(command.index, 1);
+        (command.list === "steering" ? followUp : steering).push(entry);
+        this.queue = { steering, followUp };
+        this.emitQueueUpdate();
+        return { ok: true, type: "switch_queued_delivery" };
+      }
       case "abort":
         this.abortPrompt = true;
         this.cancelPendingExtension();

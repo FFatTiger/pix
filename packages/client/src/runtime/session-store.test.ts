@@ -1271,25 +1271,52 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
     ws.serverSend({ type: "response", id, payload: { ok: true, result: { commandId, result: { ok: true, type } } } });
   }
 
-  it.each(["steer", "follow_up"] as const)("%s handled receipt removes only its own bubble; queued receipts retain theirs", async (type) => {
+  it.each(["steer", "follow_up"] as const)("%s creates no optimistic transcript entry regardless of the queued/handled receipt", async (type) => {
     const h = createHarness();
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.steer", "runtime.follow_up"]);
     const send = (message: string) => type === "steer" ? h.store.steer(message) : h.store.followUp(message);
     const queued = send("keep this queued message");
     await flush();
     const first = commandFrame(ws);
+    expect(first.payload.command.type).toBe(type);
     ws.serverSend({ type: "response", id: first.id, payload: { ok: true, result: { commandId: first.payload.command.commandId, result: { ok: true, type, disposition: "queued" } } } });
     await queued;
+    // A queued turn surfaces in the status capsule (queue events), never as a
+    // speculative transcript bubble — both receipts leave the transcript alone.
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(0);
     const handled = send("/extension-consumes-this");
     await flush();
     const second = commandFrame(ws);
-    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(2);
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(0);
     ws.serverSend({ type: "response", id: second.id, payload: { ok: true, result: { commandId: second.payload.command.commandId, result: { ok: true, type, disposition: "handled" } } } });
     await handled;
-    const remaining = h.store.getSnapshot().optimisticEntries;
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0]?.entry.message).toMatchObject({ role: "user", content: "keep this queued message" });
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(0);
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("a queued turn enters the transcript ONLY when the runtime delivers it (user message_end)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.steer"]);
+    const queued = h.store.steer("queued while running");
+    await flush();
+    const frame = commandFrame(ws);
+    expect(frame.payload.command.type).toBe("steer");
+    ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: "steer", disposition: "queued" } } } });
+    await queued;
+    // Nothing in the transcript yet: no speculative bubble, no live entry.
+    let view = h.store.getSnapshot();
+    expect(view.optimisticEntries).toHaveLength(0);
+    expect(view.liveEntries).toHaveLength(0);
+    // Delivery (the queue drained into the running turn) appends the user
+    // entry EXACTLY once — it appears at delivery, never before.
+    wsEvent(h, { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "queued while running" }, eventId: 1, epoch: "e1" });
+    wsEvent(h, { type: "message_end", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "queued while running" }, entryId: "en-q", eventId: 2, epoch: "e1" });
+    await flush();
+    view = h.store.getSnapshot();
+    expect(view.liveEntries).toHaveLength(1);
+    expect(view.liveEntries[0]!.entryId).toBe("en-q");
+    expect((view.liveEntries[0]!.message as { content: string }).content).toBe("queued while running");
+    expect(view.optimisticEntries).toHaveLength(0);
   });
 
   it("steer sends a trimmed steer command on the queued-turn slot and toggles queuedTurnPending", async () => {

@@ -110,6 +110,17 @@ export const FollowUpCommandSchema = z.strictObject({
   images: ImageAttachmentArraySchema.optional(),
 });
 
+export const SwitchQueuedDeliveryCommandSchema = z.strictObject({
+  ...commandBase,
+  type: z.literal("switch_queued_delivery"),
+  /** Queue list the caller saw the entry in. */
+  list: z.enum(["steering", "followUp"]),
+  /** Position in that list at click time (revision fence together with message). */
+  index: z.number().int().nonnegative(),
+  /** Exact text the caller saw — a changed queue fails closed, never moves the wrong entry. */
+  message: NonBlankTextSchema,
+});
+
 export const GetToolsCommandSchema = z.strictObject({
   ...commandBase,
   type: z.literal("get_tools"),
@@ -217,6 +228,7 @@ export const RuntimeCommandSchema = z.union([
     ClearQueueCommandSchema,
     SteerCommandSchema,
     FollowUpCommandSchema,
+    SwitchQueuedDeliveryCommandSchema,
     GetToolsCommandSchema,
     GetCommandsCommandSchema,
     SetToolsCommandSchema,
@@ -253,6 +265,7 @@ export const RUNTIME_COMMAND_TYPES = [
   "clear_queue",
   "steer",
   "follow_up",
+  "switch_queued_delivery",
   "get_tools",
   "get_commands",
   "set_tools",

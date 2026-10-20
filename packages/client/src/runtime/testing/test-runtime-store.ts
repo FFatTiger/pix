@@ -214,6 +214,10 @@ export class TestRuntimeStore {
     return this.withCurrent((controller) => controller.steer(message, images));
   }
 
+  switchQueuedDelivery(address: { list: "steering" | "followUp"; index: number; message: string }): Promise<unknown> {
+    return this.withCurrent((controller) => controller.switchQueuedDelivery(address));
+  }
+
   followUp(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
     return this.withCurrent((controller) => controller.followUp(message, images));
   }

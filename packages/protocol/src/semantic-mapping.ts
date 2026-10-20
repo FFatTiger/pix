@@ -23,6 +23,7 @@ export const RUNTIME_COMMAND_CAPABILITY_MATRIX = {
   clear_queue: "runtime.queue",
   steer: "runtime.steer",
   follow_up: "runtime.follow_up",
+  switch_queued_delivery: "runtime.queue",
   get_tools: "runtime.tools.read",
   get_commands: null,
   set_tools: "runtime.tools.write",

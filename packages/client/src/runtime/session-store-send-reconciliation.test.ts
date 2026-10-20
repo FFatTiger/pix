@@ -611,7 +611,8 @@ describe("SessionStore — queued-turn uncertain reconciliation (steer / follow_
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.cause).toMatchObject({ phase: "uncertain" });
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
-    // The optimistic bubble stays for the queue event stream to claim.
-    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual({ role: "user", content: "never resolves" });
+    // A queued turn never creates an optimistic transcript entry: the message
+    // belongs to the status capsule (queue events) until real delivery.
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(0);
   });
 });

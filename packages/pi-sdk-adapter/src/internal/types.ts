@@ -9,6 +9,7 @@ import type {
   RuntimeStateChangedContext,
   ImageAttachment,
   ModelRef,
+  QueuedMessages,
   QuestionnaireAnswer,
   QuestionnaireQuestion,
   RuntimeCapability,
@@ -122,6 +123,27 @@ export interface PiRuntimeDriver {
   prompt(message: string, images?: readonly ImageAttachment[], streamingBehavior?: "steer" | "followUp"): Promise<{ disposition: PromptDisposition }>;
   steer(message: string, images?: readonly ImageAttachment[]): Promise<QueuedInputDisposition>;
   followUp(message: string, images?: readonly ImageAttachment[]): Promise<QueuedInputDisposition>;
+  /**
+   * Move one still-queued turn between the steering and follow-up queues
+   * (adapter command `switch_queued_delivery`). OPTIONAL: a driver that
+   * cannot rebuild the SDK queues leaves it absent and the adapter fails the
+   * command closed with `unavailable`. When present, it rebuilds the queues
+   * by clearQueue + re-queue of ONLY the physically queued turns: an entry
+   * the agent loop already drained but has not delivered yet stays untouched
+   * (reported as `in_delivery`), so a switch can never duplicate or drop a
+   * message. `previous` is the adapter's image-bearing queue mirror; images
+   * ride along to the rebuilt entries. Delivery order stays
+   * steering-then-follow-up; the moved entry lands at the end of its new list.
+   */
+  switchQueuedDelivery?(input: {
+    address: { list: "steering" | "followUp"; index: number; message: string };
+    previous: QueuedMessages;
+  }): Promise<
+    | { status: "switched"; queue: QueuedMessages }
+    | { status: "in_delivery" }
+    | { status: "stale" }
+    | { status: "unavailable" }
+  >;
   abort(): Promise<void>;
   setModel(model: ModelRef): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void> | void;

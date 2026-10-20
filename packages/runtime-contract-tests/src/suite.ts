@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import type {
   AgentRuntimeFactory,
   AgentRuntimePort,
+  ImageAttachment,
   RuntimeCommand,
   RuntimeCommandResult,
   RuntimeCommandType,
@@ -157,6 +158,8 @@ function fixtureFor(type: RuntimeCommandType): RuntimeCommand {
       return { type, enabled: true };
     case "clear_queue":
       return { type };
+    case "switch_queued_delivery":
+      return { type, list: "followUp", index: 0, message: "hi" };
     case "get_tools":
       return { type };
     case "get_commands":
@@ -294,7 +297,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const types = RUNTIME_COMMAND_TYPES.filter(
           (type) => type !== "extension_ui_response" && type !== "extension_ui_input",
         );
-        assert.equal(types.length, 28, "30 commands minus 2 extension-response types");
+        assert.equal(types.length, 29, "31 commands minus 2 extension-response types");
         for (const type of types) {
           const factory = await harness.createFactory();
           const port = await factory.create({ cwd: "/workspace" });
@@ -308,6 +311,20 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
           if (type === "fork") {
             // fork needs an existing fork point
             await port.execute({ type: "prompt", message: "hi" });
+          }
+          if (type === "switch_queued_delivery") {
+            // The switch needs one queued entry: queue the fixture's message
+            // behind a running prompt, then switch it (followUp[0] → steering).
+            const pending = port.execute({ type: "prompt", message: "long prompt" });
+            await delay(30);
+            const queued = await port.execute({ type: "follow_up", message: "hi" });
+            assert.equal(queued.ok, true, `follow_up setup for "${type}" failed`);
+            const result = await port.execute(fixtureFor(type));
+            assert.equal(result.ok, true, `command "${type}" should succeed`);
+            await port.interrupt({ type: "abort" });
+            await pending;
+            await port.close("user");
+            continue;
           }
           let fixture = fixtureFor(type);
           if (type === "side_chat_send" || type === "side_chat_reset" || type === "side_chat_set_model") {
@@ -1243,6 +1260,51 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         assert.deepEqual(snapshot.state.queuedMessages, { steering: [], followUp: [] });
         await port.interrupt({ type: "abort" });
         await pending;
+        await port.close("user");
+      });
+
+      it("switch_queued_delivery moves one entry, keeps order and images, and fences stale clicks", async () => {
+        const { port } = await newRuntime(harness);
+        const collector = new EventCollector(port);
+        const image: ImageAttachment = { type: "image", data: "aGk=", mimeType: "image/png" };
+        const pending = port.execute({ type: "prompt", message: "long prompt" });
+        await delay(30);
+        await port.execute({ type: "steer", message: "first steer" });
+        await port.execute({ type: "follow_up", message: "queued one", images: [image] });
+        await port.execute({ type: "follow_up", message: "queued two" });
+
+        // followUp[0] → steering: it must land at the END of the steering
+        // list, after the already-queued steer (delivery order stays
+        // steering-first, FIFO inside each list).
+        const switched = await port.execute({ type: "switch_queued_delivery", list: "followUp", index: 0, message: "queued one" });
+        assert.equal(switched.ok, true);
+        await waitForSnapshot(port, (snapshot) => snapshot.state.queuedMessages?.steering.length === 2);
+        let snapshot = await port.getSnapshot();
+        assert.deepEqual(snapshot.state.queuedMessages?.steering.map((turn) => turn.message), ["first steer", "queued one"]);
+        assert.deepEqual(snapshot.state.queuedMessages?.steering[1]?.images, [image], "switched entry keeps its images");
+        assert.deepEqual(snapshot.state.queuedMessages?.followUp.map((turn) => turn.message), ["queued two"]);
+
+        // A stale fence (wrong text) fails closed without touching the queue.
+        const stale = await port.execute({ type: "switch_queued_delivery", list: "followUp", index: 0, message: "queued one" });
+        assert.equal(stale.ok, false);
+        if (!stale.ok) assert.equal(stale.error.code, "conflict");
+        // An out-of-range index is a stale address, never a wrong-entry move.
+        const outOfRange = await port.execute({ type: "switch_queued_delivery", list: "steering", index: 5, message: "first steer" });
+        assert.equal(outOfRange.ok, false);
+        snapshot = await port.getSnapshot();
+        assert.deepEqual(snapshot.state.queuedMessages?.steering.map((turn) => turn.message), ["first steer", "queued one"], "failed switches never move the queue");
+        assert.ok(collector.ofType("queue_update").length >= 1);
+
+        // Let the queued turns drain: the moved entry is now steering, so it
+        // delivers BEFORE the remaining follow-up; the run's final text is the
+        // follow-up's. Four committed turns (3 entries each) prove the whole
+        // queue drained in order.
+        await pending;
+        await waitForSnapshot(port, (snapshot) => snapshot.state.messageCount === 12);
+        const last = await port.execute({ type: "get_last_assistant_text" });
+        if (last.ok && last.type === "get_last_assistant_text") {
+          assert.ok(last.text.includes("queued two"), `follow-up delivers after the moved (steering) entry (last=${last.text})`);
+        }
         await port.close("user");
       });
     });
