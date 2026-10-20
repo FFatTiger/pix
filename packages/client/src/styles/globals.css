@@ -1391,6 +1391,36 @@ pre, code {
 .group\/process .codex-custom-content {
   padding-top: 8px;
 }
+/* Model-switch divider: the first turn answered by a different model opens
+   with a calm centered line (chat time-divider idiom) above its user message,
+   so the conversation shows exactly where the answering model changed. */
+.transcript-model-switch {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  user-select: none;
+}
+.transcript-model-switch::before,
+.transcript-model-switch::after {
+  content: "";
+  flex: 1 1 0;
+  min-width: 16px;
+  border-top: 1px solid var(--border);
+  opacity: 0.6;
+}
+.transcript-model-switch > span {
+  flex: 0 0 auto;
+  max-width: 80%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .transcript-compaction-status {
   display: inline-flex;
   width: fit-content;

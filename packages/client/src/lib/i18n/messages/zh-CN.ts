@@ -1048,6 +1048,7 @@ export const zhCNLocale = {
     "desktop.toolDurationSeconds": "{count} 秒",
     "desktop.toolDurationMinutes": "{minutes} 分 {seconds} 秒",
     "desktop.turnStopped": "已停止",
+    "desktop.modelSwitchedFrom": "已从 {from} 切换到 {to}",
     "desktop.processOutput": "处理输出",
     "desktop.processTabMode": "分步标签",
     "desktop.processTimelineMode": "时间线",

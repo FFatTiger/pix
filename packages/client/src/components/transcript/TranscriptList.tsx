@@ -20,6 +20,7 @@ import { useSessionTranscript } from "@/features/session-history/use-session-tra
 import { MessageView } from "@/components/chat/MessageView";
 import { ProcessGroup } from "@/components/chat/ProcessGroup";
 import { TurnActionChips } from "@/components/chat/AssistantActionCard";
+import { buildModelNameMap } from "@/lib/model-display";
 import { ChatMinimap, useMessageRefs } from "@/components/chat/ChatMinimap";
 import {
   chatInputHandle,
@@ -182,6 +183,25 @@ export function TranscriptList({
   // rendered user messages uses the same project index the composer uses.
   const canFilesIndex = can("files");
   const canSkills = can("skills");
+  // Model display names for the turn's model-switch divider and the reply
+  // footer. Names come from the global catalog the live composer already
+  // loads (same query key → same cache entry), so history browsing reads it
+  // without ever starting a request: a session whose workspace is missing or
+  // history-only must stay request-free, and a catalog that is not loaded
+  // falls back to the raw model id — exactly the footer's existing fallback.
+  const modelsQuery = useQuery({
+    ...createQueryOptions(http).models.list(),
+    enabled: false,
+  });
+  const modelNames = useMemo<Record<string, string> | undefined>(() => {
+    const catalog = modelsQuery.data?.models;
+    if (catalog === undefined) return undefined;
+    return buildModelNameMap(catalog.map((model) => ({
+      provider: model.provider,
+      id: model.id,
+      name: model.displayName ?? model.id,
+    })));
+  }, [modelsQuery.data]);
   const filesIndexQuery = useQuery({
     ...createQueryOptions(http).files.index(cwd ?? ""),
     enabled: isLive && Boolean(cwd) && canFilesIndex,
@@ -251,6 +271,7 @@ export function TranscriptList({
         running,
         ...(lastTurnAborted ? { lastTurnAborted: true } : {}),
         ...(cwd === undefined ? {} : { cwd }),
+        ...(modelNames === undefined ? {} : { modelNames }),
       });
       // Externally-driven tail (running subagent child in a read-only pane):
       // when a real partial exists, `running`/`streamingMessage` already own
@@ -268,7 +289,7 @@ export function TranscriptList({
       }
       return built;
     },
-    [messages, entryIds, streamingMessage, running, lastTurnAborted, cwd, isLive, tailActive, externalPartial],
+    [messages, entryIds, streamingMessage, running, lastTurnAborted, cwd, modelNames, isLive, tailActive, externalPartial],
   );
 
   // ── Scroll-owner policy ────────────────────────────────────────────────
@@ -639,11 +660,12 @@ export function TranscriptList({
         >
           {virtualizer.items.map((item) => {
             const row = rows[item.index]!;
+            const refIndex = row.kind === "modelSwitch" ? undefined : row.visibleIndex;
             const assignMessageRef =
-              row.visibleIndex === undefined
+              refIndex === undefined
                 ? undefined
                 : (el: HTMLDivElement | null) => {
-                    messageRefs.current[row.visibleIndex!] = el;
+                    messageRefs.current[refIndex] = el;
                   };
             return (
               <div
@@ -671,6 +693,7 @@ export function TranscriptList({
                   toolResults={toolResults}
                   onOpenFile={onOpenFile}
                   onEditContent={handleEditContent}
+                  {...(modelNames === undefined ? {} : { modelNames })}
                   mentionValidators={mentionValidators}
                   skillInfo={skillInfo}
                   loadDeferredThinking={loadDeferredThinking}
@@ -755,6 +778,14 @@ export function ChatTranscriptRowView({
   /** Typed deferred-thinking loader (persisted history blocks only). */
   loadDeferredThinking?: DeferredThinkingLoader;
 }): ReactNode {
+  const { t } = useI18n();
+  if (row.kind === "modelSwitch") {
+    return (
+      <div className="transcript-model-switch" data-testid="transcript-model-switch" role="note">
+        <span>{t("desktop.modelSwitchedFrom", { from: row.fromModel, to: row.toModel })}</span>
+      </div>
+    );
+  }
   if (row.kind === "process") {
     const group = (
       <ProcessGroup

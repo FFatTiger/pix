@@ -21,6 +21,7 @@ import { collectProcessContentBlocks, messageToProcessContentBlocks, splitAssist
 import { getAssistantErrorMessage, getDisplayableAssistantBlocks, lastContiguousTextRun, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnShownFiles, extractTurnWrittenFiles, mergeTurnFileRows, type TurnFileRow, type WrittenFile } from "@/lib/turn-written-files";
 import { extractTurnActions, type TurnAction } from "@/lib/turn-actions";
+import { resolveModelLabel } from "@/lib/model-display";
 
 export interface ChatTranscriptMessageRow {
   kind: "message";
@@ -60,7 +61,21 @@ export interface ChatTranscriptProcessRow {
   visibleIndex?: number | undefined;
 }
 
-export type ChatTranscriptRow = ChatTranscriptMessageRow | ChatTranscriptProcessRow;
+/**
+ * Turn boundary marker: the previous answered turn used a different model.
+ * Sits directly above the user message that started the new turn, so the
+ * conversation shows where the answering model changed. Display labels are
+ * resolved here (same `modelNames` map as the reply footer) so no renderer
+ * re-derives them.
+ */
+export interface ChatTranscriptModelSwitchRow {
+  kind: "modelSwitch";
+  key: string;
+  fromModel: string;
+  toModel: string;
+}
+
+export type ChatTranscriptRow = ChatTranscriptMessageRow | ChatTranscriptProcessRow | ChatTranscriptModelSwitchRow;
 
 export interface BuildChatTranscriptRowsInput {
   messages: readonly AgentMessage[];
@@ -74,6 +89,9 @@ export interface BuildChatTranscriptRowsInput {
   lastTurnAborted?: boolean | undefined;
   /** Session cwd — resolves relative file paths in rows. */
   cwd?: string | undefined;
+  /** Model display names (`provider:model` / `model` → label), shared with the
+   *  reply footer. Missing entries fall back to the raw model id. */
+  modelNames?: Record<string, string> | undefined;
 }
 
 function hasFinalAssistantAnswer(message: AgentMessage): boolean {
@@ -135,6 +153,38 @@ function entryIdAt(entryIds: readonly string[], index: number): string | undefin
   return id === undefined || id === "" ? undefined : id;
 }
 
+/** The answering model of one assistant message (streaming partials included). */
+interface AssistantModelRef {
+  provider: string;
+  model: string;
+}
+
+function messageModelRef(message: AgentMessage | null | undefined): AssistantModelRef | undefined {
+  if (message === null || message === undefined || message.role !== "assistant") return undefined;
+  // Streaming partials carry optional provider/model until the runtime knows them.
+  const partial = message as AgentMessage & { provider?: string | undefined; model?: string | undefined };
+  const model = partial.model;
+  if (typeof model !== "string" || model.length === 0) return undefined;
+  return { provider: partial.provider ?? "", model };
+}
+
+function sameModel(a: AssistantModelRef, b: AssistantModelRef): boolean {
+  return a.provider === b.provider && a.model === b.model;
+}
+
+/** The FIRST assistant model of a turn — the one that actually answers it. */
+function firstTurnModel(
+  messages: readonly AgentMessage[],
+  fromIdx: number,
+  endIdx: number,
+): AssistantModelRef | undefined {
+  for (let index = fromIdx; index < endIdx; index += 1) {
+    const ref = messageModelRef(messages[index]);
+    if (ref !== undefined) return ref;
+  }
+  return undefined;
+}
+
 function validTimestamp(message: AgentMessage | null | undefined): number | undefined {
   const timestamp = message?.timestamp;
   return typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp >= 0
@@ -174,6 +224,7 @@ function liveProcessTiming(
 
 /** Rough initial height hints; the virtualizer measures the real DOM after. */
 export function estimateChatRowHeight(row: ChatTranscriptRow): number {
+  if (row.kind === "modelSwitch") return 38;
   if (row.kind === "process") {
     // Settled ProcessGroups mount collapsed regardless of block count. Estimating
     // them as fully expanded made long tool turns shrink by hundreds of pixels
@@ -416,9 +467,28 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     };
   };
 
+  // Model that answered the previous turn; the turn loop below advances it and
+  // emits a marker row whenever a turn is answered by a different model.
+  let previousTurnModel: AssistantModelRef | undefined;
+
   for (let idx = 0; idx < messages.length;) {
     const msg = messages[idx]!;
     const startsCompactionTurn = isCompactionBoundary(msg);
+    const turnKeyId = entryIdAt(entryIds, idx) ?? `idx${idx}`;
+    // One marker per turn, keyed off that turn's own user entry so the
+    // virtualizer row identity stays stable across streaming/settling.
+    const pushModelSwitchRow = (model: AssistantModelRef | undefined): void => {
+      if (model === undefined) return;
+      const from = previousTurnModel;
+      previousTurnModel = model;
+      if (from === undefined || sameModel(from, model)) return;
+      rows.push({
+        kind: "modelSwitch",
+        key: `model-switch-${turnKeyId}`,
+        fromModel: resolveModelLabel(input.modelNames, from.provider, from.model),
+        toModel: resolveModelLabel(input.modelNames, model.provider, model.model),
+      });
+    };
     // The SDK may trim the user prompt that triggered compaction from the
     // rebuilt context. Treat the retained compaction entry as the turn
     // boundary so its first following agent response still uses the
@@ -427,7 +497,14 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       // Assistant content always goes through ProcessGroup (timeline/tabs),
       // even standalone — never the legacy bare message renderer.
       if (msg.role === "assistant") {
+        // A leaderless fragment has no user message to anchor a marker above,
+        // but it still answered with a model: keep the running model current so
+        // the next real turn is compared against the last reply.
+        let fragmentEnd = idx + 1;
+        while (fragmentEnd < messages.length && messages[fragmentEnd]!.role !== "user") fragmentEnd += 1;
+        const fragmentModel = firstTurnModel(messages, idx, fragmentEnd);
         idx = pushLeaderlessAssistantRows(rows, idx, messages.length);
+        if (fragmentModel !== undefined) previousTurnModel = fragmentModel;
         continue;
       }
       if (isStandaloneRenderable(msg)) rows.push(renderMessage(idx));
@@ -458,6 +535,10 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       && !streamingIsUser;
 
     if (isLiveTail) {
+      // One marker per turn, decided by the turn's FIRST assistant model: the
+      // committed fragment leads, the streaming partial only when nothing has
+      // landed yet (so the divider appears as soon as the model is known).
+      pushModelSwitchRow(firstTurnModel(messages, userIdx + 1, endIdx) ?? messageModelRef(streamingMessage));
       rows.push(renderMessage(userIdx));
       const hasStreamingAssistant = streamingMessage?.role === "assistant";
       const liveProcessIndices: number[] = [];
@@ -521,6 +602,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       // whole turn's displayable process content — custom notifications
       // included — as ONE settled process group, mirroring the live tail's
       // collection so group membership never differs across live↔settled.
+      pushModelSwitchRow(firstTurnModel(messages, userIdx + 1, endIdx));
       rows.push(renderMessage(userIdx));
       const interruptedIndices: number[] = [];
       for (let i = userIdx + 1; i < endIdx; i++) {
@@ -549,6 +631,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       continue;
     }
 
+    pushModelSwitchRow(firstTurnModel(messages, userIdx + 1, endIdx));
     rows.push(renderMessage(userIdx));
 
     const processIndices: number[] = [];

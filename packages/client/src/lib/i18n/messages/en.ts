@@ -1048,6 +1048,7 @@ export const enLocale = {
     "desktop.toolDurationSeconds": "{count}s",
     "desktop.toolDurationMinutes": "{minutes}m {seconds}s",
     "desktop.turnStopped": "Stopped",
+    "desktop.modelSwitchedFrom": "Switched from {from} to {to}",
     "desktop.processOutput": "Process output",
     "desktop.processTabMode": "Step tabs",
     "desktop.processTimelineMode": "Timeline",

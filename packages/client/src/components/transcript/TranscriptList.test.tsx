@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { TranscriptList } from "./TranscriptList";
 import { HttpClientProvider } from "@/app/http-context";
+import { queryKeys } from "@/api/query-keys";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { RuntimeProvider } from "@/runtime/runtime-provider";
 import { I18nProvider } from "@/hooks/useI18n";
@@ -998,6 +999,129 @@ describe("TranscriptList — live rebase keeps the user's scroll", () => {
     expect(transcript.scrollTop).toBe(contentBottom(transcript));
     expect(screen.getByText("committed send")).toBeTruthy();
     expect(screen.queryByText("pending send")).toBeNull();
+  });
+});
+
+describe("TranscriptList — model-switch divider", () => {
+  const catalog = {
+    models: [
+      { provider: "anthropic", id: "claude-sonnet", displayName: "Claude Sonnet" },
+      { provider: "openai", id: "gpt-5", displayName: "GPT-5" },
+    ],
+    defaultModel: null,
+  };
+
+  /** The list never fetches the catalog (history must stay request-free);
+   *  it reads whatever the composer already cached under the same key. */
+  function SwitchTree({ seedCatalog }: { seedCatalog: boolean }): ReactNode {
+    const [queryClient] = useState(() => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      if (seedCatalog) client.setQueryData(queryKeys.models.list(), catalog);
+      return client;
+    });
+    return (
+      <QueryClientProvider client={queryClient}>
+        <HttpClientProvider>
+          <CapabilityProvider host={{ mode: "local", capabilities: ["agent", "sessions", "models"] }}>
+            <RuntimeProvider deps={fakeDeps()}>
+              <I18nProvider>
+                <TranscriptList sessionId="switch" live={false} />
+              </I18nProvider>
+            </RuntimeProvider>
+          </CapabilityProvider>
+        </HttpClientProvider>
+      </QueryClientProvider>
+    );
+  }
+
+  const entries = [
+    userEntry("switch-u1", "first"),
+    {
+      entryId: "switch-a1",
+      parentEntryId: "switch-u1",
+      message: { role: "assistant", model: "claude-sonnet", provider: "anthropic", content: [{ type: "text", text: "answer one" }] },
+    },
+    userEntry("switch-u2", "second"),
+    {
+      entryId: "switch-a2",
+      parentEntryId: "switch-u2",
+      message: { role: "assistant", model: "claude-sonnet", provider: "anthropic", content: [{ type: "text", text: "answer two" }] },
+    },
+    userEntry("switch-u3", "third"),
+    {
+      entryId: "switch-a3",
+      parentEntryId: "switch-u3",
+      message: { role: "assistant", model: "gpt-5", provider: "openai", content: [{ type: "text", text: "answer three" }] },
+    },
+  ];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= ResizeObserverStub;
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver ??=
+      IntersectionObserverStub as unknown as (typeof globalThis)["IntersectionObserver"];
+    (globalThis as { matchMedia?: unknown }).matchMedia ??= (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    });
+    previousFetch = globalThis.fetch;
+    window.localStorage.setItem("pi-locale", "en");
+    globalThis.fetch = stubFetch((path) => {
+      if (path.includes("/v1/sessions/switch/context")) return contextResponse("switch", entries);
+      return undefined;
+    });
+  });
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = previousFetch;
+    window.localStorage.removeItem("pi-locale");
+    vi.useRealTimers();
+  });
+
+  it("renders one divider with the cached catalog display names above the switched turn", async () => {
+    render(<SwitchTree seedCatalog />);
+    await settle();
+    const dividers = document.querySelectorAll(".transcript-model-switch");
+    expect(dividers.length).toBe(1);
+    expect(dividers[0]?.textContent).toBe("Switched from Claude Sonnet to GPT-5");
+    // Directly above the third user message.
+    const nextRow = dividers[0]?.closest("[data-row-id]")?.nextElementSibling;
+    expect(nextRow?.textContent).toContain("third");
+  });
+
+  it("falls back to the raw model id when the catalog is not loaded, and never requests it", async () => {
+    const requested: string[] = [];
+    const inner = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      requested.push(String(input));
+      return inner(input as RequestInfo);
+    }) as unknown as typeof fetch;
+    render(<SwitchTree seedCatalog={false} />);
+    await settle();
+    expect(document.querySelector(".transcript-model-switch")?.textContent).toBe("Switched from claude-sonnet to gpt-5");
+    expect(requested.filter((path) => path.includes("/v1/models"))).toEqual([]);
+  });
+
+  it("labels the reply footer with the very same display names", async () => {
+    render(<SwitchTree seedCatalog />);
+    await settle();
+    const footers = Array.from(document.querySelectorAll(".chat-assistant-message")).map((el) => el.textContent ?? "");
+    expect(footers.length).toBe(3);
+    expect(footers[0]).toContain("Claude Sonnet");
+    expect(footers[2]).toContain("GPT-5");
+    expect(footers.join(" ")).not.toContain("claude-sonnet");
+  });
+
+  it("localizes the divider line", async () => {
+    window.localStorage.setItem("pi-locale", "zh-CN");
+    render(<SwitchTree seedCatalog />);
+    await settle();
+    expect(document.querySelector(".transcript-model-switch")?.textContent).toBe("已从 Claude Sonnet 切换到 GPT-5");
   });
 });
 

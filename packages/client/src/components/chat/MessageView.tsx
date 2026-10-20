@@ -11,6 +11,7 @@ import { urls } from "@/api/urls";
 
 import { formatToolDurationMs, isEmptyThinkingBlock } from "@/lib/message-display";
 import { parseSkillBlock } from "@/lib/skill-block";
+import { resolveModelLabel } from "@/lib/model-display";
 import type { MentionValidators } from "@/lib/mention-tokens";
 import { CompactionSummary } from "./CompactionSummary";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
@@ -935,7 +936,7 @@ function AssistantMessageView({
           )}
           {message.provider && (
             <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
-              {modelNames?.[`${message.provider}:${message.model}`] ?? modelNames?.[message.model] ?? message.model}
+              {resolveModelLabel(modelNames, message.provider, message.model)}
             </span>
           )}
           {textContent && (

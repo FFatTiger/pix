@@ -503,6 +503,147 @@ describe("chat-projection — row/branch order", () => {
   });
 });
 
+describe("chat-projection — model-switch divider", () => {
+  const names = {
+    "anthropic:claude-sonnet": "Claude Sonnet",
+    "openai:gpt-5": "GPT-5",
+  };
+  const answer = (model: string, provider: string, text: string): AgentMessage =>
+    assistant([{ type: "text", text }], { model, provider });
+
+  const dividers = (rows: ChatTranscriptRow[]) => rows.filter((row) => row.kind === "modelSwitch");
+
+  it("stays silent while every turn is answered by the same model", () => {
+    const rows = build([
+      user("one"),
+      answer("claude-sonnet", "anthropic", "a"),
+      user("two"),
+      answer("claude-sonnet", "anthropic", "b"),
+    ], { modelNames: names });
+    expect(dividers(rows)).toEqual([]);
+  });
+
+  it("puts the A→B divider directly above the first user message of the B turn", () => {
+    const rows = build([
+      user("one"),
+      answer("claude-sonnet", "anthropic", "a"),
+      user("two"),
+      answer("gpt-5", "openai", "b"),
+    ], { modelNames: names });
+    expect(dividers(rows)).toEqual([
+      { kind: "modelSwitch", key: "model-switch-e2", fromModel: "Claude Sonnet", toModel: "GPT-5" },
+    ]);
+    const index = rows.findIndex((row) => row.kind === "modelSwitch");
+    const next = rows[index + 1]!;
+    expect(next.kind).toBe("message");
+    if (next.kind === "message" && next.message.role === "user") {
+      expect(next.message.content).toBe("two");
+    }
+  });
+
+  it("marks both hops of A→B→A and keys each by its turn's user entry", () => {
+    const rows = build([
+      user("one"),
+      answer("claude-sonnet", "anthropic", "a"),
+      user("two"),
+      answer("gpt-5", "openai", "b"),
+      user("three"),
+      answer("claude-sonnet", "anthropic", "c"),
+    ], { modelNames: names });
+    expect(dividers(rows)).toEqual([
+      { kind: "modelSwitch", key: "model-switch-e2", fromModel: "Claude Sonnet", toModel: "GPT-5" },
+      { kind: "modelSwitch", key: "model-switch-e4", fromModel: "GPT-5", toModel: "Claude Sonnet" },
+    ]);
+  });
+
+  it("never marks the first turn, a turn still waiting for its reply, or a switch with no reply in between", () => {
+    // First turn has no previous model to switch from.
+    expect(dividers(build([user("one"), answer("gpt-5", "openai", "a")], { modelNames: names }))).toEqual([]);
+    // The newest turn has not been answered yet.
+    expect(dividers(build([user("one"), answer("claude-sonnet", "anthropic", "a"), user("two")], { modelNames: names }))).toEqual([]);
+    // Switching away and back with no reply in between is not a switch.
+    const rows = build([
+      user("one"),
+      answer("claude-sonnet", "anthropic", "a"),
+      user("two"),
+      user("three"),
+      answer("claude-sonnet", "anthropic", "b"),
+    ], { modelNames: names });
+    expect(dividers(rows)).toEqual([]);
+  });
+
+  it("decides a turn by its FIRST assistant message, even when later segments use another model", () => {
+    const rows = build([
+      user("one"),
+      answer("claude-sonnet", "anthropic", "a"),
+      user("two"),
+      assistant([{ type: "toolCall", toolCallId: "t1", toolName: "read", input: {} }], { model: "gpt-5", provider: "openai" }),
+      toolResult("t1", "ok"),
+      answer("claude-sonnet", "anthropic", "b"),
+    ], { modelNames: names });
+    expect(dividers(rows)).toEqual([
+      { kind: "modelSwitch", key: "model-switch-e2", fromModel: "Claude Sonnet", toModel: "GPT-5" },
+    ]);
+    // Same first assistant model → later varied segments never add a marker.
+    const same = build([
+      user("one"),
+      answer("gpt-5", "openai", "a"),
+      user("two"),
+      answer("gpt-5", "openai", "b"),
+      assistant([{ type: "text", text: "c" }], { model: "claude-sonnet", provider: "anthropic" }),
+    ], { modelNames: names });
+    expect(dividers(same)).toEqual([]);
+  });
+
+  it("treats the same model id under a different provider as a switch", () => {
+    const rows = build([
+      user("one"),
+      answer("gpt-5", "openai", "a"),
+      user("two"),
+      answer("gpt-5", "proxy", "b"),
+    ]);
+    expect(dividers(rows)).toEqual([
+      { kind: "modelSwitch", key: "model-switch-e2", fromModel: "gpt-5", toModel: "gpt-5" },
+    ]);
+  });
+
+  it("shows the divider as soon as the live turn's streaming model is known", () => {
+    const messages = [user("one"), answer("claude-sonnet", "anthropic", "a"), user("two")];
+    const streaming = {
+      role: "assistant",
+      content: [{ type: "text", text: "partial" }],
+      model: "gpt-5",
+      provider: "openai",
+    } as AgentMessage;
+    const live = build(messages, { running: true, streamingMessage: streaming, modelNames: names });
+    expect(dividers(live)).toEqual([
+      { kind: "modelSwitch", key: "model-switch-e2", fromModel: "Claude Sonnet", toModel: "GPT-5" },
+    ]);
+    // No model yet on the partial → nothing to compare, no marker.
+    const unknown = build(messages, {
+      running: true,
+      streamingMessage: { role: "assistant", content: [{ type: "text", text: "partial" }] } as AgentMessage,
+      modelNames: names,
+    });
+    expect(dividers(unknown)).toEqual([]);
+  });
+
+  it("keeps the divider identity stable while the turn streams and settles", () => {
+    const messages = [user("one"), answer("claude-sonnet", "anthropic", "a"), user("two")];
+    const live = build(messages, {
+      running: true,
+      streamingMessage: { role: "assistant", content: [{ type: "text", text: "part" }], model: "gpt-5", provider: "openai" } as AgentMessage,
+      modelNames: names,
+    });
+    const settled = build([
+      ...messages,
+      answer("gpt-5", "openai", "final"),
+    ], { modelNames: names });
+    expect(dividers(live)[0]?.key).toBe(dividers(settled)[0]?.key);
+    expect(estimateChatRowHeight({ kind: "modelSwitch", key: "k", fromModel: "a", toModel: "b" })).toBe(38);
+  });
+});
+
 describe("chat-projection — stopped-turn marker on the settled tail", () => {
   const stoppedTurn = (): AgentMessage[] => [
     user("hello"),

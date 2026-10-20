@@ -12,6 +12,7 @@ import { ChatTranscriptRowView } from "@/components/transcript/TranscriptList";
 import { buildChatTranscriptRows } from "@/components/transcript/chat-projection";
 import { useHttpClient } from "@/app/http-context";
 import { useI18n } from "@/hooks/useI18n";
+import { buildModelNameMap } from "@/lib/model-display";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
 import type { ExactRuntimeApi } from "@/runtime";
 
@@ -134,11 +135,7 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
     })),
     [modelsQuery.data],
   );
-  const modelNames = useMemo(() => {
-    const names: Record<string, string> = {};
-    for (const model of modelList) names[`${model.provider}:${model.id}`] = model.name;
-    return names;
-  }, [modelList]);
+  const modelNames = useMemo(() => buildModelNameMap(modelList), [modelList]);
   // Main-transcript projection over the side state (bounded by the wire
   // contract; identical rendering rules to the session transcript).
   const sideToolResults = useMemo(() => {
@@ -158,8 +155,9 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
       streamingMessage: (state.partialMessage ?? null) as Parameters<typeof buildChatTranscriptRows>[0]["streamingMessage"],
       running: state.status === "running",
       cwd,
+      modelNames,
     });
-  }, [state?.conversationId, state?.messages, state?.partialMessage, state?.status, cwd]);
+  }, [state?.conversationId, state?.messages, state?.partialMessage, state?.status, cwd, modelNames]);
   const selectorsIdle = state !== null && state.status === "idle" && pending === null;
   const applyModel = (provider: string, modelId: string, thinkingLevel: ThinkingLevelOption): void => {
     if (state === null || thinkingLevel === "auto") return;

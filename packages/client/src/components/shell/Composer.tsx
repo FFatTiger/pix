@@ -59,6 +59,7 @@ export interface ComposerHandle {
 }
 import type { FileIndexEntry } from "@/lib/file-fuzzy";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
+import { buildModelNameMap } from "@/lib/model-display";
 import type { SessionTreeNode } from "@/lib/chat-view-model";
 
 /**
@@ -420,11 +421,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       })),
     [modelsQuery.data],
   );
-  const modelNames = useMemo(() => {
-    const names: Record<string, string> = {};
-    for (const model of modelList) names[`${model.provider}:${model.id}`] = model.name;
-    return names;
-  }, [modelList]);
+  const modelNames = useMemo(() => buildModelNameMap(modelList), [modelList]);
 
   const fileIndexSnapshot = useMemo(() => {
     const data = filesIndexQuery.data;
