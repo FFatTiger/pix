@@ -562,6 +562,7 @@ export const zhCNLocale = {
     "desktop.streamingSendModeFollowUpShort": "排队",
     "desktop.streamingSendModeSteerShort": "引导",
     "desktop.queueWhileRunning": "补充消息，将在本轮结束后发送",
+    "desktop.steerWhileRunning": "补充消息，将在当前步骤结束后插入",
     "desktop.agentRunning": "Agent 正在运行...",
     "desktop.messageWithCommands": "输入消息... 输入 / 查看命令，@ 查看文件",
     "desktop.messagePlaceholderShort": "输入消息，/ 命令，@ 文件",

@@ -29,7 +29,7 @@ import { tokenizeMentions } from "@/lib/mention-tokens";
 // props (fileIndexSnapshot / skillNames); caching + singleflight belong to
 // the future integration (react-query), not the component.
 import { getUiScale } from "@/lib/ui-scale";
-import { getStreamingSendMode } from "@/lib/chat-input-preferences";
+import { getStreamingSendMode, type StreamingSendMode } from "@/lib/chat-input-preferences";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -157,6 +157,14 @@ interface Props {
   fileIndexSnapshot?: ChatFileIndexSnapshot | null;
   /** Mention-highlight skill names (source useSkillNames); null = unknown. */
   skillNames?: Set<string> | null;
+}
+
+/**
+ * Which queue Enter picks while the agent runs: the「运行中按 Enter」setting
+ * decides, falling back to whichever queue the runtime actually admits.
+ */
+function resolveQueuedMode(preferSteer: boolean, hasSteer: boolean, hasFollowUp: boolean): "steer" | "followup" {
+  return preferSteer ? (hasSteer ? "steer" : "followup") : (hasFollowUp ? "followup" : "steer");
 }
 
 export interface ChatInputHandle {
@@ -447,6 +455,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [markdownListContinue, setMarkdownListContinue] = useState(() => {
     try { return localStorage.getItem("pi-markdown-list-continue") !== "off"; } catch { return true; }
   });
+  // Mirrored into state so the streaming placeholder follows the settings page
+  // toggle (it broadcasts a `storage` event) without a new mechanism.
+  const [streamingSendMode, setStreamingSendMode] = useState<StreamingSendMode>(getStreamingSendMode);
   const [atQuery, setAtQuery] = useState<AtQueryMatch | null>(null);
   const [atMenuOpen, setAtMenuOpen] = useState(false);
   const [atActiveIndex, setAtActiveIndex] = useState(0);
@@ -1037,6 +1048,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const handler = () => {
       try { setMarkdownListContinue(localStorage.getItem("pi-markdown-list-continue") !== "off"); } catch { /* ignore */ }
     };
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
+  }, []);
+
+  useEffect(() => {
+    const handler = () => setStreamingSendMode(getStreamingSendMode());
     window.addEventListener("storage", handler);
     return () => window.removeEventListener("storage", handler);
   }, []);
@@ -1648,17 +1665,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           // lists it with its type (引导/排队) until the runtime delivers it.
           // The default type follows the「运行中按 Enter」setting, falling
           // back to whichever queue the runtime admits.
-          const preferSteer = getStreamingSendMode() === "steer";
-          const mode = preferSteer
-            ? (onSteer ? "steer" : "followup")
-            : (onFollowUp ? "followup" : "steer");
-          sendQueued(mode);
+          sendQueued(resolveQueuedMode(streamingSendMode === "steer", Boolean(onSteer), Boolean(onFollowUp)));
         } else {
           handleSend();
         }
       }
     },
-    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, inputShortcut, markdownListContinue, cwd, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, openAtCompletion, applyAutoHeight]
+    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, inputShortcut, markdownListContinue, streamingSendMode, cwd, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, openAtCompletion, applyAutoHeight]
   );
 
   const handleInput = useCallback(() => {
@@ -2337,7 +2350,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onPaste={handlePaste}
             placeholder={
               isStreaming && (onSteer || onFollowUp)
-                ? t("desktop.queueWhileRunning")
+                ? resolveQueuedMode(streamingSendMode === "steer", Boolean(onSteer), Boolean(onFollowUp)) === "steer"
+                  ? t("desktop.steerWhileRunning")
+                  : t("desktop.queueWhileRunning")
                 : isStreaming ? t("desktop.agentRunning")
                 : placeholderOverride ?? (isMobile ? t("desktop.messagePlaceholderShort") : t("desktop.messageWithCommands"))
             }

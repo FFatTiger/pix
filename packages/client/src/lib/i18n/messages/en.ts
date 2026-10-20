@@ -562,6 +562,7 @@ export const enLocale = {
     "desktop.streamingSendModeFollowUpShort": "Queue",
     "desktop.streamingSendModeSteerShort": "Steer",
     "desktop.queueWhileRunning": "Add a message; it sends when this turn ends",
+    "desktop.steerWhileRunning": "Add a message — inserted after the current step",
     "desktop.agentRunning": "Agent is running...",
     "desktop.messageWithCommands": "Message... Type / for commands, @ for files",
     "desktop.messagePlaceholderShort": "Message, / commands, @ files",
