@@ -458,6 +458,8 @@ test("a read-only session catalog object exposes no renameSession", () => {
 // legacy full-list/delete compatibility. No rename/runtime lifecycle rides along.
 // `findLatestSessionByCwd` is the optional exact-cwd assistant lookup (absent
 // on minimal catalogs; callers fail closed with `unavailable`).
+// `noteSessionCreated` is the optional create hint: notify the catalog of a
+// just-created session id so its missing JSONL is not cached as a negative hit.
 const _catalogExact: IsExact<
   keyof SessionCatalogPort,
   | "prepare"
@@ -469,6 +471,7 @@ const _catalogExact: IsExact<
   | "readSessionTree"
   | "deleteSession"
   | "findLatestSessionByCwd"
+  | "noteSessionCreated"
 > = true;
 
 /* ------------------------------------------------------------------ */
