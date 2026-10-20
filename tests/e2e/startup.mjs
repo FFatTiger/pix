@@ -334,6 +334,10 @@ async function main() {
   delete env.PIX_PASSWORD;
   delete env.PIX_GATE_DISABLED;
   delete env.PIX_GATE_CONFIG;
+  // A local bind with no access key now renders the first-visit password
+  // setup instead of the app; this suite drives the app surface, so opt the
+  // throwaway host out explicitly instead of inheriting startup defaults.
+  env.PIX_AUTH_DISABLED = "true";
   let firstHost;
   let secondHost;
   let thirdHost;

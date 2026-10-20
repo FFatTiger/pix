@@ -112,6 +112,9 @@ async function main() {
   };
   const env = { ...baseEnv };
   delete env.PI_MEMORY_PROVIDER;
+  // A local bind with no access key now renders the first-visit password
+  // setup instead of the app/API surface this smoke probes.
+  env.PIX_AUTH_DISABLED = "true";
 
   // ---- phase 1: boot the daemon via the production bin --------------------
   const daemon = startProcess([join(ROOT, "packages", "cli", "bin", "pix-sessiond.mjs")], env, "sessiond");

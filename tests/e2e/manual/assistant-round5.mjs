@@ -307,6 +307,9 @@ async function main() {
   delete env.PIX_PASSWORD;
   delete env.PIX_GATE_DISABLED;
   delete env.PIX_GATE_CONFIG;
+  // The harness talks to Host APIs directly (fetch + WS) with no login step;
+  // an unconfigured local gate would answer 503 to every one of them.
+  env.PIX_AUTH_DISABLED = "true";
 
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;

@@ -397,7 +397,19 @@ async function runAll(sandbox) {
   log(`  RPC round-trip OK (session ${roundTrip.sessionId.slice(0, 12)}… created → snapshot → stopped)`);
 
   log("step 5b/8: installed client loads in a real browser");
-  await verifyInstalledClient({ prefix, pixBin, env: { ...sandboxEnv(), PIX_ALLOWED_ROOTS: workspace } });
+  await verifyInstalledClient({
+    prefix,
+    pixBin,
+    env: {
+      ...sandboxEnv(),
+      PIX_ALLOWED_ROOTS: workspace,
+      // A local bind without a key now renders the first-visit password setup
+      // instead of the app shell, so this browser check would never see the
+      // sidebar. The step verifies the shipped bundle, not the gate; opt the
+      // throwaway host out explicitly instead of depending on operator state.
+      PIX_AUTH_DISABLED: "true",
+    },
+  });
 
   log("step 6/8: authenticated `pix down --all` (RPC shutdown, no signals)");
   const down = await runAsync(pixBin, ["down", "--all"], { env: sandboxEnv() });
