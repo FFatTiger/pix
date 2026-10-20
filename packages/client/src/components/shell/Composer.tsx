@@ -689,10 +689,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // --- error surfaces (fixed copy only) ---------------------------------------
   const [compactError, setCompactError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  // A send failure describes the composer's target at the time it failed.
+  // Switching the session OR picking a project changes that target, so the
+  // stale error (e.g. "select a project first") must not keep hanging.
   useEffect(() => {
     setCompactError(null);
     setSendError(null);
-  }, [selectedSessionId]);
+  }, [selectedSessionId, cwd]);
 
   // Identity guards for late async settles (SessionActions pattern).
   const mountedRef = useRef(true);

@@ -12,7 +12,7 @@ import {
 } from "@fffattiger/pix-host";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
 import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
-import { resolveAllowedHosts, resolveCatalogAgentDir, formatHostForUrl } from "../src/commands/host-runner.js";
+import { resolveAllowedHosts, resolveCatalogAgentDir, formatHostForUrl, createBootGateConfigSource } from "../src/commands/host-runner.js";
 import { createSessiondProbe } from "../src/probe.js";
 import { inspectSessiond } from "../src/supervise.js";
 import { runHost } from "../src/commands/host-runner.js";
@@ -35,6 +35,41 @@ test("formatHostForUrl brackets IPv6 authorities", () => {
   assert.equal(formatHostForUrl("2001:db8::1"), "[2001:db8::1]");
   assert.equal(formatHostForUrl("192.168.0.10"), "192.168.0.10");
   assert.equal(formatHostForUrl("[::1]"), "[::1]");
+});
+
+test("the boot gate source reports the operator's true gate state", () => {
+  const dir = tempDir("pix-boot-gate-");
+  const previous = {
+    agentDir: process.env.PI_CODING_AGENT_DIR,
+    password: process.env.PIX_PASSWORD,
+    disabled: process.env.PIX_AUTH_DISABLED,
+  };
+  try {
+    process.env.PI_CODING_AGENT_DIR = dir;
+    delete process.env.PIX_PASSWORD;
+    delete process.env.PIX_AUTH_DISABLED;
+
+    // No credential anywhere: the state stays `unconfigured` (the web offers
+    // the first-visit setup) — it must NOT be reported as `disabled`, which
+    // means the operator explicitly turned the gate off.
+    assert.equal(createBootGateConfigSource().read().status, "unconfigured");
+
+    // Authentication switched off on purpose: the operator opted out.
+    writeFileSync(join(dir, "pix.json"), JSON.stringify({ auth: { disabled: true } }));
+    assert.equal(createBootGateConfigSource().read().status, "disabled");
+
+    // A configured access key is reported as configured.
+    writeFileSync(join(dir, "pix.json"), JSON.stringify({ auth: { password: "secret" } }));
+    assert.equal(createBootGateConfigSource().read().status, "enabled");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    if (previous.agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous.agentDir;
+    if (previous.password === undefined) delete process.env.PIX_PASSWORD;
+    else process.env.PIX_PASSWORD = previous.password;
+    if (previous.disabled === undefined) delete process.env.PIX_AUTH_DISABLED;
+    else process.env.PIX_AUTH_DISABLED = previous.disabled;
+  }
 });
 test("resolveCatalogAgentDir prefers PI_CODING_AGENT_DIR and falls back to ~/.pi/agent", () => {
   assert.equal(

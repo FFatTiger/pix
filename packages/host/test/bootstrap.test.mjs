@@ -61,8 +61,9 @@ test("bootstrap reports mode lan and required gate for LAN exposure", async () =
   const res = await app.request("http://localhost/v1/bootstrap", { headers: { host: "localhost" } });
   const body = await res.json();
   assert.equal(body.mode, "lan");
-  // LAN always requires a gate even when auth is explicitly disabled (D-020).
-  assert.deepEqual(body.gate, { required: true, status: "disabled" });
+  // An explicitly disabled gate is the operator's own choice: the host is
+  // open, so no gate screen is required.
+  assert.deepEqual(body.gate, { required: false, status: "disabled" });
 });
 
 test("bootstrap advertises read-only files when resources are mounted but sessiond is down", async () => {

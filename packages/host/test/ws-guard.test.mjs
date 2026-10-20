@@ -231,14 +231,22 @@ test("WS upgrade enforces the gate: LAN + enabled auth requires cookie", async (
 });
 
 test("LAN-bound WS cannot be downgraded by spoofed loopback Host", async () => {
-  await withServer({ exposureMode: "lan" }, async (handle) => {
-    for (const host of ["localhost", "127.0.0.1"]) {
+  const host = createHostApp({
+    logger: {},
+    exposureMode: "lan",
+    gate: { config: { read: () => ({ status: "enabled", password: "secret", source: "test" }) } },
+  });
+  const handle = await createNodeServer(host, { port: 0, hostname: "0.0.0.0" });
+  try {
+    for (const spoofed of ["localhost", "127.0.0.1"]) {
       await assert.rejects(
-        connect(handle.port, { headers: { host } }),
-        /unexpected response 403/,
+        connect(handle.port, { headers: { host: spoofed } }),
+        /unexpected response 401/,
       );
     }
-  });
+  } finally {
+    await handle.close();
+  }
 });
 
 test("WS upgrade is rejected for cross-site Origin", async () => {

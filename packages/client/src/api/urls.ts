@@ -45,6 +45,7 @@ export const urls = {
   gate: {
     status: () => resource("gate/status"),
     login: () => resource("gate/login"),
+    setup: () => resource("gate/setup"),
     logout: () => resource("gate/logout"),
     changePassword: () => resource("gate/password"),
   },

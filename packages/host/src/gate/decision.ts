@@ -8,6 +8,22 @@ export type GateDecision =
   | { action: "redirect"; location: string }
   | { action: "json"; status: 401 | 403 | 503; body: ApiErrorBody };
 
+/**
+ * True when the client must present the gate screen for this configuration.
+ *
+ * - `enabled`: a key exists, so using the host needs a valid session.
+ * - `disabled`: the operator explicitly turned the gate off — the host is
+ *   open on every bind, so there is nothing to sign in to.
+ * - `unconfigured` / `error`: the host refuses every non-public request, so
+ *   the client must show the setup (or error) screen instead of the app.
+ *
+ * The mode does not enter this decision: the gate blocks exactly the
+ * configurations listed above, on a local bind and on a LAN bind alike.
+ */
+export function isGateRequired(config: Pick<GateConfig, "status">): boolean {
+  return config.status !== "disabled";
+}
+
 export interface GateDecisionInput {
   config: GateConfig;
   mode: HostMode;
@@ -31,30 +47,31 @@ export function decideGateRequest(input: GateDecisionInput): GateDecision {
   const onLoginPage = pathname === "/login";
   const lanForced = requireForLan && mode === "lan";
 
-  // A LAN-bound host without a usable credential must fail closed. Public
-  // bootstrap assets remain reachable so the UI can explain the state.
-  if (lanForced && config.status !== "enabled") {
+  // A LAN-bound host without a usable credential must fail closed. An
+  // EXPLICITLY disabled gate is the operator's own choice (auth.disabled in
+  // pix.json / PIX_AUTH_DISABLED) and stays open on a LAN bind as well; only
+  // `unconfigured` (no access key yet — the web setup flow) and `error` (an
+  // unreadable config) fail closed here. Public bootstrap assets remain
+  // reachable so the UI can explain the state.
+  if (lanForced && config.status !== "enabled" && config.status !== "disabled") {
     if (isPublic) {
       return { action: "allow", authStatus: "enabled" };
     }
     const code =
-      config.status === "disabled"
-        ? "AUTH_REQUIRED_FOR_LAN"
-        : config.status === "unconfigured"
-          ? "AUTH_NOT_CONFIGURED"
-          : "AUTH_CONFIG_ERROR";
+      config.status === "unconfigured"
+        ? "AUTH_NOT_CONFIGURED"
+        : "AUTH_CONFIG_ERROR";
     const message =
-      config.status === "disabled"
-        ? "Authentication is required for LAN access"
-        : config.status === "unconfigured"
-          ? "Authentication is not configured"
-          : "Authentication configuration error";
-    if (isApi) return { action: "json", status: config.status === "disabled" ? 403 : 503, body: apiErrorBody(code, message) };
+      config.status === "unconfigured"
+        ? "Authentication is not configured"
+        : "Authentication configuration error";
+    if (isApi) return { action: "json", status: 503, body: apiErrorBody(code, message) };
     return { action: "redirect", location: "/login" };
   }
 
-  // Explicitly disabled only on a trusted local bind: open host.
-  if (config.status === "disabled" && !lanForced) {
+  // Explicitly disabled: the operator turned the gate off — open host, on a
+  // local bind and on a LAN bind alike.
+  if (config.status === "disabled") {
     return { action: "allow", authStatus: "disabled" };
   }
 

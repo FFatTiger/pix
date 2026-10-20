@@ -6,6 +6,7 @@ import type { HostEnv } from "../env.js";
 import { effectiveRequestProtocol } from "../middleware/security.js";
 import type { GateDeps, HostLogger } from "../types.js";
 import { sanitizeNextPath } from "./paths.js";
+import { isGateRequired } from "./decision.js";
 import { createInMemoryRateLimiter } from "./rate-limit.js";
 import { createInMemoryRevocationStore } from "./revocation.js";
 import {
@@ -56,6 +57,8 @@ function cookieBaseOptions(c: Context<HostEnv>) {
  * Gate HTTP surface:
  *  - GET  /v1/gate/status — { required, authenticated, mode }
  *  - POST /v1/gate/login  — { password, next? } → cookie + { ok, next }
+ *  - POST /v1/gate/setup  — { password, next? } → writes the first access key
+ *                             (only while `unconfigured`) + cookie + { ok, next }
  *  - POST /v1/gate/logout — clears the session cookie
  */
 export function registerGateRoutes(app: Hono<HostEnv>, deps: GateDeps, logger: HostLogger): void {
@@ -63,10 +66,19 @@ export function registerGateRoutes(app: Hono<HostEnv>, deps: GateDeps, logger: H
   const sessionTtlMs = deps.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
   const now = deps.now ?? Date.now;
   const randomBytes = deps.randomBytes ?? nodeRandomBytes;
-  const requireForLan = deps.requireForLan ?? true;
   const limiter = deps.rateLimiter ?? createInMemoryRateLimiter({ now });
   const revocations = deps.revocations ?? createInMemoryRevocationStore({ now });
   const loginBodyLimitBytes = deps.loginBodyLimitBytes ?? 4 * 1024;
+
+  // First-visit setup is a ONE-SHOT: the first writer wins. Setup requests
+  // are serialized so a second (concurrent) request re-reads the config AFTER
+  // the first write and is refused instead of overwriting the access key.
+  let setupChain: Promise<unknown> = Promise.resolve();
+  function runSetupExclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = setupChain.then(task, task);
+    setupChain = run.then(() => undefined, () => undefined);
+    return run;
+  }
 
   function validClaims(c: Context<HostEnv>, password: string) {
     const claims = readSessionToken(getCookie(c, cookieName), password, now());
@@ -78,7 +90,7 @@ export function registerGateRoutes(app: Hono<HostEnv>, deps: GateDeps, logger: H
     c.header("Cache-Control", "no-store");
     const config = deps.config.read();
     const mode = c.get("hostMode");
-    const required = config.status === "enabled" || (mode === "lan" && requireForLan);
+    const required = isGateRequired(config);
     const authenticated =
       config.status === "enabled" ? validClaims(c, config.password) !== null : false;
     const body: GateStatusResponse = {
@@ -117,19 +129,12 @@ export function registerGateRoutes(app: Hono<HostEnv>, deps: GateDeps, logger: H
     }
 
     const config = deps.config.read();
-    const mode = c.get("hostMode");
     const key = clientIp(c);
     const nextPath = sanitizeNextPath(typeof next === "string" ? next : undefined);
 
     if (config.status === "disabled") {
-      if (mode === "lan" && requireForLan) {
-        return c.json(
-          loginFailure("Authentication is required for LAN access", {
-            code: "AUTH_REQUIRED_FOR_LAN",
-          }),
-          403,
-        );
-      }
+      // The operator turned the gate off: the host is open (local and LAN
+      // binds alike), so signing in is a no-op that still returns the target.
       limiter.clear(key);
       return c.json({ ok: true, next: nextPath });
     }
@@ -193,6 +198,123 @@ export function registerGateRoutes(app: Hono<HostEnv>, deps: GateDeps, logger: H
       maxAge: Math.floor(sessionTtlMs / 1000),
     });
     return c.json({ ok: true, next: nextPath });
+    },
+  );
+
+  /**
+   * POST /v1/gate/setup — set the FIRST access key from the web.
+   *
+   * Only while the gate is `unconfigured` (no key yet): the key is written
+   * into the pix.json auth config (atomic write, every other field in the
+   * document preserved) and takes effect on the next request — no restart.
+   * This browser is signed in right away (the session token is derived from
+   * the new key), so the operator never has to type the key twice.
+   *
+   * One-shot: a key that already exists, an env-managed key (PIX_PASSWORD)
+   * or an explicitly disabled gate are refused — the page then asks for a
+   * normal sign-in instead.
+   */
+  app.post(
+    "/v1/gate/setup",
+    bodyLimit({
+      maxSize: loginBodyLimitBytes,
+      onError: (c) => c.json(loginFailure("Request body too large", { code: "BODY_TOO_LARGE" }), 413),
+    }),
+    async (c) => {
+    c.header("Cache-Control", "no-store");
+    const contentType = c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType !== "application/json") {
+      return c.json(loginFailure("Content-Type must be application/json", { code: "UNSUPPORTED_MEDIA_TYPE" }), 415);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json(loginFailure("Invalid request body"), 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return c.json(loginFailure("Invalid request body"), 400);
+    }
+    const { password, next } = body as { password?: unknown; next?: unknown };
+    if (typeof password !== "string" || password.length === 0 || password.length > 128) {
+      return c.json(
+        loginFailure("The access key must be a non-empty string of at most 128 characters", {
+          code: "INVALID_INPUT",
+        }),
+        400,
+      );
+    }
+    const nextPath = sanitizeNextPath(typeof next === "string" ? next : undefined);
+
+    return runSetupExclusive(async () => {
+      if ((deps.envPasswordManaged ?? (() => process.env.PIX_PASSWORD !== undefined))()) {
+        return c.json(
+          loginFailure("The access key is managed by the PIX_PASSWORD environment variable and cannot be set here", {
+            code: "PASSWORD_ENV_MANAGED",
+          }),
+          409,
+        );
+      }
+      const config = deps.config.read();
+      if (config.status === "error") {
+        logger.error?.(config.logMessage ?? "Gate configuration error");
+        return c.json(
+          loginFailure("Authentication configuration error", {
+            code: "AUTH_CONFIG_ERROR",
+            status: "error",
+          }),
+          503,
+        );
+      }
+      if (config.status === "disabled") {
+        return c.json(
+          loginFailure("Authentication is disabled in the configuration; remove auth.disabled to use an access key", {
+            code: "AUTH_DISABLED",
+          }),
+          409,
+        );
+      }
+      if (config.status === "enabled") {
+        return c.json(
+          loginFailure("An access key is already configured", { code: "AUTH_ALREADY_CONFIGURED" }),
+          409,
+        );
+      }
+      if (config.status !== "unconfigured") {
+        // Defensive exhaustiveness guard for future GateConfig variants.
+        return c.json(
+          loginFailure("Authentication configuration error", {
+            code: "AUTH_CONFIG_ERROR",
+            status: "error",
+          }),
+          503,
+        );
+      }
+
+      const passwordStore = deps.passwordStore;
+      if (!passwordStore) {
+        return c.json(loginFailure("Access key storage is unavailable", { code: "PASSWORD_WRITE_FAILED" }), 500);
+      }
+      try {
+        passwordStore.write(password);
+      } catch (error) {
+        logger.error?.(`Failed to persist the access key: ${error instanceof Error ? error.message : String(error)}`);
+        return c.json(loginFailure("Failed to persist the access key", { code: "PASSWORD_WRITE_FAILED" }), 500);
+      }
+
+      // The key is live from the next request on (the gate re-reads the
+      // config); this browser is signed in immediately.
+      const token = createSessionToken(password, {
+        now: now(),
+        ttlMs: sessionTtlMs,
+        randomBytes,
+      });
+      setCookie(c, cookieName, token, {
+        ...cookieBaseOptions(c),
+        maxAge: Math.floor(sessionTtlMs / 1000),
+      });
+      return c.json({ ok: true, next: nextPath });
+    });
     },
   );
 

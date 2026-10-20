@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import type { HostEnv } from "../env.js";
+import { isGateRequired } from "../gate/decision.js";
 import {
   CATALOG_CAPABILITIES,
   EMPTY_HOST_CAPABILITIES,
@@ -11,7 +12,6 @@ import {
   type GateStatusKind,
   type HostCapability,
   type HostDeps,
-  type HostMode,
   type ResolvedCapabilities,
 } from "../types.js";
 
@@ -320,17 +320,14 @@ export interface BootstrapGateStatus {
  * still calls /v1/gate/status for the authenticated flag.
  */
 export function resolveBootstrapGateStatus(
-  deps: HostDeps,
+  _deps: HostDeps,
   gate?: GateDeps,
 ): BootstrapGateStatus {
   const config = gate?.config.read() ?? {
     status: "unconfigured" as GateStatusKind,
     source: "bootstrap-default",
   };
-  const mode: HostMode = deps.exposureMode ?? "local";
-  const requireForLan = gate?.requireForLan ?? true;
-  const required = config.status === "enabled" || (mode === "lan" && requireForLan);
-  return { required, status: config.status };
+  return { required: isGateRequired(config), status: config.status };
 }
 
 /**

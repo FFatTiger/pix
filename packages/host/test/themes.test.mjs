@@ -452,7 +452,7 @@ test("host theme sanitization is a semantic projection of the protocol wire voca
   }
 });
 
-test("LAN exposure keeps themes behind the gate even with auth unconfigured/disabled", async () => {
+test("LAN exposure keeps themes behind the gate while auth is unconfigured", async () => {
   const project = temp("pix-themes-host-");
   const roots = await rootsFor(project);
   const make = (status) =>
@@ -468,8 +468,8 @@ test("LAN exposure keeps themes behind the gate even with auth unconfigured/disa
   assert.equal(unconfigured.status, 503);
   assert.equal((await unconfigured.json()).code, "AUTH_NOT_CONFIGURED");
 
-  // Explicitly disabled on LAN is still gated: 403 AUTH_REQUIRED_FOR_LAN (D-020).
+  // Explicitly disabled on LAN is the operator's own choice: the host serves
+  // the request.
   const disabled = await call(make("disabled"), `/v1/themes?cwd=${encodeURIComponent(project)}`);
-  assert.equal(disabled.status, 403);
-  assert.equal((await disabled.json()).code, "AUTH_REQUIRED_FOR_LAN");
+  assert.equal(disabled.status, 200);
 });

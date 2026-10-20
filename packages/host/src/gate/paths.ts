@@ -15,6 +15,9 @@ export const PUBLIC_GATE_API_PATHS: readonly string[] = [
   "/v1/gate/status",
   "/v1/gate/login",
   "/v1/gate/logout",
+  // First-visit access-key setup: reachable pre-auth, but the route itself
+  // only serves it while the gate is `unconfigured` (no key yet).
+  "/v1/gate/setup",
 ] as const;
 
 /** Health and bootstrap are intentionally public so monitoring/load-balancers can
