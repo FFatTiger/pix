@@ -648,6 +648,104 @@ test("settlement: completed, failed, stopped, waiting_user, crashed, and the idl
   env.authority.dispose();
 });
 
+test("user stop drops queued assistant messages: stopped outcome carries the drop note and preview", async () => {
+  const env = harness();
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 2 });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  env.surface.headers.set("target", { title: "构建", cwd: "/repos/app" });
+  env.surface.contexts.set("target", [{ role: "assistant", content: [{ type: "text", text: "done" }] }]);
+
+  // The first send is delivered into the running turn; the second parks in
+  // the runtime queue and is what a user stop must drop.
+  const first = payload(await send(env, "q1", { kind: "send", targetSessionId: "target", message: "first delivered task", delivery: "steer", waitMinutes: 0 }));
+  assert.equal(first.ok, true);
+  const second = payload(await send(env, "q2", { kind: "send", targetSessionId: "target", message: "second queued task", delivery: "follow_up", waitMinutes: 0 }));
+  assert.equal(second.ok, true);
+
+  env.authority.noteUserStopDroppedMessages("target", [`${PREFIX}\n\nsecond queued task`]);
+
+  target.running = false;
+  target.lastEventId = 9;
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  env.advance(IDLE_GRACE);
+  await wait(1_200);
+  await wait(NOTIFY_MERGE);
+
+  const prompt = env.surface.submits.at(-1)?.input.prompt ?? "";
+  assert.match(prompt, /结果: 完成/, "the delivered delegation settles from its own tail");
+  assert.match(prompt, /结果: 已停止/, "the dropped delegation settles stopped, not completed");
+  assert.match(prompt, /未送达：「second queued task」/);
+  assert.match(prompt, /可重新发送/);
+  env.authority.dispose();
+});
+
+test("a wait-mode delegation dropped by a user stop receipts stopped with the drop preview", async () => {
+  const env = harness();
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 1 });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  await send(env, "w1", { kind: "send", targetSessionId: "target", message: "queued work", delivery: "follow_up", waitMinutes: 5 });
+  env.authority.noteUserStopDroppedMessages("target", [`${PREFIX}\n\nqueued work`]);
+  target.running = false;
+  target.lastEventId = 3;
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  env.advance(IDLE_GRACE);
+  await wait(1_200);
+  const completion = [...env.assistant.sent].reverse().find((frame) => frame.type === "worker.assistantCompletion") as { payload: { outcome: string; droppedPreview?: string } } | undefined;
+  assert.equal(completion?.payload.outcome, "stopped");
+  assert.equal(completion?.payload.droppedPreview, "queued work");
+  env.authority.dispose();
+});
+
+test("drop previews are capped at 60 chars; unmatched drops and foreign texts are no-ops", async () => {
+  const env = harness();
+  const long = "长".repeat(80);
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 1 });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  await send(env, "c1", { kind: "send", targetSessionId: "target", message: long, delivery: "follow_up", waitMinutes: 0 });
+  env.authority.noteUserStopDroppedMessages("target", [`${PREFIX}\n\n${long}`]);
+  // A text without the marker has no body to match — and never throws.
+  env.authority.noteUserStopDroppedMessages("target", ["plain user text"]);
+  env.authority.noteUserStopDroppedMessages("ghost-session", [`${PREFIX}\n\nelsewhere`]);
+  target.running = false;
+  target.lastEventId = 4;
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  env.advance(IDLE_GRACE);
+  await wait(1_200);
+  await wait(NOTIFY_MERGE);
+  const prompt = env.surface.submits.at(-1)?.input.prompt ?? "";
+  const preview = /未送达：「([^」]*)」/.exec(prompt)?.[1] ?? "";
+  assert.equal(preview.length, 61, "the preview is capped at 60 chars plus the ellipsis");
+  assert.equal(preview.endsWith("…"), true);
+  assert.equal(prompt.includes("plain user text"), false);
+  env.authority.dispose();
+});
+
+test("a drop marker survives a sessiond restart and still settles stopped with the note", async () => {
+  const env = harness();
+  const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 1 });
+  env.surface.records.set("target", target);
+  env.surface.exists.add("target");
+  await send(env, "r1", { kind: "send", targetSessionId: "target", message: "survive me", delivery: "follow_up", waitMinutes: 0 });
+  env.authority.noteUserStopDroppedMessages("target", [`${PREFIX}\n\nsurvive me`]);
+  env.authority.dispose();
+
+  const reloaded = new AssistantOpsAuthority({ surface: env.surface, store: new FileWorkspaceStateStore(env.dir), homedir: HOME, now: () => env.now });
+  env.surface.records.delete("target");
+  reloaded.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  const resumed = env.surface.submits.at(-1)?.input.prompt ?? "";
+  assert.match(resumed, /结果: 已停止/);
+  assert.match(resumed, /未送达：「survive me」/);
+  reloaded.dispose();
+});
+
 test("wait pushes a completion frame; waitCancel flips to a notification; a waited settlement sends no notification", async () => {
   const env = harness();
   const target = makeRecord("target", "/repos/app", { running: true, lastEventId: 1 });

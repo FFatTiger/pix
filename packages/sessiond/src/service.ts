@@ -46,6 +46,7 @@ import {
   RuntimeCloseReasonSchema,
   ExtensionUiInteractiveMethodSchema,
   ASSISTANT_SENT_MESSAGE_PREFIX,
+  isAssistantSentMessage,
   type ProtocolErrorCode,
   type WorkerBuild,
 } from "@fffattiger/pix-protocol";
@@ -2471,6 +2472,12 @@ export class SessiondService {
    * - Capacity reached / stopped / send failure: fails closed with commandId.
    */
   async interrupt(sessionId: string, commandId: string, interrupt: RuntimeInterrupt, epoch?: string): Promise<CorrelatedRuntimeInterruptResult> {
+    // A user stop must not leave the assistant's queued messages in the
+    // runtime queue: the SDK abort keeps them and they would be delivered as
+    // the next turn, reviving a session the user just stopped. Drop them
+    // BEFORE the abort lands; any failure here degrades to the pre-surgery
+    // behavior and never blocks the stop itself.
+    if (interrupt.type === "abort") await this.dropAssistantQueuedBeforeUserAbort(sessionId);
     const record = this.requireActive(sessionId);
     const fingerprint = operationFingerprint(interrupt);
     let immediate: CorrelatedRuntimeInterruptResult | undefined;
@@ -2559,6 +2566,60 @@ export class SessiondService {
       return rejectedInterrupt(commandId, interrupt.type, "interrupt id capacity reached for this epoch");
     }
     return pending.promise;
+  }
+
+  /**
+   * User-stop queue surgery (assistant sends): the runtime queue can only be
+   * cleared as a whole, so a stop that must drop the assistant's still-queued
+   * messages clears the queue and re-queues ONLY the user's own messages in
+   * their original order — server-side authority, the same discipline the
+   * composer's recall path applies client-side for its own queue. Runs BEFORE
+   * the abort is admitted (while the turn is still running, so the re-queued
+   * follow-ups park as queued, not as a new turn) and reports the dropped
+   * texts to the assistant authority so settlement tells the assistant what
+   * never arrived. Every failure path degrades to today's behavior (queue
+   * untouched, abort proceeds) — the stop itself is never blocked.
+   */
+  private async dropAssistantQueuedBeforeUserAbort(sessionId: string): Promise<void> {
+    const ops = this.assistantOps;
+    if (ops === undefined) return;
+    let dropped: string[];
+    let keep: string[];
+    let epoch: string;
+    try {
+      const record = this.records.get(sessionId);
+      if (!record || ["crashed", "stopped", "stopping"].includes(record.status)) return;
+      const queued = record.projection.snapshot().state.queuedMessages;
+      // Queue order is steering first, then follow-up (the client renders the
+      // same order); images ride as attachment markers inside the text.
+      const all = [...(queued?.steering ?? []), ...(queued?.followUp ?? [])].map((turn) => turn.message);
+      dropped = all.filter((message) => isAssistantSentMessage(message));
+      if (dropped.length === 0) return;
+      keep = all.filter((message) => !isAssistantSentMessage(message));
+      epoch = record.epoch;
+    } catch (error) {
+      console.error(`[service] assistant queue drop read failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    try {
+      const clear = await this.command(sessionId, { commandId: `assistant-queue-drop:${randomUUID()}`, type: "clear_queue" }, epoch);
+      if (!clear.result.ok) return;
+    } catch (error) {
+      console.error(`[service] assistant queue clear failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    for (const message of keep) {
+      try {
+        const requeued = await this.command(sessionId, { commandId: `assistant-queue-drop:${randomUUID()}`, type: "follow_up", message }, epoch);
+        if (!requeued.result.ok) throw new Error(`follow_up rejected: ${requeued.result.error.code}`);
+      } catch (error) {
+        // The queue is already empty here: a failed re-queue means this USER
+        // message left the queue without a replacement. Report it loudly —
+        // never a silent loss.
+        console.error(`[service] assistant queue re-queue failed (user message may be lost): ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    ops.noteUserStopDroppedMessages(sessionId, dropped);
   }
 
   /**
