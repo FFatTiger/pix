@@ -11,7 +11,8 @@
  *      dir, bounded fail-closed reads, temp same-dir O_EXCL → fsync → identity
  *      re-verification → atomic rename → directory fsync;
  *   4. exclusive lifetime-lock primitives — O_EXCL acquire with busy/stale/
- *      unsafe classification, identity-pinned read, and exact-owner release.
+ *      unsafe classification, dead-owner stale reclaim, identity-pinned read,
+ *      and exact-owner release.
  *
  * The contracts deliberately do NOT know any Host ledger name, schema, layout,
  * document name, or error code: Host maps `LocalAuthorityError` codes to its own
@@ -47,7 +48,6 @@ export type LocalAuthorityCode =
   | "DIR_FSYNC_FAILED"    // directory fsync failed (unsupported codes are tolerated)
   | "LOCK_UNSAFE"         // existing lock is malformed / cannot be pinned / creation failed
   | "LOCK_BUSY"           // another live process holds the lock
-  | "LOCK_STALE"          // lock belongs to a dead pid; never auto-reclaimed
   | "LOCK_LOST"           // held lock identity vanished before an atomic publish
   | "LOCK_AMBIGUOUS";     // lock existed at O_EXCL but vanished before identity pin
 
@@ -138,8 +138,14 @@ export interface WriteStateDocumentOptions {
 export interface AcquireLifetimeLockOptions {
   /** Lock record to persist (JSON text; callers append a trailing newline). */
   payload: string;
-  /** POSIX pid-liveness probe used for LOCK_BUSY vs LOCK_STALE classification. */
+  /** POSIX pid-liveness probe: live ⇒ LOCK_BUSY, dead ⇒ the stale lock is reclaimed. */
   isPidAlive: (pid: number) => boolean;
+  /**
+   * Called with the record of a STALE lock (valid record, dead owner pid) that
+   * the acquire just reclaimed, so the caller can log the recovery. Never
+   * called for a live lock (that acquisition fails with LOCK_BUSY).
+   */
+  onStaleReclaim?: (record: LifetimeLockRecord) => void;
 }
 
 export interface ReleaseLifetimeLockOptions {
@@ -170,7 +176,7 @@ export interface SecureStateBackend {
   readStateDocument(path: string, options: ReadStateDocumentOptions): Promise<StateDocumentReadResult>;
   /** Atomic durable state-document write (temp O_EXCL → fsync → identity → rename → dir fsync). */
   writeStateDocument(path: string, payload: string, options: WriteStateDocumentOptions): Promise<void>;
-  /** Exclusive lifetime-lock acquire (O_EXCL). Classifies busy/stale/unsafe; no auto-reclaim. */
+  /** Exclusive lifetime-lock acquire (O_EXCL). Classifies busy/unsafe; reclaims a dead-owner stale lock. */
   acquireLifetimeLock(path: string, options: AcquireLifetimeLockOptions): Promise<LifetimeLockOwnership>;
   /** Read an existing lifetime lock (missing / unsafe / valid record + identity). */
   readLifetimeLock(path: string): Promise<LifetimeLockReadResult>;
@@ -207,6 +213,27 @@ export function isValidInstanceId(value: unknown): value is string {
     && value.length >= 8
     && value.length <= 128
     && !hasControlChar(value);
+}
+
+/** Suffix of the crash debris a stale-lock reclaim can leave behind. */
+export const LIFETIME_LOCK_TEMP_SUFFIX = ".reclaim" as const;
+
+/**
+ * Deterministic name a stale-lock reclaim quarantines the removed lock under
+ * (`<lock>.<pid>.<uuid>.reclaim`). Exported so the reclaim producer and every
+ * layout policy that must recognize the debris share ONE definition instead of
+ * mirroring a regex.
+ */
+export function lifetimeLockTempName(lockName: string, pid: number, uuid: string): string {
+  return `${lockName}.${pid}.${uuid}${LIFETIME_LOCK_TEMP_SUFFIX}`;
+}
+
+/** True when `entryName` is reclaim debris for `lockName` (crash-mid-reclaim). */
+export function isLifetimeLockTempName(lockName: string, entryName: string): boolean {
+  const prefix = `${lockName}.`;
+  if (!entryName.startsWith(prefix) || !entryName.endsWith(LIFETIME_LOCK_TEMP_SUFFIX)) return false;
+  const middle = entryName.slice(prefix.length, entryName.length - LIFETIME_LOCK_TEMP_SUFFIX.length);
+  return /^\d+\.[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(middle);
 }
 
 /**

@@ -131,6 +131,14 @@ export { resolvePixHostDir, TrustedRootsLedgerError } from "./resources/trusted-
 export type { TrustedRootsLedger, TrustedRootsReadResult } from "./resources/trusted-roots-ledger.js";
 export { createProcessRunner, runChecked } from "./resources/process-runner.js";
 export type { ProcessRequest, ProcessResult, ProcessRunner } from "./resources/process-runner.js";
+export {
+  UPDATE_PACKAGE_NAME,
+  DEFAULT_NPM_REGISTRY,
+  npmExecutable,
+  resolveNpmRegistry,
+  resolveNpmRegistryLatestUrl,
+} from "./resources/npm-registry.js";
+export type { NpmRunner } from "./resources/npm-registry.js";
 export { createFileWatchManager } from "./resources/file-watch.js";
 export type { FileWatchManager } from "./resources/file-watch.js";
 export { readBoundedBody, readJsonObject } from "./resources/request-body.js";

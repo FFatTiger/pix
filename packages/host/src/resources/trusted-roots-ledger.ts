@@ -93,17 +93,23 @@ export type TrustedRootsLedgerCode =
   | "LEDGER_HARD_LINK"
   | "LEDGER_WRITE_FAILED"
   | "LEDGER_LOCK_BUSY"
-  | "LEDGER_LOCK_STALE"
   | "LEDGER_LOCK_UNSAFE"
   | "HOST_DIR_UNSAFE"
   | "HOST_DIR_INVALID";
 
 export class TrustedRootsLedgerError extends Error {
   readonly code: TrustedRootsLedgerCode;
-  constructor(code: TrustedRootsLedgerCode, message: string) {
+  /** Lock holder detail for LEDGER_LOCK_BUSY (lock file + live owner pid). */
+  readonly lockHolder?: { lockPath: string; pid: number };
+  constructor(
+    code: TrustedRootsLedgerCode,
+    message: string,
+    lockHolder?: { lockPath: string; pid: number },
+  ) {
     super(message);
     this.name = "TrustedRootsLedgerError";
     this.code = code;
+    if (lockHolder !== undefined) this.lockHolder = lockHolder;
   }
 }
 
@@ -207,7 +213,6 @@ export function mapLeaseCode(code: HostStateDirectoryCode): TrustedRootsLedgerCo
     case "HOST_DIR_INVALID": return "HOST_DIR_INVALID";
     case "HOST_DIR_UNSAFE": return "HOST_DIR_UNSAFE";
     case "LOCK_BUSY": return "LEDGER_LOCK_BUSY";
-    case "LOCK_STALE": return "LEDGER_LOCK_STALE";
     case "LOCK_UNSAFE": return "LEDGER_LOCK_UNSAFE";
     case "DOC_SYMLINK": return "LEDGER_SYMLINK";
     case "DOC_NOT_REGULAR": return "LEDGER_NOT_REGULAR";
@@ -241,6 +246,7 @@ function toLedgerError(error: unknown): never {
     throw new TrustedRootsLedgerError(
       mapLeaseCode(error.code),
       LEDGER_DOC_MESSAGES[error.code] ?? error.message,
+      error.lockHolder,
     );
   }
   throw error;

@@ -28,23 +28,32 @@
  *   web-push.json          — Web Push VAPID keys + subscriptions (0600)
  *   trusted-roots.lock     — EXCLUSIVE LIFETIME host-dir lock (0600, pid+instanceId)
  *
- * Frozen architecture decisions (parent D3A-P0 mandate, preserved verbatim):
+ * Frozen architecture decisions (parent D3A-P0 mandate, revised by the
+ * stale-lock-recovery slice — the revision is explicit, the rest stands):
  *   1. STRICT single Host per host dir. `openHostStateDirectoryLease` acquires
  *      an exclusive lifetime lock from pre-listen until graceful `close()`.
- *      Any existing lock (live OR stale) fails startup with a fixed sanitized
- *      error. There is NO automatic stale-lock reclaim: SIGKILL leaves a stale
- *      lock and the next startup must fail closed without touching the state.
- *      An operator may explicitly remove the fixture lock after proving the
- *      old pid is dead. `close()` removes only its exact lock identity
- *      (dev/ino + instanceId); a wrong instance id can never unlock another
- *      Host's dir.
+ *      An existing lock is classified by its recorded owner pid:
+ *        - owner alive  → refuse startup with the fixed sanitized error
+ *          (the message names the full lock path and the holding pid so the
+ *          operator knows which process to stop). A recycled pid cannot be
+ *          told apart from the real owner (the record carries no process
+ *          identity evidence), so "alive" is always "held": no guessing.
+ *        - owner dead   → SIGKILL / closed-terminal debris. The stale lock is
+ *          reclaimed (atomic quarantine + inode-checked unlink, never a blind
+ *          delete) and startup proceeds; one log line names the lock path and
+ *          the dead pid. A concurrently replaced lock is never removed.
+ *        - malformed / unreadable / ambiguous → fail closed, never deleted.
+ *      The state documents themselves are untouched by classification and are
+ *      validated before the lock is acquired. `close()` removes only its exact
+ *      lock identity (dev/ino + instanceId); a wrong instance id can never
+ *      unlock another Host's dir.
  *   2. Safe dedicated host dir only. Newly created dedicated leaf is created
  *      safely and set 0700 via fd. An existing directory is never chmod'd: it
  *      must be current-user owned (where supported), mode 0700, real
  *      non-symlink, and contain only the recognized Pix state-document/lock/
- *      temp layout. Filesystem root, home itself, shared tmp itself,
- *      repository/source trees and populated unrelated dirs are rejected
- *      BEFORE any mutation.
+ *      temp layout (including stale-reclaim debris). Filesystem root, home
+ *      itself, shared tmp itself, repository/source trees and populated
+ *      unrelated dirs are rejected BEFORE any mutation.
  *   3. A corrupt state document is immutable evidence. Missing ⇒ empty. Any
  *      corrupt / unknown-version / wrong-kind / duplicate / sparse /
  *      wrong-permission / hard-linked / unsafe document fails startup and every
@@ -74,6 +83,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   canonicalCompareKey,
   decomposeAbsolutePath,
+  isLifetimeLockTempName,
   securePathApi,
   securePathPlatform,
   stripWindowsExtendedPrefix,
@@ -90,6 +100,7 @@ import {
   type LocalAuthorityCode,
 } from "@fffattiger/pix-local-authority/state";
 import { AsyncMutex } from "./mutex.js";
+import type { HostLogger } from "../types.js";
 
 // The Host ledgers consume these pure predicates through this module; they are
 // implemented in the local-authority contracts and re-exported unchanged.
@@ -124,7 +135,6 @@ export type HostStateDirectoryCode =
   | "HOST_DIR_UNSAFE"
   | "LOCK_UNSAFE"
   | "LOCK_BUSY"
-  | "LOCK_STALE"
   | "DOC_UNKNOWN"
   | "DOC_SYMLINK"
   | "DOC_NOT_REGULAR"
@@ -137,10 +147,21 @@ export type HostStateDirectoryCode =
 
 export class HostStateDirectoryError extends Error {
   readonly code: HostStateDirectoryCode;
-  constructor(code: HostStateDirectoryCode, message: string) {
+  /**
+   * Operator-actionable detail for a LOCK_BUSY refusal: the lock file to stop
+   * the owner of and that owner's pid. Present ONLY for LOCK_BUSY (never for
+   * document/unsafe failures, whose messages stay payload-free).
+   */
+  readonly lockHolder?: { lockPath: string; pid: number };
+  constructor(
+    code: HostStateDirectoryCode,
+    message: string,
+    lockHolder?: { lockPath: string; pid: number },
+  ) {
     super(message);
     this.name = "HostStateDirectoryError";
     this.code = code;
+    if (lockHolder !== undefined) this.lockHolder = lockHolder;
   }
 }
 
@@ -200,6 +221,8 @@ export interface HostStateDirectoryLeaseOptions {
   isPidAlive?: (pid: number) => boolean;
   /** Test hook: override instance id for lock ownership. */
   instanceId?: string;
+  /** Receives one line when a stale (dead-owner) lifetime lock is reclaimed. */
+  logger?: Pick<HostLogger, "warn" | "info">;
   /** Test hook: throw to inject a temp-file fsync failure. */
   failTempFsync?: () => void;
   /** Test hook: throw to inject an atomic-rename failure. */
@@ -240,7 +263,6 @@ const LOCAL_TO_HOST_CODES: Record<LocalAuthorityCode, HostStateDirectoryCode> = 
   DIR_FSYNC_FAILED: "DOC_WRITE_FAILED",
   LOCK_UNSAFE: "LOCK_UNSAFE",
   LOCK_BUSY: "LOCK_BUSY",
-  LOCK_STALE: "LOCK_STALE",
   LOCK_LOST: "DOC_LOCK_LOST",
   LOCK_AMBIGUOUS: "LOCK_UNSAFE",
 };
@@ -266,8 +288,7 @@ const LOCAL_TO_HOST_MESSAGES: Record<LocalAuthorityCode, string> = {
   WRITE_FAILED: "Atomic state document write failed",
   DIR_FSYNC_FAILED: "Atomic state document write failed",
   LOCK_UNSAFE: "Host directory lock is unsafe",
-  LOCK_BUSY: "Another Host holds the Host directory lock",
-  LOCK_STALE: "Host directory lock is stale; verify the old process is dead and remove the lock explicitly",
+  LOCK_BUSY: "Another live Host holds the Host directory lock",
   LOCK_LOST: "Host directory lock ownership lost before publish",
   LOCK_AMBIGUOUS: "Host directory lock identity is ambiguous",
 };
@@ -470,6 +491,9 @@ async function ensurePixHostDir(
           if (entry.isSymbolicLink()) {
             throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory contains a symbolic link");
           }
+          // Crash debris from a stale-lock reclaim (killed between the atomic
+          // quarantine rename and its unlink): recognized, never state.
+          if (isLifetimeLockTempName(HOST_STATE_LOCK_NAME, entry.name)) continue;
           if (!recognizedEntries.has(entry.name) && !tempPatterns.some((pattern) => pattern.test(entry.name))) {
             throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory is not a dedicated empty Pix directory");
           }
@@ -554,8 +578,29 @@ export async function openHostStateDirectoryLease(
       return await backend.acquireLifetimeLock(lockPath, {
         payload: `${JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() })}\n`,
         isPidAlive: isAlive,
+        onStaleReclaim: (record) => {
+          // A killed Host cannot release its lock; the next start reclaims it.
+          // One fixed line: the lock path and the dead owner pid (no payload,
+          // no state contents).
+          options.logger?.warn?.(
+            `reclaimed stale host lock ${lockPath} left by dead pid ${record.pid}`,
+          );
+        },
       });
     } catch (error) {
+      // The backend reports a live holder as LOCK_BUSY; add the exact lock file
+      // and owner pid, because "another Host is running" is not actionable
+      // without them. Every other failure keeps its fixed payload-free line.
+      if (error instanceof LocalAuthorityError && error.code === "LOCK_BUSY") {
+        const holder = await backend.readLifetimeLock(lockPath);
+        if (holder.kind === "valid") {
+          throw new HostStateDirectoryError(
+            "LOCK_BUSY",
+            "Another live Host holds the Host directory lock",
+            { lockPath, pid: holder.record.pid },
+          );
+        }
+      }
       toHostStateError(error);
     }
   }

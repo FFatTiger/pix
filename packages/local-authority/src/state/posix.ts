@@ -21,9 +21,10 @@
  *     fsync (FATAL except the narrowly enumerated EINVAL / ENOTSUP / EISDIR
  *     unsupported set). A returned success means the publish completed.
  *   - lifetime lock: O_EXCL acquire with exact-owner dev/ino + instanceId
- *     release; busy (live pid) / stale (dead pid, NEVER auto-reclaimed) /
- *     unsafe / ambiguous classification; identity re-verification before every
- *     atomic publish (lock lost ⇒ fail closed).
+ *     release; busy (live pid) / stale (dead pid, reclaimed while its own
+ *     exact inode is still the one present) / unsafe / ambiguous classification;
+ *     identity re-verification before every atomic publish (lock lost ⇒ fail
+ *     closed).
  *
  * Residual (Node has no openat): a same-UID concurrent actor on a shared parent
  * can race lstat/mkdir/open. The created leaf is pinned by fd identity from the
@@ -41,7 +42,7 @@ import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { realpath as realpathCb } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   canonicalCompareKey,
   decomposeAbsolutePath,
@@ -55,12 +56,14 @@ import {
   isRecord,
   isSafeInteger,
   isValidInstanceId,
+  lifetimeLockTempName,
   LocalAuthorityError,
   type AcquireLifetimeLockOptions,
   type EnsurePrivateDirectoryOptions,
   type EnsurePrivateDirectoryResult,
   type LifetimeLockOwnership,
   type LifetimeLockReadResult,
+  type LifetimeLockRecord,
   type PosixFileIdentity,
   type PosixPrincipal,
   type ReadStateDocumentOptions,
@@ -929,20 +932,22 @@ export async function readLifetimeLock(path: string): Promise<LifetimeLockReadRe
 }
 
 /**
- * Classify an EXISTING lock record into a fixed fail-closed error. Never
- * rethrows raw: a caller-supplied isPidAlive that throws is contained to
- * LOCK_UNSAFE. `readLifetimeLock` itself never throws (returns the union).
+ * Classify an EXISTING lock record: return the record + dev/ino identity for a
+ * valid lock whose owning pid is dead (stale debris, safe to reclaim), or throw
+ * a fixed fail-closed error. Never rethrows raw: a caller-supplied isPidAlive
+ * that throws is contained to LOCK_UNSAFE. `readLifetimeLock` itself never
+ * throws (returns the union).
  */
 async function classifyExistingLock(
   path: string,
   isPidAlive: (pid: number) => boolean,
-): Promise<never> {
+): Promise<{ record: LifetimeLockRecord; identity: LifetimeLockOwnership }> {
   const existing = await readLifetimeLock(path);
   if (existing.kind === "unsafe") {
     throw new LocalAuthorityError("LOCK_UNSAFE", "Existing lifetime lock is unsafe");
   }
   if (existing.kind === "missing") {
-    // Lock existed at O_EXCL but vanished before the read — ambiguous.
+    // Lock vanished between the O_EXCL collision and this read — ambiguous.
     throw new LocalAuthorityError("LOCK_AMBIGUOUS", "Lifetime lock identity is ambiguous");
   }
   let alive = false;
@@ -954,29 +959,23 @@ async function classifyExistingLock(
   if (alive) {
     throw new LocalAuthorityError("LOCK_BUSY", "Another process holds the lifetime lock");
   }
-  throw new LocalAuthorityError(
-    "LOCK_STALE",
-    "Lifetime lock is stale; verify the old process is dead and remove the lock explicitly",
-  );
+  return { record: existing.record, identity: existing.identity };
 }
 
 /**
- * Acquire the exclusive LIFETIME lock (O_EXCL). If any lock exists — live
- * (LOCK_BUSY) or stale/ambiguous (LOCK_STALE / LOCK_UNSAFE / LOCK_AMBIGUOUS) —
- * fail closed. NEVER auto-reclaims a stale lock: after SIGKILL the next
- * acquire fails closed and the operator must explicitly remove the fixture
- * lock after proving the old pid is dead.
+ * Create the lock file exclusively and pin its dev/ino identity.
+ * `EEXIST` is returned as `"exists"`; any other failure fails closed.
  */
-export async function acquireLifetimeLock(
+async function createPinnedLock(
   path: string,
-  options: AcquireLifetimeLockOptions,
-): Promise<LifetimeLockOwnership> {
+  payload: string,
+): Promise<LifetimeLockOwnership | "exists"> {
   try {
     // Mode via O_EXCL open + handle.chmod only; never path-chmod after close.
     const handle = await open(path, openFlags(), 0o600);
     try {
       await handle.chmod(0o600);
-      await handle.writeFile(options.payload, "utf8");
+      await handle.writeFile(payload, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
@@ -993,8 +992,81 @@ export async function acquireLifetimeLock(
     if (errnoCode(error) !== "EEXIST") {
       throw new LocalAuthorityError("LOCK_UNSAFE", "Could not create lifetime lock");
     }
-    return classifyExistingLock(path, options.isPidAlive);
+    return "exists";
   }
+}
+
+/**
+ * Remove a STALE lock (valid record, dead owner pid) without ever deleting a
+ * live or replaced one:
+ *
+ *   1. O_EXCL create already failed and the caller read the lock it collided
+ *      with, so the dev/ino + instanceId of that exact record are known;
+ *   2. rename it to a unique quarantine name in the same directory. rename is
+ *      atomic and unlinks whatever is at the destination, so a SIGKILL of the
+ *      CURRENT process mid-reclaim cannot leave any file at `path` — the retry
+ *      sees no lock instead of a permanently wedged one;
+ *   3. verify the quarantined inode is the one already classified as stale
+ *      before unlinking it. A lock that was replaced between the read and the
+ *      rename (a concurrent acquirer that won the race) is NOT ours: rename it
+ *      back. The lock was never absent for the competitor to acquire, so
+ *      restoring it yields LOCK_BUSY on the next attempt instead of a second
+ *      owner.
+ */
+async function reclaimStaleLock(
+  path: string,
+  expectedIdentity: LifetimeLockOwnership,
+): Promise<void> {
+  const quarantine = join(dirname(path), lifetimeLockTempName(basename(path), process.pid, randomUUID()));
+  try {
+    await rename(path, quarantine);
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return; // already reclaimed by someone else
+    throw new LocalAuthorityError("LOCK_UNSAFE", "Stale lifetime lock could not be reclaimed");
+  }
+  const quarantined = await inspectRegularFile(quarantine);
+  if (
+    quarantined.kind !== "regular"
+    || quarantined.dev !== expectedIdentity.dev
+    || quarantined.ino !== expectedIdentity.ino
+  ) {
+    // Not the lock we classified as stale: put it back untouched.
+    await rename(quarantine, path).catch(() => {});
+    throw new LocalAuthorityError("LOCK_BUSY", "Another process holds the lifetime lock");
+  }
+  await rm(quarantine, { force: true }).catch(() => {});
+}
+
+/**
+ * Acquire the exclusive LIFETIME lock (O_EXCL).
+ *
+ * An existing lock is classified by its owning pid:
+ *   - live pid → LOCK_BUSY, fail closed (never two writers);
+ *   - dead pid → STALE debris (the owner was killed and cannot release it),
+ *     reclaimed and the acquire retried. `onStaleReclaim` reports the removal
+ *     so a caller can log it; nothing else observes it.
+ *   - unsafe / malformed / vanished-at-O_EXCL (LOCK_UNSAFE / LOCK_AMBIGUOUS)
+ *     → fail closed, never deleted.
+ *
+ * A live pid that was recycled by an unrelated process cannot be distinguished
+ * from the real owner (the record carries no process-identity evidence), so
+ * "alive" is always treated as "held".
+ */
+export async function acquireLifetimeLock(
+  path: string,
+  options: AcquireLifetimeLockOptions,
+): Promise<LifetimeLockOwnership> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const created = await createPinnedLock(path, options.payload);
+    if (created !== "exists") return created;
+    // EEXIST: classify the lock we collided with. An unsafe/malformed lock and a
+    // live holder both throw here (LOCK_UNSAFE / LOCK_BUSY); only a valid record
+    // naming a dead pid returns, and only that one is reclaimed.
+    const stale = await classifyExistingLock(path, options.isPidAlive);
+    await reclaimStaleLock(path, stale.identity);
+    options.onStaleReclaim?.(stale.record);
+  }
+  throw new LocalAuthorityError("LOCK_UNSAFE", "Could not acquire lifetime lock");
 }
 
 /**

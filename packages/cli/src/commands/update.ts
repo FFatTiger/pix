@@ -1,13 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { npmExecutable, resolveNpmRegistryLatestUrl, UPDATE_PACKAGE_NAME as PACKAGE } from "@fffattiger/pix-host";
 import { parseFlags } from "../args.js";
 import { inspectSessiond, shutdownSessiond } from "../supervise.js";
 import { resolveCliVersion } from "../index.js";
 import { pixErr, pixLog } from "../log.js";
 
-const PACKAGE = "@fffattiger/pix-cli";
-const REGISTRY_LATEST_URL = "https://registry.npmjs.org/@fffattiger%2fpix-cli/latest";
 const REGISTRY_TIMEOUT_MS = 10_000;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
@@ -42,9 +41,15 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   return false;
 }
 
+/**
+ * Latest published version as reported by the registry npm would use for this
+ * package (user mirror / scoped registry / npm default), so a configured
+ * registry serves the check exactly like it serves `npm install -g`.
+ */
 async function fetchLatestVersion(): Promise<string | null> {
   try {
-    const response = await fetch(REGISTRY_LATEST_URL, { signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS) });
+    const url = await resolveNpmRegistryLatestUrl();
+    const response = await fetch(url, { signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS) });
     if (!response.ok) return null;
     const body = await response.json() as { version?: unknown };
     return typeof body.version === "string" && VERSION_PATTERN.test(body.version) ? body.version : null;
@@ -100,7 +105,7 @@ export async function updateCommand(argv: string[]): Promise<number> {
     pixErr(`install it with: npm install -g ${PACKAGE}@${target}`);
     return 1;
   }
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  const npm = npmExecutable();
   const installed = spawnSync(npm, ["install", "-g", "--prefix", prefix, `${PACKAGE}@${target}`], {
     stdio: "inherit",
     shell: process.platform === "win32",

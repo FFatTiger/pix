@@ -447,16 +447,20 @@ test("production composition: ONE shared lease backs both sidecars; managed clos
   assert.ok(first.managedWorktrees, "managed service wired");
   assert.equal(first.deps.managedWorktrees, first.managedWorktrees, "ResourceDeps carries the managed service");
 
-  // Second Host on the same host dir fails before listen (ONE lock held).
+  // Second Host on the same host dir fails before listen (ONE lock held), and
+  // the error names the lock file + holder pid so the operator can act.
   await assert.rejects(
     () => createProductionResources(base),
-    (e) => e instanceof InvalidHostDirError && e.message === "PIX_HOST_DIR rejected (LEDGER_LOCK_BUSY)",
+    (e) => e instanceof InvalidHostDirError
+      && e.message.startsWith("PIX_HOST_DIR rejected (LEDGER_LOCK_BUSY)")
+      && e.message.includes(join(hostDir, HOST_LOCK))
+      && e.message.includes(`running pid ${process.pid}`),
   );
   // Managed-ledger close is a no-op (lease owner is the trusted ledger).
   await first.managedWorktreesLedger.close();
   await assert.rejects(
     () => createProductionResources(base),
-    (e) => e instanceof InvalidHostDirError && e.message === "PIX_HOST_DIR rejected (LEDGER_LOCK_BUSY)",
+    (e) => e instanceof InvalidHostDirError && e.message.startsWith("PIX_HOST_DIR rejected (LEDGER_LOCK_BUSY)"),
     "managed close must NOT release the shared lease",
   );
   // Trusted-ledger close releases the shared lease exactly once.
@@ -464,6 +468,24 @@ test("production composition: ONE shared lease backs both sidecars; managed clos
   const second = await createProductionResources(base);
   assert.ok(second.managedWorktrees, "restart wires the managed service again");
   await second.trustedRootsLedger.close();
+});
+
+test("production composition: a stale lock from a killed Host is reclaimed and logged, never blocking restart", async () => {
+  const root = temp("pix-prod-stale-");
+  const hostDir = temp("pix-prod-stale-host-");
+  const base = { allowedRootsEnv: root, cwd: root, endpoint: "unix:/nonexistent-prod-stale", secret: "s".repeat(48), hostDirEnv: hostDir };
+  const killed = await createProductionResources(base);
+  // Simulate a SIGKILL: the lock stays on disk naming a dead pid.
+  writeFileSync(join(hostDir, HOST_LOCK), JSON.stringify({ pid: 999_999_999, instanceId: "dead-instance-xx", createdAt: 1 }) + "\n", { mode: 0o600 });
+  await killed.trustedRootsLedger.close().catch(() => {});
+  writeFileSync(join(hostDir, HOST_LOCK), JSON.stringify({ pid: 999_999_999, instanceId: "dead-instance-xx", createdAt: 1 }) + "\n", { mode: 0o600 });
+  const lines = [];
+  const restarted = await createProductionResources({ ...base, logger: { warn: (message) => lines.push(message) } });
+  assert.equal(lines.length, 1, "reclaim is logged exactly once");
+  assert.ok(lines[0].includes(join(hostDir, HOST_LOCK)), `log names the lock file (${lines[0]})`);
+  assert.ok(lines[0].includes("999999999"), `log names the dead pid (${lines[0]})`);
+  assert.equal(existsSync(join(hostDir, HOST_LOCK)), true, "the restart holds its own lock");
+  await restarted.trustedRootsLedger.close();
 });
 
 test("production composition: corrupt managed sidecar fails before listen and stays immutable", async () => {

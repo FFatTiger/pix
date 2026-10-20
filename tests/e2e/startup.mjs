@@ -722,23 +722,16 @@ async function main() {
     );
     assert.equal(JSON.parse(readFileSync(managedLedgerPath, "utf8")).records.length, 1, "managed sidecar stays at one record after restart");
 
-    // ---- phase 3f: SIGKILL leaves a stale lock → restart fails closed ----
+    // ---- phase 3f: SIGKILL leaves a stale lock → the next start reclaims it --
     const managedBytesBeforeSigkill = readFileSync(managedLedgerPath);
-    const managedInoBeforeSigkill = lstatSync(managedLedgerPath).ino;
     await sigkillHost(currentHost);
     currentHost = undefined;
-    // The stale lifetime lock must remain on disk (no auto-reclaim).
+    // The killed Host cannot release its lock; it stays on disk naming a dead pid.
     assert.equal(existsSync(hostLockPath), true, "SIGKILL must leave the stale lifetime lock");
-    const staleRestart = await runHostToCompletion(env);
-    assert.equal(staleRestart.code, 1, `restart after SIGKILL must fail closed (got ${staleRestart.code})`);
-    assert.match(staleRestart.stderr + staleRestart.stdout, /PIX_HOST_DIR rejected \(LEDGER_LOCK_STALE\)/, "fixed sanitized stale-lock error");
-    assert.ok(!(staleRestart.stdout + staleRestart.stderr).includes("host listening"), "stale-lock restart must never listen");
-    assert.deepEqual(readFileSync(managedLedgerPath), managedBytesBeforeSigkill, "SIGKILL/stale restart must leave the managed sidecar byte-identical");
-    assert.equal(lstatSync(managedLedgerPath).ino, managedInoBeforeSigkill, "SIGKILL/stale restart must leave the managed sidecar inode unchanged");
-
-    // Operator explicitly removes the fixture stale lock after proving the old
-    // pid is dead (no automatic crash recovery is claimed), then restart works.
-    rmSync(hostLockPath, { force: true });
+    const staleOwnerPid = JSON.parse(readFileSync(hostLockPath, "utf8")).pid;
+    assert.equal(pidAlive(staleOwnerPid), false, "the lock must name the killed (dead) pid");
+    // Restart reclaims it: no manual lock removal, one recovery line naming the
+    // lock file and the dead pid, and the managed sidecar is never rewritten.
     currentHost = startProcess([
       "packages/cli/bin/pix-host.mjs",
       "--hostname",
@@ -749,11 +742,17 @@ async function main() {
     ], env);
     await waitForHealthy(origin, currentHost);
     await waitForCaps(origin, currentHost, { sessiond: "up", caps: FULL_CAPS });
+    const staleRestartOutput = (() => { const out = currentHost.output(); return out.stdout + out.stderr; })();
+    assert.match(staleRestartOutput, /reclaimed stale host lock/, "restart logs the stale-lock reclaim");
+    assert.ok(staleRestartOutput.includes(hostLockPath), "reclaim log names the lock file");
+    assert.ok(staleRestartOutput.includes(String(staleOwnerPid)), "reclaim log names the dead pid");
+    assert.deepEqual(readFileSync(managedLedgerPath), managedBytesBeforeSigkill, "SIGKILL reclaim must leave the managed sidecar byte-identical (rehydrate rewrites the same bytes)");
     const afterRecovery = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
     assert.ok(
       afterRecovery.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === true),
-      "after explicit stale-lock removal, restart restores managed authorization",
+      "after the stale-lock reclaim, restart restores managed authorization",
     );
+    assert.equal(JSON.parse(readFileSync(hostLockPath, "utf8")).pid, currentHost.child.pid, "the restarted Host owns the lock");
 
     // ---- phase 3g: a corrupt managed sidecar fails the Host BEFORE listen ----
     await stopHost(currentHost);
@@ -894,8 +893,7 @@ async function main() {
       deleteNoResurrection: true,
       dirtyRequiresForceAndBranchRetained: true,
       corruptManagedSidecarFailsBeforeListen: true,
-      sigkillStaleLockFailsClosed: true,
-      explicitStaleLockRemovalRestores: true,
+      sigkillStaleLockReclaimedOnRestart: true,
       degradedExcludesWorktreeWrite: true,
       upCaps: FULL_CAPS,
       degradedCaps: DEGRADED_CAPS,

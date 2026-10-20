@@ -384,15 +384,18 @@ test("PIX_HOST_DIR: wrong owner / wrong-permission ledger / hard-linked ledger /
 // Lifetime lock (D3A-P0 decision 1)
 // ---------------------------------------------------------------------------
 
-test("lifetime lock: second Host same dir fails before listen; stale lock fails closed; exact-owner unlock", async () => {
+test("lifetime lock: second Host same dir fails before listen; dead-owner lock reclaimed; exact-owner unlock", async () => {
   const hostDir = temp("pi-lock-busy-");
   const a = await openTrustedRootsLedger({ hostDir, instanceId: "instance-a-aaaa" });
   assert.equal(existsSync(a.lockPath), true);
-  // Second Host same dir → LEDGER_LOCK_BUSY (fail before listen), no ledger touch.
+  // Second Host same dir → LEDGER_LOCK_BUSY (fail before listen), no ledger touch;
+  // the error carries the lock file and the holder pid (operator action).
   const ledgerBytes = await a.read();
   await assert.rejects(
     () => openTrustedRootsLedger({ hostDir, instanceId: "instance-b-bbbb" }),
-    (e) => e.code === "LEDGER_LOCK_BUSY",
+    (e) => e.code === "LEDGER_LOCK_BUSY"
+      && e.lockHolder?.lockPath === a.lockPath
+      && e.lockHolder?.pid === process.pid,
   );
   assert.deepEqual((await a.read()).claims, ledgerBytes.claims);
   // Graceful exact-owner unlock: A closes, then B can acquire.
@@ -401,8 +404,8 @@ test("lifetime lock: second Host same dir fails before listen; stale lock fails 
   const b = await openTrustedRootsLedger({ hostDir, instanceId: "instance-b-bbbb" });
   await b.close();
 
-  // Stale lock (dead pid) → LEDGER_LOCK_STALE, ledger untouched. Explicit
-  // fixture removal (operator action after proving old pid dead) then restores.
+  // Stale lock (dead pid) → automatically reclaimed, ledger untouched, claims
+  // restored on the same start (a killed Host must not wedge the next one).
   const staleDir = temp("pi-lock-stale-");
   let s = await openTrustedRootsLedger({ hostDir: staleDir });
   await s.writeAll([claim({ claimId: "claim-stale-aaaa", path: "/tmp/st", repoRoot: "/tmp/r", base: "/tmp/r-worktrees" })]);
@@ -411,16 +414,11 @@ test("lifetime lock: second Host same dir fails before listen; stale lock fails 
   const staleLockPath = s.lockPath;
   // Do NOT close: simulate SIGKILL leaving the lock with a dead pid.
   writeFileSync(staleLockPath, JSON.stringify({ pid: 999_999_999, instanceId: "dead-instance-xx", createdAt: 1 }) + "\n", { mode: 0o600 });
-  await assert.rejects(
-    () => openTrustedRootsLedger({ hostDir: staleDir, instanceId: "instance-c-cccc" }),
-    (e) => e.code === "LEDGER_LOCK_STALE",
-  );
-  assert.deepEqual(readFileSync(join(staleDir, LEDGER_FILE_NAME)), staleLedgerBytes);
-  assert.equal(lstatSync(join(staleDir, LEDGER_FILE_NAME)).ino, staleLedgerIno);
-  // Operator explicitly removes the fixture stale lock after proving pid dead.
-  rmSync(staleLockPath, { force: true });
   s = await openTrustedRootsLedger({ hostDir: staleDir, instanceId: "instance-c-cccc" });
-  assert.equal((await s.read()).claims.length, 1, "restart after explicit stale-lock removal restores claims");
+  assert.deepEqual(readFileSync(join(staleDir, LEDGER_FILE_NAME)), staleLedgerBytes, "reclaim never rewrites the ledger");
+  assert.equal(lstatSync(join(staleDir, LEDGER_FILE_NAME)).ino, staleLedgerIno, "reclaim never replaces the ledger inode");
+  assert.equal((await s.read()).claims.length, 1, "restart after a stale-lock reclaim restores claims");
+  assert.equal(JSON.parse(readFileSync(staleLockPath, "utf8")).instanceId, "instance-c-cccc", "the retried acquire owns the lock");
   await s.close();
 
   // Wrong instance cannot unlock: A's close must not remove B's lock.
@@ -1007,7 +1005,7 @@ test("string-only registerTrustedCreatedRoot remains memory-only (no ledger with
 // Static source guards
 // ---------------------------------------------------------------------------
 
-test("lease source: fd-based fchmod only; ownership re-verified before publish; lifetime lock no stale reclaim", async () => {
+test("lease source: fd-based fchmod only; ownership re-verified before publish; stale lock reclaimed only when dead", async () => {
   // Slice 1 (secure-Windows-state) extracted the low-level secure-state
   // primitives (canonical paths, host-dir/temp/lock fd-based fchmod, atomic
   // rename, lifetime lock) into @fffattiger/pix-local-authority/state; the
@@ -1033,9 +1031,16 @@ test("lease source: fd-based fchmod only; ownership re-verified before publish; 
   const renameIdx = posixSrc.indexOf("await rename(temp, targetPath)");
   const verifyIdx = posixSrc.indexOf("ownership lost before publish");
   assert.ok(verifyIdx !== -1 && renameIdx !== -1 && verifyIdx < renameIdx, "ownership check must precede rename");
-  // Lifetime lock: stale lock fails closed (LOCK_STALE), never auto-reclaimed.
-  assert.match(posixSrc, /LOCK_STALE/);
+  // Lifetime lock: a live owner is LOCK_BUSY, a dead owner is reclaimed; the
+  // removal is identity-pinned and atomic (rename + inode check), never a blind
+  // delete.
   assert.match(posixSrc, /LOCK_BUSY/);
+  assert.match(posixSrc, /async function reclaimStaleLock/);
+  assert.match(posixSrc, /await rename\(path, quarantine\)/);
+  const reclaimBody = posixSrc.slice(posixSrc.indexOf("async function reclaimStaleLock"));
+  const reclaimFn = reclaimBody.slice(0, reclaimBody.indexOf("\n}\n"));
+  assert.doesNotMatch(reclaimFn, /rm\(path\b/, "the stale reclaim never unlinks the live lock path");
+  assert.match(reclaimFn, /rm\(quarantine\b/, "it unlinks only the quarantined inode it verified");
   // The trusted-roots adapter delegates to the shared lease (no raw primitives).
   assert.match(ledgerSrc, /openHostStateDirectoryLease/);
   assert.equal(/await chmod\(/.test(ledgerSrc), false, "adapter must never path-chmod");

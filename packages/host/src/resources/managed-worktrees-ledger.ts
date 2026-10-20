@@ -72,17 +72,23 @@ export type ManagedWorktreesLedgerCode =
   | "MANAGED_HARD_LINK"
   | "MANAGED_WRITE_FAILED"
   | "MANAGED_LOCK_BUSY"
-  | "MANAGED_LOCK_STALE"
   | "MANAGED_LOCK_UNSAFE"
   | "HOST_DIR_UNSAFE"
   | "HOST_DIR_INVALID";
 
 export class ManagedWorktreesLedgerError extends Error {
   readonly code: ManagedWorktreesLedgerCode;
-  constructor(code: ManagedWorktreesLedgerCode, message: string) {
+  /** Lock holder detail for MANAGED_LOCK_BUSY (lock file + live owner pid). */
+  readonly lockHolder?: { lockPath: string; pid: number };
+  constructor(
+    code: ManagedWorktreesLedgerCode,
+    message: string,
+    lockHolder?: { lockPath: string; pid: number },
+  ) {
     super(message);
     this.name = "ManagedWorktreesLedgerError";
     this.code = code;
+    if (lockHolder !== undefined) this.lockHolder = lockHolder;
   }
 }
 
@@ -196,7 +202,6 @@ export function mapLeaseCode(code: HostStateDirectoryCode): ManagedWorktreesLedg
     case "HOST_DIR_INVALID": return "HOST_DIR_INVALID";
     case "HOST_DIR_UNSAFE": return "HOST_DIR_UNSAFE";
     case "LOCK_BUSY": return "MANAGED_LOCK_BUSY";
-    case "LOCK_STALE": return "MANAGED_LOCK_STALE";
     case "LOCK_UNSAFE": return "MANAGED_LOCK_UNSAFE";
     case "DOC_SYMLINK": return "MANAGED_SYMLINK";
     case "DOC_NOT_REGULAR": return "MANAGED_NOT_REGULAR";
@@ -230,6 +235,7 @@ function toManagedError(error: unknown): never {
     throw new ManagedWorktreesLedgerError(
       mapLeaseCode(error.code),
       MANAGED_DOC_MESSAGES[error.code] ?? error.message,
+      error.lockHolder,
     );
   }
   throw error;

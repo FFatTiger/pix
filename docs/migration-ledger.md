@@ -4347,3 +4347,27 @@ Pix 侧同步：`vendor/pi-claude-subagents-0.4.0.tgz` 取代 `0.3.9-pi1-eccf9bc
 **Client**：`createSessionHistoryQueryOptions` 从 `queryOptions` 改为同一 key 的 `infiniteQueryOptions`（第一页不带 `before`，`getNextPageParam` 取 `nextCursor`），`useSessionTranscript` 按“旧页在前”拼接并新增 `hasOlder` / `isFetchingOlder` / `loadOlder`。TranscriptList 复用原有“本地 reveal 窗口”：本地还有未见行时滚到顶部仍只本地展开，本地窗口耗尽且 `hasOlder` 为真时同一手势请求更早一页并前插（沿用 scroll-height delta 高度补偿，阅读位置不跳），`hasMore=false` 后不再请求。实时新条目仍按 entryId 追加到合并尾部；minimap/统计基于已加载条目。
 
 **测试**：adapter `test/sessions.test.ts` 用 40 条 ~200 KiB 条目构造 >4 MiB 分支（首屏 ≤ 预算且 hasMore、游标链覆盖全部分支、单条超大条目截断带标记、inline 媒体换摘要）；sessiond 证明超预算 catalog 响应不再被二次拒绝并把预算下传；Client 单测覆盖 `infiniteQueryOptions` 的游标与页序、TranscriptList 的“本地耗尽才请求/前插保持位置/无 hasMore 不请求”。
+
+## 119. 宿主被强杀后自动回收过期 lifetime lock（`LEDGER_LOCK_STALE` 死路修复）
+
+**根因**：`packages/host/src/resources/host-state-directory.ts` 的 lease 文档注释（旧版第 29–38 行）把「NOT auto-reclaim stale lock」写成了冻结决定，`packages/local-authority/src/state/posix.ts` 的 `classifyExistingLock` 因此把「记录里的 pid 已死」也当成永久失败。用户强杀 host（Windows 上直接关终端窗口即如此）后锁文件留在 `~/.pi/pix/host/trusted-roots.lock`，下一次 `pix start` 只报 `PIX_HOST_DIR rejected (LEDGER_LOCK_STALE)`，既不说明要删哪个文件也不说明是哪个进程，重启必须人工介入。sessiond 的 `acquireInstanceLock` 早就用同一套共享原语（`@fffattiger/pix-local-authority/state` 的 `isPidAlive`）做「有效锁 + 死 pid ⇒ 清掉重试」，Host 这里是漏用了同一做法。
+
+**修正**（复用 sessiond 的做法，不另写一套）：
+- `local-authority` 的 `acquireLifetimeLock` 改为「EEXIST → 读锁并分类」：活 pid 仍 `LOCK_BUSY` 拒绝；死 pid 走 `reclaimStaleLock` —— 先把锁 `rename` 到同目录唯一隔离名，再校验隔离后的 dev/ino 是刚才判定的那个 inode，才 unlink。因此进程在回收途中被强杀也不会在锁路径留下文件（下次看到「无锁」而不是永久卡死），而被并发替换的锁会被 rename 回原处并报 `LOCK_BUSY`，绝不会误删别人的活锁。`onStaleReclaim` 回调把被回收记录交给调用方。
+- `HOST_DIR` 布局策略新增识别回收残渣 `<lock>.<pid>.<uuid>.reclaim`（`lifetimeLockTempName`/`isLifetimeLockTempName` 单一定义，Host 与 backend 共用，不在两处各写一份正则）。
+- Host lease 拿到 `onStaleReclaim` 后打一行 `reclaimed stale host lock <lockPath> left by dead pid <pid>`；`LOCK_BUSY` 现在附带 `lockHolder: { lockPath, pid }`，`sanitizeHostDirError` 把它渲染成 `PIX_HOST_DIR rejected (LEDGER_LOCK_BUSY): <lockPath> is held by running pid <pid>; stop that process and retry`（其余错误仍是固定无 payload 行）。
+- **pid 复用**：锁记录只有 `{pid, instanceId, createdAt}`，没有任何可跨进程核对的进程身份证据（start time / boot id / 可执行路径都没有），因此无法可靠区分「真 owner」与「pid 被系统复用给了别的进程」。按任务要求不做猜测：**活 pid 一律视为持有**，只有死 pid 才回收。
+- 已无来源的 `LOCK_STALE` 状态从 `LocalAuthorityCode`、Host 三个 facade（`LEDGER_LOCK_STALE` / `MANAGED_LOCK_STALE` / push 映射）、sessiond 的 `SESSIOND_PRIVATE_DIR_MESSAGES` 中一并删除，而不是留一个永不触发的错误码。
+
+**测试**：`local-authority`（82）覆盖死 pid 回收 + `onStaleReclaim` 记录内容 + 无残渣、活 pid `LOCK_BUSY` 且字节与 inode 不变、回收残渣识别；`host`（745）覆盖 lease 层死 pid 自动回收并打日志（含锁路径与死 pid）、活 pid 拒绝且 `lockHolder` 带路径和 pid、`production-resources` 组合层同路径日志与 `LEDGER_LOCK_BUSY` 消息带路径和 pid、残渣属已识别布局而其它未知条目仍 `HOST_DIR_UNSAFE`、静态守卫断言回收只用 rename+inode 校验从不直接 unlink 活锁路径；`test:e2e:startup` 的 phase 3f 改为真 SIGKILL → 直接重启成功、日志含锁路径与死 pid、账本字节不变、授权恢复、新 Host 持有锁。
+
+## 120. `pix update` / 关于页版本检查改用用户实际生效的 npm registry
+
+**根因**：`packages/cli/src/commands/update.ts` 与 `packages/host/src/routes/about.ts` 都把 `https://registry.npmjs.org/@fffattiger%2fpix-cli/latest` 写死，用户在 `~/.npmrc` 配的镜像（如 `registry=https://registry.npmmirror.com`）只作用于 `npm install -g` 那一步，版本检查仍然直连公网，网络不通就失败。
+
+**修正**：新增 Host 侧单一定义 `packages/host/src/resources/npm-registry.ts`（同时经 `@fffattiger/pix-host` 导出给 CLI，避免第二份实现）：
+- 用 `npm config get` 读 npm 自己解析后的配置，顺序为 `@fffattiger:registry`（scoped 优先）→ `registry` → npm 公网默认值（仅当 npm 根本给不出值：未安装/读取失败/值不是 http(s)）。**没有** 镜像→npmjs 的回退：镜像同步滞后可接受，registry 不通就诚实地失败。
+- 只读这两个键（绝不 `npm config list`，其输出可能带 `_authToken`），返回的只是一个 URL；调用带 `--no-update-notifier`，保证读配置本身不触网。
+- `resolveNpmRegistryLatestUrl()` 产出 `<registry>/@fffattiger%2fpix-cli/latest`；CLI 的 `fetchLatestVersion` 和 About 路由的 `POST /v1/about/check-update` 都走它，测试仍可用 `registryLatestUrl` 注入 mock。
+
+**测试**：Host 新增 `test/npm-registry.test.mjs`（自定义镜像生效且 scoped 优先、npm 给不出值时用默认值、非 http(s) 值拒绝、静态守卫断言全模块只有一处 npmjs 常量且没有回退分支）；About 路由测试新增「按 npm 配置解析」「scoped 优先」「仅 npm 无值时回退默认」三例；CLI `update.test.ts` 新增静态守卫，禁止 update 路径再出现硬编码 registry URL。

@@ -121,13 +121,17 @@ test("lease: unknown document name read/write fail closed (DOC_UNKNOWN)", async 
 // Lifetime lock (shared lease)
 // ---------------------------------------------------------------------------
 
-test("lease: second lease same dir fails LOCK_BUSY; stale lock LOCK_STALE; exact-owner unlock", async () => {
+test("lease: second lease same dir fails LOCK_BUSY with lock path + pid; dead-owner lock is reclaimed", async () => {
   const hostDir = temp("lease-lock-");
   const a = await openHostStateDirectoryLease({ hostDir, instanceId: "instance-a-aaaa" });
   assert.equal(existsSync(a.lockPath), true);
+  // A live holder is refused, and the error names the lock file and its pid.
   await assert.rejects(
     () => openHostStateDirectoryLease({ hostDir, instanceId: "instance-b-bbbb" }),
-    (e) => e instanceof HostStateDirectoryError && e.code === "LOCK_BUSY",
+    (e) => e instanceof HostStateDirectoryError
+      && e.code === "LOCK_BUSY"
+      && e.lockHolder?.lockPath === a.lockPath
+      && e.lockHolder?.pid === process.pid,
   );
   // Wrong instance cannot unlock A's lock.
   writeFileSync(a.lockPath, JSON.stringify({ pid: process.pid, instanceId: "instance-other-9", createdAt: 1 }) + "\n", { mode: 0o600 });
@@ -135,18 +139,40 @@ test("lease: second lease same dir fails LOCK_BUSY; stale lock LOCK_STALE; exact
   assert.equal(existsSync(a.lockPath), true, "wrong instance must not unlock another lease's lock");
   rmSync(a.lockPath, { force: true });
 
-  // Stale lock (dead pid) → LOCK_STALE, no auto-reclaim.
+  // Stale lock (dead pid) → reclaimed automatically, and the recovery is
+  // logged with the lock path and the dead pid.
   const staleDir = temp("lease-lock-stale-");
   const s = await openHostStateDirectoryLease({ hostDir: staleDir, instanceId: "instance-s-aaaa" });
   writeFileSync(s.lockPath, JSON.stringify({ pid: 999_999_999, instanceId: "dead-instance-xx", createdAt: 1 }) + "\n", { mode: 0o600 });
-  await assert.rejects(
-    () => openHostStateDirectoryLease({ hostDir: staleDir, instanceId: "instance-c-cccc" }),
-    (e) => e.code === "LOCK_STALE",
-  );
-  // Operator explicitly removes the fixture stale lock, then a new lease works.
-  rmSync(s.lockPath, { force: true });
-  const s2 = await openHostStateDirectoryLease({ hostDir: staleDir, instanceId: "instance-c-cccc" });
+  const logged = [];
+  const s2 = await openHostStateDirectoryLease({
+    hostDir: staleDir,
+    instanceId: "instance-c-cccc",
+    logger: { warn: (message) => logged.push(message) },
+  });
+  assert.equal(logged.length, 1, "exactly one reclaim line");
+  assert.match(logged[0], /reclaimed stale host lock/);
+  assert.ok(logged[0].includes(s.lockPath), `reclaim line names the lock file (${logged[0]})`);
+  assert.ok(logged[0].includes("999999999"), `reclaim line names the dead pid (${logged[0]})`);
+  assert.equal(JSON.parse(readFileSync(s2.lockPath, "utf8")).instanceId, "instance-c-cccc", "the new lease owns the lock");
   await s2.close();
+});
+
+test("lease: crash debris from a stale-lock reclaim is recognized layout", async () => {
+  const hostDir = temp("lease-reclaim-debris-");
+  const lease = await openHostStateDirectoryLease({ hostDir });
+  await lease.close();
+  // A SIGKILL between the quarantine rename and its unlink leaves this file.
+  const debris = `${HOST_STATE_LOCK_NAME}.4242.0f8fad5b-d9cb-469f-a165-70867728950e.reclaim`;
+  writeFileSync(join(hostDir, debris), JSON.stringify({ pid: 1, instanceId: "dead-instance-xx", createdAt: 1 }), { mode: 0o600 });
+  const reopened = await openHostStateDirectoryLease({ hostDir });
+  await reopened.close();
+  // Anything else in the layout is still rejected.
+  writeFileSync(join(hostDir, "reclaim.tmp"), "x", { mode: 0o600 });
+  await assert.rejects(
+    () => openHostStateDirectoryLease({ hostDir }),
+    (e) => e instanceof HostStateDirectoryError && e.code === "HOST_DIR_UNSAFE",
+  );
 });
 
 test("lease: different host dirs are independent (each own lock)", async () => {

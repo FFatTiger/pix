@@ -271,9 +271,15 @@ function sanitizeHostDirError(error: unknown): string {
     return `PIX_HOST_DIR rejected (${error.code})`;
   }
   // Shared lease lock/host-dir failures map to the trusted facade codes (the
-  // E2E single-Host contract uses LEDGER_LOCK_BUSY / LEDGER_LOCK_STALE).
+  // E2E single-Host contract uses LEDGER_LOCK_BUSY).
   if (error instanceof HostStateDirectoryError) {
-    return `PIX_HOST_DIR rejected (${mapTrustedLeaseCode(error.code)})`;
+    const reason = `PIX_HOST_DIR rejected (${mapTrustedLeaseCode(error.code)})`;
+    // A held lock must name what to act on: the lock file and its owner's pid.
+    // Every other failure keeps its payload-free fixed line.
+    if (error.code === "LOCK_BUSY" && error.lockHolder) {
+      return `${reason}: ${error.lockHolder.lockPath} is held by running pid ${error.lockHolder.pid}; stop that process and retry`;
+    }
+    return reason;
   }
   // Unknown errors must never echo raw message/path (permission, ENOENT, etc.).
   return "PIX_HOST_DIR rejected (HOST_DIR_UNSAFE)";
@@ -573,6 +579,7 @@ export async function createProductionResources(
     const hostDir = resolvePixHostDir(options.hostDirEnv);
     lease = await openHostStateDirectoryLease({
       hostDir,
+      ...(options.logger ? { logger: options.logger } : {}),
       validateBeforeLock: async ({ readDocument }) => {
         // Validate BOTH sidecars before the lifetime lock is created, so a
         // corrupt/unsafe document fails startup with no lock file and immutable

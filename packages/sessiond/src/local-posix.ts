@@ -88,7 +88,6 @@ export const SESSIOND_PRIVATE_DIR_MESSAGES: Record<LocalAuthorityCode, string> =
   DIR_FSYNC_FAILED: "sessiond private directory could not be verified",
   LOCK_UNSAFE: "sessiond private directory could not be verified",
   LOCK_BUSY: "sessiond private directory could not be verified",
-  LOCK_STALE: "sessiond private directory could not be verified",
   LOCK_LOST: "sessiond private directory could not be verified",
   LOCK_AMBIGUOUS: "sessiond private directory could not be verified",
 };

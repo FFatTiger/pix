@@ -97,6 +97,55 @@ test("check-update reports up-to-date for equal and older latest versions", asyn
   }
 });
 
+test("check-update resolves the registry from the user's effective npm config", async () => {
+  const calls = [];
+  const npmCalls = [];
+  const app = appWith({
+    // No registryLatestUrl override: the route must ask npm itself.
+    registryLatestUrl: undefined,
+    fetch: registryFetch("0.4.0", calls),
+    npmRunner: async (args) => {
+      npmCalls.push([...args]);
+      return args[2] === "@fffattiger:registry"
+        ? { stdout: "undefined\n", exitCode: 0 }
+        : { stdout: "https://registry.npmmirror.com/\n", exitCode: 0 };
+    },
+  });
+  const res = await app.request("http://localhost/v1/about/check-update", {
+    method: "POST",
+    headers: { host: "localhost" },
+  });
+  assert.deepEqual(await res.json(), { current: "0.3.1", latest: "0.4.0", updateAvailable: true, package: "@fffattiger/pix-cli" });
+  assert.deepEqual(npmCalls, [["config", "get", "@fffattiger:registry"], ["config", "get", "registry"]]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://registry.npmmirror.com/@fffattiger%2fpix-cli/latest", "the mirror serves the latest lookup");
+});
+
+test("check-update prefers a scoped @fffattiger registry when one is configured", async () => {
+  const calls = [];
+  const app = appWith({
+    registryLatestUrl: undefined,
+    fetch: registryFetch("0.4.0", calls),
+    npmRunner: async (args) => args[2] === "@fffattiger:registry"
+      ? { stdout: "https://npm.corp.example/scoped\n", exitCode: 0 }
+      : { stdout: "https://registry.npmjs.org/\n", exitCode: 0 },
+  });
+  await app.request("http://localhost/v1/about/check-update", { method: "POST", headers: { host: "localhost" } });
+  assert.equal(calls[0].url, "https://npm.corp.example/scoped/@fffattiger%2fpix-cli/latest");
+});
+
+test("check-update falls back to npm's public registry only when npm has no configured value", async () => {
+  const calls = [];
+  const app = appWith({
+    registryLatestUrl: undefined,
+    fetch: registryFetch("0.4.0", calls),
+    npmRunner: async () => { throw new Error("npm is not installed"); },
+  });
+  const res = await app.request("http://localhost/v1/about/check-update", { method: "POST", headers: { host: "localhost" } });
+  assert.deepEqual(await res.json(), { current: "0.3.1", latest: "0.4.0", updateAvailable: true, package: "@fffattiger/pix-cli" });
+  assert.equal(calls[0].url, "https://registry.npmjs.org/@fffattiger%2fpix-cli/latest");
+});
+
 test("check-update fails closed to unreachable (latest null) on network, HTTP, and body failures", async () => {
   const cases = [
     registryFetch(null),

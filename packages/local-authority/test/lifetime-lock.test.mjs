@@ -4,6 +4,8 @@ import {
   existsSync,
   lstatSync,
   mkdtempSync,
+  readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -13,6 +15,8 @@ import { join } from "node:path";
 import {
   acquireLifetimeLock,
   createPosixSecureStateBackend,
+  isLifetimeLockTempName,
+  lifetimeLockTempName,
   LocalAuthorityError,
   readLifetimeLock,
   releaseLifetimeLock,
@@ -84,18 +88,61 @@ test("lock: acquire pins dev/ino identity; release removes only the exact owner"
   // Release of a missing lock is a no-op.
 });
 
-test("lock: stale (dead pid) is never auto-reclaimed; explicit removal then re-acquire", async () => {
+test("lock: stale (dead pid) is reclaimed and the acquire retries; onStaleReclaim reports the owner", async () => {
   const dir = temp("lock-stale-");
   const lockPath = join(dir, "host.lock");
   writeFileSync(lockPath, lockPayload(deadPid, "dead-instance-xx", 1), { mode: 0o600 });
-  await expectReject(
-    () => acquireLifetimeLock(lockPath, { payload: lockPayload(process.pid, "instance-c-cccc", 2), isPidAlive: neverAlive }),
-    "LOCK_STALE",
-  );
-  // Operator removes the fixture stale lock explicitly, then re-acquire works.
-  rmSync(lockPath, { force: true });
-  const owned = await acquireLifetimeLock(lockPath, { payload: lockPayload(process.pid, "instance-c-cccc", 2), isPidAlive: neverAlive });
+  const reclaimed = [];
+  const owned = await acquireLifetimeLock(lockPath, {
+    payload: lockPayload(process.pid, "instance-c-cccc", 2),
+    isPidAlive: neverAlive,
+    onStaleReclaim: (record) => reclaimed.push(record),
+  });
+  assert.deepEqual(reclaimed, [{ pid: deadPid, instanceId: "dead-instance-xx", createdAt: 1 }]);
+  const current = await readLifetimeLock(lockPath);
+  assert.equal(current.kind, "valid");
+  if (current.kind === "valid") {
+    assert.equal(current.record.instanceId, "instance-c-cccc", "the reclaimed path now holds OUR record");
+    assert.equal(current.identity.ino, owned.ino);
+  }
+  assert.deepEqual(readdirSync(dir), ["host.lock"], "no reclaim debris left behind");
   await releaseLifetimeLock(lockPath, { ownership: owned, instanceId: "instance-c-cccc" });
+  assert.equal(existsSync(lockPath), false);
+});
+
+test("lock: a live owner is LOCK_BUSY and its lock is never touched", async () => {
+  const dir = temp("lock-live-");
+  const lockPath = join(dir, "host.lock");
+  writeFileSync(lockPath, lockPayload(process.pid, "live-instance-aa", 7), { mode: 0o600 });
+  const before = readFileSync(lockPath);
+  const beforeIno = lstatSync(lockPath).ino;
+  await expectReject(
+    () => acquireLifetimeLock(lockPath, {
+      payload: lockPayload(process.pid, "instance-z-zzzz", 8),
+      isPidAlive: alwaysAlive,
+      onStaleReclaim: () => assert.fail("a live lock must never be reported as reclaimed"),
+    }),
+    "LOCK_BUSY",
+  );
+  assert.deepEqual(readFileSync(lockPath), before, "live lock bytes unchanged");
+  assert.equal(lstatSync(lockPath).ino, beforeIno, "live lock inode unchanged");
+  assert.equal(existsSync(lockPath), true);
+});
+
+test("lock: reclaim quarantine is recognized debris and never blocks a later acquire", async () => {
+  const dir = temp("lock-quarantine-");
+  const lockPath = join(dir, "host.lock");
+  // Simulate a SIGKILL between the quarantine rename and its unlink.
+  const debris = lifetimeLockTempName("host.lock", 4321, "0f8fad5b-d9cb-469f-a165-70867728950e");
+  writeFileSync(join(dir, debris), lockPayload(deadPid, "dead-instance-yy", 1), { mode: 0o600 });
+  assert.equal(isLifetimeLockTempName("host.lock", debris), true);
+  assert.equal(isLifetimeLockTempName("host.lock", "host.lock"), false);
+  writeFileSync(lockPath, lockPayload(deadPid, "dead-instance-xx", 1), { mode: 0o600 });
+  const owned = await acquireLifetimeLock(lockPath, {
+    payload: lockPayload(process.pid, "instance-h-hhhh", 2),
+    isPidAlive: neverAlive,
+  });
+  await releaseLifetimeLock(lockPath, { ownership: owned, instanceId: "instance-h-hhhh" });
 });
 
 test("lock: malformed existing lock is unsafe; vanished-at-O_EXCL is ambiguous", async () => {

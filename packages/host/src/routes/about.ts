@@ -5,11 +5,10 @@ import type { HostLogger } from "../types.js";
 /** Bounded npm-registry probe: fail closed to `unreachable` after 5 s. */
 const UPDATE_CHECK_TIMEOUT_MS = 5_000;
 
-/** npm registry `latest` document for the distributed pix CLI package. */
-const DEFAULT_REGISTRY_LATEST_URL = "https://registry.npmjs.org/@fffattiger%2fpix-cli/latest";
+import { UPDATE_PACKAGE_NAME, resolveNpmRegistryLatestUrl } from "../resources/npm-registry.js";
 
 /** The distributed pix CLI package the update check compares against. */
-export const UPDATE_PACKAGE_NAME = "@fffattiger/pix-cli";
+export { UPDATE_PACKAGE_NAME };
 
 export interface AboutPluginFact {
   id: string;
@@ -36,8 +35,13 @@ export interface AboutDeps {
   facts: AboutFacts;
   /** Outbound fetch for the npm registry probe; defaults to global fetch. */
   fetch?: typeof fetch;
-  /** Registry `latest` URL override (tests inject a local mock). */
-  registryLatestUrl?: string;
+  /**
+   * Registry `latest` URL override (tests inject a local mock). When absent the
+   * URL is resolved from the user's effective npm registry at request time.
+   */
+  registryLatestUrl?: string | (() => Promise<string>);
+  /** Test seam: replace the `npm config get` invocation used for resolution. */
+  npmRunner?: import("../resources/npm-registry.js").NpmRunner;
 }
 
 export interface AboutRouteDeps extends AboutDeps {
@@ -127,7 +131,11 @@ export function registerAboutRoutes(app: Hono<HostEnv>, deps: AboutRouteDeps): v
     let latest: string | null = null;
     try {
       const fetchImpl = deps.fetch ?? fetch;
-      const response = await fetchImpl(deps.registryLatestUrl ?? DEFAULT_REGISTRY_LATEST_URL, {
+      const latestUrl = typeof deps.registryLatestUrl === "function"
+        ? await deps.registryLatestUrl()
+        : deps.registryLatestUrl
+          ?? await resolveNpmRegistryLatestUrl({ ...(deps.npmRunner ? { run: deps.npmRunner } : {}) });
+      const response = await fetchImpl(latestUrl, {
         headers: { accept: "application/json" },
         redirect: "error",
         signal: AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS),

@@ -39,6 +39,9 @@ const STATE_EXPORTS = [
   "readLifetimeLock",
   "acquireLifetimeLock",
   "releaseLifetimeLock",
+  "lifetimeLockTempName",
+  "isLifetimeLockTempName",
+  "LIFETIME_LOCK_TEMP_SUFFIX",
   // backend factory
   "createPosixSecureStateBackend",
   // attachments store primitives
