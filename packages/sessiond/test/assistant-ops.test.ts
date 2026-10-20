@@ -1142,6 +1142,72 @@ test("a failed reply-file write degrades to the preview without a path", async (
   assert.equal(completion?.payload.lastTextChars, undefined);
 });
 
+test("an untitled create is named by its first message, never by its raw id", async () => {
+  const env = harness();
+  env.surface.createSessionId = "01a14932-8a20-7000-8000-000000000000";
+  // The catalog names an untitled session by its first message (sessiond's
+  // readSessionHeader already does this from the header's firstMessage).
+  env.surface.headers.set(env.surface.createSessionId, { title: "整理周报", cwd: env.dir });
+  env.assistant.operationId = "turn-untitled";
+  const admitted = payload(await send(env, "u1", { kind: "create", cwd: env.dir, message: "first", waitMinutes: 0 }));
+  assert.equal(admitted.ok, true);
+  // Settlement refreshes the name; the delivered text must carry it.
+  env.surface.records.delete(env.surface.createSessionId);
+  env.surface.contexts.set(env.surface.createSessionId, [completedEntry("done")]);
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  const prompt = env.surface.submits.at(-1)?.input.prompt ?? "";
+  assert.match(prompt, /会话: 整理周报｜项目: /);
+  assert.equal(prompt.includes(env.surface.createSessionId), true, "the id stays in the line as the machine handle");
+  assert.equal(prompt.includes(`会话: ${env.surface.createSessionId}｜`), false, "the title is never the raw id");
+  env.authority.dispose();
+});
+
+test("a delegation whose title is still empty or the id is renamed from the catalog at delivery", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pix-assistant-ops-untitled-"));
+  const surface = new FakeSurface();
+  const assistant = makeRecord("assistant", ASSISTANT_CWD);
+  surface.records.set("assistant", assistant);
+  // A ledger row written before the session had a name: targetTitle === id.
+  const store = new FileWorkspaceStateStore(dir);
+  store.writeAssistantDelegations({
+    version: 1,
+    delegations: [{
+      id: "d-untitled",
+      assistantSessionId: "assistant",
+      targetSessionId: "target",
+      targetTitle: "target",
+      targetCwd: "/repos/app",
+      summary: "旧交办",
+      createdAt: 1,
+      createdEventId: 0,
+      mode: "notify",
+      state: "notify",
+      waitMinutes: 0,
+    }],
+    chains: {},
+    queue: [{
+      delegationId: "d-untitled",
+      assistantSessionId: "assistant",
+      targetSessionId: "target",
+      targetTitle: "target",
+      targetCwd: "/repos/app",
+      outcome: "completed",
+      attempts: 0,
+    }],
+  });
+  // The catalog now knows the name the UI shows.
+  surface.headers.set("target", { title: "整理周报", cwd: "/repos/app" });
+  const authority = new AssistantOpsAuthority({ surface, store, homedir: HOME, now: () => 1 });
+  authority.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  const prompt = surface.submits.at(-1)?.input.prompt ?? "";
+  assert.match(prompt, /会话: 整理周报｜项目: app｜id: target/);
+  authority.dispose();
+});
+
 function notifyCount(env: ReturnType<typeof harness>): number {
   return env.surface.submits.filter((call) => call.input.prompt.startsWith(ASSISTANT_NOTIFY_MESSAGE_PREFIX)).length
     + env.surface.commands.filter((call) => call.command.message.startsWith(ASSISTANT_NOTIFY_MESSAGE_PREFIX)).length;

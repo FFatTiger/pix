@@ -1,8 +1,10 @@
+import { useCallback, useSyncExternalStore } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { useI18n } from "@/hooks/useI18n";
 import { queryKeys } from "@/api/query-keys";
+import { sessionRowTitle } from "@/lib/session-row";
 import type { SessionHeader } from "@fffattiger/pix-protocol";
 
 /**
@@ -67,22 +69,56 @@ export function AssistantNoticeCard({ body }: { body: string }) {
   );
 }
 
+/** The cached session row for an id, across every cached session page. */
+function cachedSession(queryClient: ReturnType<typeof useQueryClient>, sessionId: string): SessionHeader | undefined {
+  for (const [, page] of queryClient.getQueriesData<{ sessions?: SessionHeader[] }>({ queryKey: queryKeys.sessions.lists })) {
+    const row = page?.sessions?.find((session) => session.sessionId === sessionId);
+    if (row !== undefined) return row;
+  }
+  return undefined;
+}
+
+/**
+ * The cached row, kept live. A notice renders right after the delegated work
+ * settles, which can be before the session list has loaded or before the
+ * session got a name; reading through the query cache subscription means the
+ * card picks the name up without a second fetch.
+ */
+function useCachedSession(sessionId: string | null): SessionHeader | undefined {
+  const queryClient = useQueryClient();
+  const read = useCallback(
+    () => (sessionId === null ? undefined : cachedSession(queryClient, sessionId)),
+    [queryClient, sessionId],
+  );
+  const subscribe = useCallback(
+    (onChange: () => void) => queryClient.getQueryCache().subscribe(() => onChange()),
+    [queryClient],
+  );
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+/**
+ * The name to show. A notification written before the session had a name
+ * carries an empty title or its own id; both mean "untitled", so the cached
+ * row names it with the same rule the sidebar uses (title → first message),
+ * and only a session the cache does not know falls back to the id.
+ */
+function noticeTitle(block: NoticeBlock, row: SessionHeader | undefined): string {
+  const parsed = block.title.trim();
+  if (parsed !== "" && parsed !== block.sessionId) return parsed;
+  if (row !== undefined) return sessionRowTitle(row);
+  return block.sessionId ?? parsed;
+}
+
 function NoticeBlockView({ block }: { block: NoticeBlock }) {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const tone = RESULT_TONE[block.result] ?? "";
+  const row = useCachedSession(block.sessionId);
+  const title = noticeTitle(block, row);
   const open = () => {
     if (block.sessionId === null) return;
-    let cwd = "";
-    for (const [, page] of queryClient.getQueriesData<{ sessions?: SessionHeader[] }>({ queryKey: queryKeys.sessions.lists })) {
-      const row = page?.sessions?.find((session) => session.sessionId === block.sessionId);
-      if (row !== undefined) {
-        cwd = row.cwd;
-        break;
-      }
-    }
-    void navigate({ to: "/", search: { session: block.sessionId, cwd } });
+    void navigate({ to: "/", search: { session: block.sessionId, cwd: row?.cwd ?? "" } });
   };
   return (
     <div className="assistant-notice-block" data-testid="assistant-notice-block">
@@ -95,11 +131,11 @@ function NoticeBlockView({ block }: { block: NoticeBlock }) {
             onClick={open}
             title={t("desktop.assistantActionOpen")}
           >
-            <span className="assistant-notice-title">{block.title}</span>
+            <span className="assistant-notice-title">{title}</span>
             <CaretRightIcon size={10} />
           </button>
         ) : (
-          <span className="assistant-notice-title">{block.title}</span>
+          <span className="assistant-notice-title">{title}</span>
         )}
         {block.result !== "" ? (
           <span className={`assistant-notice-badge${tone ? ` ${tone}` : ""}`} data-testid="assistant-notice-badge">{block.result}</span>
