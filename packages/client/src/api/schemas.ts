@@ -55,6 +55,14 @@ export const PreferencesMapSchema = z.record(z.string(), z.string());
 export const PreferencesResponseSchema = z.strictObject({ preferences: PreferencesMapSchema });
 export const PreferencesUpdateResultSchema = z.strictObject({ ok: z.literal(true), preferences: PreferencesMapSchema });
 
+/** GET /v1/workspace-flags — sessiond-owned pin/archive snapshot (revision + maps). */
+const WorkspaceFlagPatchSchema = z.strictObject({ pinned: z.boolean().optional(), archived: z.boolean().optional() });
+export const WorkspaceFlagsDocumentSchema = z.strictObject({
+  revision: z.number().int().nonnegative().safe(),
+  sessions: z.record(z.string(), WorkspaceFlagPatchSchema),
+  projects: z.record(z.string(), WorkspaceFlagPatchSchema),
+});
+
 export const QueryRevisionSchema = z.number().int().nonnegative().safe();
 export const SessionListSchema = SessionPageSchema;
 export const ProjectListSchema = ProjectPageSchema;

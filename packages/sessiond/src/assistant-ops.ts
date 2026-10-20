@@ -1091,7 +1091,11 @@ export class AssistantOpsAuthority {
     return target;
   }
 
-  /** Keep only the newest {@link REPLY_FILE_KEEP} reply files; pruning is best-effort. */
+  /** Keep only the newest {@link REPLY_FILE_KEEP} reply files; pruning is best-effort.
+   *  mtime ties (NTFS granularity collapses quick successive writes) break by
+   *  name DESC — reply names embed ascending epoch-ms timestamps, so within a
+   *  tie the oldest-named file lands in the prune zone and the keep-set stays
+   *  deterministic on every filesystem. */
   private pruneReplyFiles(directory: string): void {
     try {
       const files = readdirSync(directory, { withFileTypes: true })
@@ -1103,7 +1107,7 @@ export class AssistantOpsAuthority {
             return { name: entry.name, mtime: 0 };
           }
         })
-        .sort((left, right) => right.mtime - left.mtime);
+        .sort((left, right) => right.mtime - left.mtime || (left.name < right.name ? 1 : left.name > right.name ? -1 : 0));
       for (const file of files.slice(REPLY_FILE_KEEP)) {
         try { unlinkSync(join(directory, file.name)); } catch { /* already gone */ }
       }

@@ -20,13 +20,19 @@ function header(input: Partial<SessionHeader> & Pick<SessionHeader, "sessionId" 
   return input;
 }
 
+/** Platform-portable absolute path: `/repos/x` on POSIX, `C:\repos\x` on win32
+ *  (`normalizeProjectKey` rejects drive-less POSIX roots on win32 hosts). */
+function repoPath(posixStyle: string): string {
+  return process.platform === "win32" ? `C:${posixStyle.replace(/\//g, "\\")}` : posixStyle;
+}
+
 const CORPUS: SessionHeader[] = [
-  { sessionId: "s-title", cwd: "/repos/alpha", projectRoot: "/repos/alpha", title: "侧栏改版方案", firstMessage: "把搜索改成居中面板", updatedAt: 5000 },
-  { sessionId: "s-message", cwd: "/repos/beta", projectRoot: "/repos/beta", title: "周报整理", firstMessage: "把搜索改成居中面板", updatedAt: 4000 },
-  { sessionId: "s-project", cwd: "/repos/gamma", projectRoot: "/repos/gamma", title: "因子清洗", firstMessage: "成交量处理", updatedAt: 9000 },
-  { sessionId: "s-none", cwd: "/repos/alpha", projectRoot: "/repos/alpha", title: "别的", firstMessage: "无关内容", updatedAt: 8000 },
-  { sessionId: "s-case", cwd: "/repos/zeta", projectRoot: "/repos/zeta", title: "Release Notes", firstMessage: "changelog", updatedAt: 3000 },
-  { sessionId: "s-untitled", cwd: "/repos/eta", projectRoot: "/repos/eta", firstMessage: "独有锚点词", updatedAt: 2000 },
+  { sessionId: "s-title", cwd: repoPath("/repos/alpha"), projectRoot: repoPath("/repos/alpha"), title: "侧栏改版方案", firstMessage: "把搜索改成居中面板", updatedAt: 5000 },
+  { sessionId: "s-message", cwd: repoPath("/repos/beta"), projectRoot: repoPath("/repos/beta"), title: "周报整理", firstMessage: "把搜索改成居中面板", updatedAt: 4000 },
+  { sessionId: "s-project", cwd: repoPath("/repos/gamma"), projectRoot: repoPath("/repos/gamma"), title: "因子清洗", firstMessage: "成交量处理", updatedAt: 9000 },
+  { sessionId: "s-none", cwd: repoPath("/repos/alpha"), projectRoot: repoPath("/repos/alpha"), title: "别的", firstMessage: "无关内容", updatedAt: 8000 },
+  { sessionId: "s-case", cwd: repoPath("/repos/zeta"), projectRoot: repoPath("/repos/zeta"), title: "Release Notes", firstMessage: "changelog", updatedAt: 3000 },
+  { sessionId: "s-untitled", cwd: repoPath("/repos/eta"), projectRoot: repoPath("/repos/eta"), firstMessage: "独有锚点词", updatedAt: 2000 },
 ];
 
 /** Catalog WITHOUT listSessionPage → exercises sessiond's legacy path. */
@@ -110,7 +116,7 @@ test("legacy keyword pages match title/project/message with tier ordering, case-
 test("legacy keyword pages exclude archived sessions and archived projects before totals", async () => {
   const store = new InMemoryWorkspaceStateStore();
   await store.setSessionFlags("s-title", { archived: true });
-  await store.setProjectFlags("/repos/gamma", { archived: true });
+  await store.setProjectFlags(repoPath("/repos/gamma"), { archived: true });
   const { service } = searchHarness({ catalog: legacyCatalog(CORPUS), workspaceState: store });
   try {
     const page = await service.listSessionPage({ page: 1, pageSize: 50, query: "o" });
@@ -131,7 +137,7 @@ test("legacy keyword pages exclude archived sessions and archived projects befor
 test("sessions.list forwards the archived organization state as catalog exclusions on keyword pages only", async () => {
   const store = new InMemoryWorkspaceStateStore();
   await store.setSessionFlags("gone", { archived: true });
-  await store.setProjectFlags("/repos/gone-project", { archived: true });
+  await store.setProjectFlags(repoPath("/repos/gone-project"), { archived: true });
   const { service, listCalls } = searchHarness({
     catalog: {
       async listSessionPage(request) {
@@ -155,7 +161,7 @@ test("sessions.list forwards the archived organization state as catalog exclusio
       excludeSessionIds: request.excludeSessionIds,
       excludeProjectRoots: request.excludeProjectRoots,
     })), [
-      { query: "pix", excludeSessionIds: ["gone"], excludeProjectRoots: ["/repos/gone-project"] },
+      { query: "pix", excludeSessionIds: ["gone"], excludeProjectRoots: [repoPath("/repos/gone-project")] },
       { query: undefined, excludeSessionIds: undefined, excludeProjectRoots: undefined },
     ]);
   } finally {

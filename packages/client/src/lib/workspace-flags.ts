@@ -1,6 +1,7 @@
 import { useCallback, useContext, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createMutationOptions } from "@/api/mutations";
+import { WorkspaceFlagsDocumentSchema } from "@/api/schemas";
 import { useHttpClient } from "@/app/http-context";
 import { CapabilityContext } from "@/features/capability/CapabilityProvider";
 
@@ -22,8 +23,8 @@ export const WORKSPACE_FLAGS_QUERY_KEY = ["pix", "workspace-flags"] as const;
 
 export interface WorkspaceFlagsMaps {
   readonly revision: number;
-  readonly sessions: Readonly<Record<string, { pinned?: boolean; archived?: boolean }>>;
-  readonly projects: Readonly<Record<string, { pinned?: boolean; archived?: boolean }>>;
+  readonly sessions: Readonly<Record<string, { pinned?: boolean | undefined; archived?: boolean | undefined }>>;
+  readonly projects: Readonly<Record<string, { pinned?: boolean | undefined; archived?: boolean | undefined }>>;
 }
 
 interface WorkspaceFlagsDocument extends WorkspaceFlagsMaps {}
@@ -71,7 +72,7 @@ export function useWorkspaceFlags(): WorkspaceFlagsState & {
   const query = useQuery({
     queryKey: WORKSPACE_FLAGS_QUERY_KEY,
     queryFn: async ({ signal }): Promise<WorkspaceFlagsDocument> =>
-      http.get("/v1/workspace-flags", { ...(signal === undefined ? {} : { signal }) }) as Promise<WorkspaceFlagsDocument>,
+      http.get("/v1/workspace-flags", { schema: WorkspaceFlagsDocumentSchema, ...(signal === undefined ? {} : { signal }) }),
     staleTime: 30_000,
     retry: false,
   });

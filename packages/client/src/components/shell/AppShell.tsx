@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
+import { WorkspaceFlagsDocumentSchema } from "@/api/schemas";
 import { WORKSPACE_FLAGS_QUERY_KEY, migrateLocalOrganizationPrefsToServer } from "@/lib/workspace-flags";
 import { PROJECT_PICKER_PAGE_SIZE, SESSION_PAGE_SIZE } from "@/api/session-list";
 import { createMutationOptions } from "@/api/mutations";
@@ -153,7 +154,7 @@ export function AppShell({ search }: AppShellProps) {
     migrationStarted.current = true;
     void migrateLocalOrganizationPrefsToServer({
       setFlags: (kind, key, flags) => http.patch("/v1/workspace-flags", { kind, key, ...flags }),
-      getWorkspaceFlags: async () => http.get("/v1/workspace-flags") as unknown as import("@/lib/workspace-flags").WorkspaceFlagsMaps,
+      getWorkspaceFlags: async () => http.get("/v1/workspace-flags", { schema: WorkspaceFlagsDocumentSchema }),
     });
   }, [can, canBrowseSessions, http]);
 

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpClientProvider } from "@/app/http-context";
@@ -104,7 +104,9 @@ describe("ServerPreferenceSync startup barrier", () => {
     });
 
     expect(await screen.findByTestId("workspace")).toBeTruthy();
-    expect(loadSidebarItemState().expandedProjects).toEqual(["/current"]);
+    // The mount effect persists the expansion — wait for its write instead of
+    // racing React's passive-effect scheduling with a sync read.
+    await waitFor(() => expect(loadSidebarItemState().expandedProjects).toEqual(["/current"]));
     await act(async () => { await flushNow(); });
     // The legacy key is deleted from the server map; expansion never syncs.
     expect(patches.some((patch) => patch[SIDEBAR_STATE_KEY] === null)).toBe(true);
