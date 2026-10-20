@@ -1693,7 +1693,8 @@ describe("AppShell — immediate session selection (no prepare/pending)", () => 
     // TranscriptList mounts against (centralized cache authority), so the
     // history query resolves from the cache and never hits the network.
     qc.setQueryData(queryKeys.sessions.history("B", 0, null), {
-      context: { sessionId: "B", entries: [], pageInfo: { hasMore: false } },
+      pages: [{ context: { sessionId: "B", entries: [], pageInfo: { hasMore: false } } }],
+      pageParams: [""],
     });
     globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS, contextCalls });
     mountApp({ cwd: "/x" }, { queryClient: qc });

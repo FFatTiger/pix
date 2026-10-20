@@ -1,4 +1,4 @@
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { infiniteQueryOptions, type QueryClient } from "@tanstack/react-query";
 import type { HttpClient } from "./http-client";
 import { createSessionsApi } from "./sessions";
 import { queryKeys } from "./query-keys";
@@ -7,21 +7,27 @@ import type { DeferredThinkingLoader } from "@/lib/chat-view-model";
 /**
  * THE single session-history query definition. Both the transcript hook
  * (`useSessionTranscript`) and every history consumer mount this exact
- * key + queryFn, so the complete-branch response is one shared cache entry —
- * one cache authority, no duplicate request logic, no drift.
+ * key + queryFn, so the response history is one shared cache entry — one cache
+ * authority, no duplicate request logic, no drift.
  *
- * One complete lightweight response replaces the old 150-entry initial window
- * + 50-entry older-page pagination: the request sends `deferThinking=1` +
- * `deferMedia=1` (thinking blocks come back `deferred:true` for per-block
- * on-demand reads via `entries/:entryId/thinking?blockIndex=`; base64
- * tool-result images become truthful omission summaries) and NO `limit`,
- * which the Host contract answers with
- * the COMPLETE active branch and `pageInfo.hasMore:false`.
+ * The request sends `deferThinking=1` + `deferMedia=1` (thinking blocks come
+ * back `deferred:true` for per-block on-demand reads via
+ * `entries/:entryId/thinking?blockIndex=`; base64 tool-result images become
+ * truthful omission summaries) and NO `limit`. The sessiond catalog answers
+ * with the complete active branch when it fits the lightweight history budget
+ * (`pageInfo.hasMore:false`); a branch over that budget is served as the NEWEST
+ * page of complete entries with `hasMore:true` + a `before` cursor, and older
+ * pages are fetched with the SAME query key (infinite query, cursor param), so
+ * a large session opens instead of failing.
  *
  * `retry`/`retryOnMount` are pinned off: a failed fetch is a deterministic
  * result (not_found/unavailable) and the transcript must render the honest
  * error surface immediately instead of re-entering a loading spinner on mount.
  */
+
+/** Page cursor of the FIRST request (no `before`): the newest page. */
+const NEWEST_PAGE_CURSOR = "";
+
 export function createSessionHistoryQueryOptions(input: {
   /** Typed transport (same HttpClient the app uses). */
   readonly http: HttpClient;
@@ -36,15 +42,21 @@ export function createSessionHistoryQueryOptions(input: {
 }) {
   const { http, sessionId, generation, anchor, enabled } = input;
   const sessionsApi = createSessionsApi(http);
-  return queryOptions({
+  return infiniteQueryOptions({
     queryKey: queryKeys.sessions.history(sessionId, generation, anchor),
-    queryFn: ({ signal }) =>
+    queryFn: ({ signal, pageParam }) =>
       sessionsApi.context(sessionId, {
         ...(anchor === null ? {} : { leafId: anchor }),
+        ...(pageParam === NEWEST_PAGE_CURSOR ? {} : { before: pageParam as string }),
         deferThinking: true,
         deferMedia: true,
         signal,
       }),
+    initialPageParam: NEWEST_PAGE_CURSOR,
+    // `nextCursor` is the stable projected entryId of the OLDEST entry this
+    // page returned (exclusive `before` bound for the next older page). Absent
+    // ⇒ the branch was served completely.
+    getNextPageParam: (lastPage) => lastPage.context.pageInfo.nextCursor,
     enabled,
     // Same-session retention: a generation/anchor bump is a query REVISION of
     // the SAME conversation (read-only→live activation, turn-end leaf fence,

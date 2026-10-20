@@ -35,11 +35,12 @@ import type {
 import type { MentionValidators } from "@/lib/mention-tokens";
 
 /**
- * Local older-row reveal window (server paging removed). The complete branch
+ * Local older-row reveal window (bounded rendering). The newest loaded page
  * arrives in ONE deferred history response; rendering still opens bounded:
  * initially only the final INITIAL_TRANSCRIPT_ROWS rendered rows mount, and
- * reaching the top reveals TRANSCRIPT_REVEAL_ROWS more LOCALLY (no second
- * request ever fires).
+ * reaching the top reveals TRANSCRIPT_REVEAL_ROWS more LOCALLY. Only when that
+ * local window reaches the OLDEST loaded row and the branch still has older
+ * entries does the list request the next older page (server paging).
  */
 export const INITIAL_TRANSCRIPT_ROWS = 50;
 /** Rows revealed per local upward load. */
@@ -428,28 +429,52 @@ export function TranscriptList({
     evaluateJumpToBottom();
   }, [virtualizer, evaluateJumpToBottom]);
 
-  // Upward loading is LOCAL: a top sentinel observes the scroll container.
-  // Reaching the top shows a hint (up arrow) instead of auto-refreshing;
-  // clicking it — or scrolling up again past the top — reveals
-  // TRANSCRIPT_REVEAL_ROWS more already-fetched rows at the top. No request.
+  // Upward loading: a top sentinel observes the scroll container. Reaching the
+  // top shows a hint (up arrow) instead of auto-loading; clicking it — or
+  // scrolling up again past the top — reveals TRANSCRIPT_REVEAL_ROWS more
+  // already-loaded rows at the top. Only once the local window is fully
+  // expanded AND the server still has older entries does the same action
+  // request the next older page through the history cursor.
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
-  // ScrollHeight of the scroll container captured BEFORE older rows prepend;
-  // used to preserve the visual anchor (scroll-height delta fallback).
+  // ScrollHeight of the scroll container captured BEFORE rows are prepended
+  // (local reveal or an older page); used to preserve the visual anchor
+  // (scroll-height delta fallback).
   const prependHeightRef = useRef<number | null>(null);
   const hasOlderRowsRef = useRef(hasOlderRows);
   hasOlderRowsRef.current = hasOlderRows;
+  const canRevealOlderRef = useRef(hasOlderRows || transcript.hasOlder);
+  canRevealOlderRef.current = hasOlderRows || transcript.hasOlder;
+  const loadOlderPageRef = useRef(transcript.loadOlder);
+  loadOlderPageRef.current = transcript.loadOlder;
   const chatRowCountRef = useRef(chatRowCount);
   chatRowCountRef.current = chatRowCount;
   const revealOlderRows = useCallback(() => {
-    if (!hasOlderRowsRef.current) return;
+    if (hasOlderRowsRef.current) {
+      prependHeightRef.current = parentRef.current?.scrollHeight ?? null;
+      setLoadOlderHint(false);
+      setRevealWindow((current) => {
+        const hidden = Number.isFinite(current.hiddenRows)
+          ? Math.min(current.hiddenRows, Math.max(0, chatRowCountRef.current - 1))
+          : Math.max(0, chatRowCountRef.current - INITIAL_TRANSCRIPT_ROWS);
+        return { ...current, hiddenRows: Math.max(0, hidden - TRANSCRIPT_REVEAL_ROWS) };
+      });
+      return;
+    }
+    if (!canRevealOlderRef.current) return;
+    // The local window is fully expanded: ask the server for one older page.
+    // Materialize the effective hidden count first, so the arriving page becomes
+    // VISIBLE (it is the rows the user just asked for) while the rows already
+    // hidden above stay hidden; then capture scrollHeight so the prepend is
+    // height-compensated and the reading position does not jump.
+    setRevealWindow((current) => ({
+      ...current,
+      hiddenRows: Number.isFinite(current.hiddenRows)
+        ? current.hiddenRows
+        : Math.max(0, chatRowCountRef.current - INITIAL_TRANSCRIPT_ROWS),
+    }));
     prependHeightRef.current = parentRef.current?.scrollHeight ?? null;
     setLoadOlderHint(false);
-    setRevealWindow((current) => {
-      const hidden = Number.isFinite(current.hiddenRows)
-        ? Math.min(current.hiddenRows, Math.max(0, chatRowCountRef.current - 1))
-        : Math.max(0, chatRowCountRef.current - INITIAL_TRANSCRIPT_ROWS);
-      return { ...current, hiddenRows: Math.max(0, hidden - TRANSCRIPT_REVEAL_ROWS) };
-    });
+    loadOlderPageRef.current();
   }, []);
 
   useEffect(() => {
@@ -458,10 +483,15 @@ export function TranscriptList({
     if (!root || !sentinel || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       (entries) => {
-        // At the top: surface the reveal-older hint (no auto-reveal). The user
-        // clicks it or scrolls up again to reveal the previous rows.
+        // At the top: surface the reveal/load-older hint (no auto-reveal). The
+        // user clicks it or scrolls up again to reveal the previous rows, and
+        // past the oldest loaded row to fetch the previous page.
         if (entries[0]?.isIntersecting === true) {
-          if (hasOlderRowsRef.current) setLoadOlderHint(true);
+          if (!canRevealOlderRef.current) return;
+          setLoadOlderHint(true);
+          // Nothing left to reveal LOCALLY but the branch has older entries:
+          // reaching the top is the scroll gesture that loads the next page.
+          if (!hasOlderRowsRef.current) revealOlderRows();
         } else {
           setLoadOlderHint(false);
         }
@@ -470,7 +500,7 @@ export function TranscriptList({
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, []);
+  }, [revealOlderRows]);
 
   // Scroll-up again while at the top also reveals the older rows. A continuous
   // wheel gesture fires many scroll events while scrollTop is pinned at 0, so
@@ -502,7 +532,7 @@ export function TranscriptList({
       // Same continuous gesture (still within the idle window): keep waiting,
       // the arrow stays visible. A fresh upward move after an idle pause reveals.
       if (Date.now() - firstContactAt < SCROLL_IDLE_MS) return;
-      if (hasOlderRowsRef.current) {
+      if (canRevealOlderRef.current) {
         firstContactAt = Date.now();
         revealOlderRows();
       }
@@ -522,8 +552,9 @@ export function TranscriptList({
     };
   }, [revealOlderRows]);
 
-  // Preserve the visual anchor across a local reveal prepend: the scroll-height
-  // delta (the content above the viewport grew by exactly the prepended height).
+  // Preserve the visual anchor across a prepend (a local reveal or an older
+  // history page): the scroll-height delta (the content above the viewport grew
+  // by exactly the prepended height).
   const previousRowCountRef = useRef(rows.length);
   useLayoutEffect(() => {
     const el = parentRef.current;
@@ -534,6 +565,9 @@ export function TranscriptList({
       const delta = el.scrollHeight - prependHeightRef.current;
       prependHeightRef.current = null;
       if (delta > 0) el.scrollTop += delta;
+    } else if (rows.length < previous) {
+      // A shrunken list (revision) can never use a stale prepend height.
+      prependHeightRef.current = null;
     }
   }, [rows.length]);
 
@@ -567,7 +601,7 @@ export function TranscriptList({
         }}
       >
         <div ref={topSentinelRef} data-upward-load-sentinel style={{ height: 1 }} />
-        {loadOlderHint && hasOlderRows ? (
+        {loadOlderHint && (hasOlderRows || transcript.hasOlder) ? (
           <div
             className="transcript-load-older-hint"
             data-testid="load-older-hint"
@@ -584,6 +618,7 @@ export function TranscriptList({
             <button
               type="button"
               onClick={revealOlderRows}
+              disabled={!hasOlderRows && transcript.isFetchingOlder}
               title={t("desktop.loadOlderMessages")}
               aria-label={t("desktop.loadOlderMessages")}
               style={{

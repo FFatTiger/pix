@@ -125,6 +125,7 @@ import type {
 } from "@fffattiger/pix-runtime-core";
 import { compareSessionQueryHits, makeRuntimeError, matchSessionQuery, matchesAssistantWorkspacePattern, MAX_SESSION_QUERY_LENGTH, normalizeAssistantWorkspacePath } from "@fffattiger/pix-runtime-core";
 import { mapMessage } from "../mappers/index.js";
+import { fitHistoryPage } from "./history-budget.js";
 import { mergeNestedResults, nestedResultsIndexFromSdkEntries, type NestedResultsPayload } from "./nested-results.js";
 import { projectSessionTree } from "./session-tree.js";
 import type { PiSdkSessionStore } from "../sessions/index.js";
@@ -1229,6 +1230,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       limit?: number;
       deferThinking?: boolean;
       deferMedia?: boolean;
+      maxResponseBytes?: number;
     } = {},
   ): Promise<SessionContext> {
     const opened = await this.openSession(sessionId);
@@ -1239,7 +1241,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     // paginate raw JSONL/file order, so branch isolation and cursor stability
     // are guaranteed by the projection itself. The same validated branch feeds
     // buildSessionContext for exact zero-Worker model/thinking metadata.
-    const { leafId, before, limit, deferThinking, deferMedia } = options;
+    const { leafId, before, limit, deferThinking, deferMedia, maxResponseBytes } = options;
     // OMITTED limit = the COMPLETE selected projected active branch (direct
     // source-history parity); an explicit limit keeps the bounded Protocol-v2
     // compatibility contract. Removal condition: Protocol v3 minimum client +
@@ -1295,17 +1297,24 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       : page;
     const hasMore = start > 0;
     const nextCursor = hasMore && deferredPage.length > 0 ? deferredPage[0]!.entryId : undefined;
-    return {
+    const pageInfo = (entries: readonly SessionEntry[], olderCount: number) => ({
+      hasMore: olderCount > 0,
+      ...(olderCount > 0 && entries[0] !== undefined ? { nextCursor: entries[0].entryId } : {}),
+    });
+    const build = (pageEntries: SessionEntry[], olderCount: number): SessionContext => ({
       sessionId,
       ...(selectedLeaf === null || selectedLeaf === undefined ? {} : { leafId: selectedLeaf }),
-      entries: deferredPage,
+      entries: pageEntries,
       settings,
       contextTokens,
-      pageInfo: {
-        hasMore,
-        ...(nextCursor === undefined ? {} : { nextCursor }),
-      },
-    };
+      pageInfo: pageInfo(pageEntries, olderCount),
+    });
+    // Budgeted page fitting (the single truncation owner): a page that no
+    // longer fits the lightweight history budget is served as its NEWEST suffix
+    // of complete entries plus a `before` cursor, so an oversized session always
+    // loads instead of failing. A single over-budget entry is shrunk in place
+    // (visible marker, never dropped). `start` is the exact older-entry count.
+    return fitHistoryPage({ entries: deferredPage, olderCount: start, maxBytes: maxResponseBytes, build });
   }
 
   /**

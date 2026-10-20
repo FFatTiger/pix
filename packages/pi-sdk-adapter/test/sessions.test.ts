@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { MAX_HISTORY_RESPONSE_BYTES, SessionContextSchema, SessionEntrySchema } from "@fffattiger/pix-protocol";
 import type {
   RuntimeError,
   SessionCatalogPort,
@@ -1945,6 +1946,280 @@ describe("pi-sdk sessions catalog (direct source history)", () => {
       assert.ok(isRuntimeError(badIndex) && badIndex.code === "invalid_input");
       const fractional = await f.catalog.readSessionThinking(sessionId, assistant, 1.5).catch((error: unknown) => error);
       assert.ok(isRuntimeError(fractional) && fractional.code === "invalid_input");
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Oversized-history behaviour: `sessions.context` must never fail on size
+   * alone. The newest page is served within the budget with a `before` cursor,
+   * the cursor chain reaches every entry exactly once, and an entry that alone
+   * exceeds the budget is truncated in place with a visible marker (never
+   * dropped).
+   */
+  it("serves an over-budget branch as newest-page + before cursor pages, never failing on size", async () => {
+    const f = await setup();
+    try {
+      const manager = SessionManager.create(f.cwd, f.sessionDir);
+      // 40 alternating messages, each carrying a ~200 KiB text block: the whole
+      // projected branch is ~8 MiB, twice the 4 MiB lightweight history budget.
+      const ids: string[] = [];
+      const padding = "x".repeat(200 * 1024);
+      for (let index = 0; index < 20; index += 1) {
+        ids.push(manager.appendMessage({ role: "user", content: `${padding}-user-${index}`, timestamp: NOW + index * 2 }));
+        ids.push(manager.appendMessage({
+          role: "assistant",
+          content: [{ type: "text", text: `${padding}-assistant-${index}` }],
+          api: "anthropic",
+          provider: "anthropic",
+          model: "claude-test",
+          usage: usage(),
+          stopReason: "stop",
+          timestamp: NOW + index * 2 + 1,
+        }));
+      }
+      const sessionId = manager.getSessionId();
+      const budget = MAX_HISTORY_RESPONSE_BYTES;
+      const measured = (value: unknown) => Buffer.byteLength(`${JSON.stringify(value)}\n`, "utf8");
+
+      // Unbudgeted (older adapters) still returns the whole branch.
+      const unbudgeted = await f.catalog.readSessionContext(sessionId);
+      assert.equal(unbudgeted.entries.length, 40);
+      assert.equal(unbudgeted.pageInfo.hasMore, false);
+      assert.ok(measured(unbudgeted) > budget, "fixture must exceed the lightweight history budget");
+
+      // Budgeted first request: a newest suffix that fits, with a cursor.
+      const newest = await f.catalog.readSessionContext(sessionId, { maxResponseBytes: budget });
+      assert.ok(measured(newest) <= budget, "the newest page must fit the budget");
+      assert.equal(newest.pageInfo.hasMore, true);
+      assert.ok(newest.entries.length > 0 && newest.entries.length < 40);
+      assert.equal(newest.pageInfo.nextCursor, newest.entries[0]!.entryId);
+      // Newest entries are served (the tail of the branch, in order).
+      assert.equal(newest.entries.at(-1)!.entryId, ids.at(-1));
+      assert.deepEqual(
+        newest.entries.map((entry) => entry.entryId),
+        ids.slice(40 - newest.entries.length),
+      );
+
+      // Walk the cursor chain: every entry exactly once, newest → oldest page.
+      const collected: string[] = [...newest.entries.map((entry) => entry.entryId)];
+      let cursor: string | undefined = newest.pageInfo.nextCursor;
+      let pages = 1;
+      while (cursor !== undefined) {
+        const page = await f.catalog.readSessionContext(sessionId, { before: cursor, maxResponseBytes: budget });
+        pages += 1;
+        assert.ok(measured(page) <= budget, "every older page must fit the budget");
+        assert.ok(page.entries.length > 0, "an older page is never empty while hasMore is true");
+        collected.unshift(...page.entries.map((entry) => entry.entryId));
+        cursor = page.pageInfo.nextCursor;
+        assert.equal(page.pageInfo.hasMore, cursor !== undefined);
+      }
+      assert.ok(pages > 1);
+      assert.deepEqual(collected, ids, "paging must cover the whole branch with no gaps or duplicates");
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("truncates a single over-budget entry in place with a visible marker instead of dropping it", async () => {
+    const f = await setup();
+    try {
+      const manager = SessionManager.create(f.cwd, f.sessionDir);
+      manager.appendMessage({ role: "user", content: "small", timestamp: NOW });
+      // ONE assistant entry alone bigger than the whole budget.
+      const huge = "y".repeat(300 * 1024);
+      manager.appendMessage({
+        role: "assistant",
+        content: [{ type: "text", text: huge }],
+        api: "anthropic",
+        provider: "anthropic",
+        model: "claude-test",
+        usage: usage(),
+        stopReason: "stop",
+        timestamp: NOW + 1,
+      });
+      const sessionId = manager.getSessionId();
+      const budget = 64 * 1024;
+      const measured = (value: unknown) => Buffer.byteLength(`${JSON.stringify(value)}\n`, "utf8");
+
+      const page = await f.catalog.readSessionContext(sessionId, { maxResponseBytes: budget });
+      assert.ok(measured(page) <= budget, "a single over-budget entry must still fit the page");
+      // Never dropped and never failed: the huge entry is served SHRUNK in place
+      // (it alone fills the budget, so it occupies its own page).
+      assert.deepEqual(page.entries.map((entry) => entry.message.role), ["assistant"]);
+      assert.equal(page.pageInfo.hasMore, true);
+      const assistant = page.entries[0]!;
+      const text = assistant.message.role === "assistant"
+        ? assistant.message.content.map((block) => (block.type === "text" ? block.text : "")).join("")
+        : "";
+      assert.ok(text.length < huge.length, "the oversized text must be shortened");
+      // Honest, visible marker with the exact removed byte count.
+      assert.match(text, /\[\d+ bytes truncated from initial history payload\]/);
+      // The cursor still reaches the older entry, which is intact.
+      const nextCursor = page.pageInfo.nextCursor;
+      assert.ok(nextCursor !== undefined);
+      const older = await f.catalog.readSessionContext(sessionId, {
+        before: nextCursor,
+        maxResponseBytes: budget,
+      });
+      assert.deepEqual(older.entries.map((entry) => entry.message.role), ["user"]);
+      assert.deepEqual(older.entries[0]!.message, { role: "user", content: "small", timestamp: NOW });
+      assert.deepEqual(older.pageInfo, { hasMore: false });
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("truncates an over-budget entry's inline media and bash output with reusable placeholders", async () => {
+    const f = await setup();
+    try {
+      const manager = SessionManager.create(f.cwd, f.sessionDir);
+      manager.appendMessage({ role: "user", content: "run it", timestamp: NOW });
+      // ~1 MiB decoded image inline in a tool result.
+      const base64 = "A".repeat(1_400_000);
+      manager.appendMessage({
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "screenshot",
+        content: [
+          { type: "text", text: "captured" },
+          { type: "image", data: base64, mimeType: "image/png" },
+        ],
+        isError: false,
+        timestamp: NOW + 1,
+      });
+      const sessionId = manager.getSessionId();
+      const budget = 64 * 1024;
+      const measured = (value: unknown) => Buffer.byteLength(`${JSON.stringify(value)}\n`, "utf8");
+
+      const page = await f.catalog.readSessionContext(sessionId, { maxResponseBytes: budget });
+      assert.ok(measured(page) <= budget);
+      assert.equal(page.entries.length, 2, "the tool result stays in the page");
+      const toolResult = page.entries[1]!;
+      if (toolResult.message.role !== "toolResult") throw new Error("unreachable");
+      // No base64 payload leaves; the replacement is a truthful summary.
+      assert.equal(JSON.stringify(page).includes("AAAAAAAA"), false);
+      const summary = toolResult.message.content.find((block) => block.type === "text" && block.text.includes("omitted"));
+      assert.ok(summary, "inline media must be replaced by a visible omission summary");
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("shrinks every oversized payload with its own marker and stays within a tiny budget", async () => {
+    const f = await setup();
+    try {
+      const manager = SessionManager.create(f.cwd, f.sessionDir);
+      // Realistic identity strings; the oversized payloads are the tool-call
+      // input plus an unbounded bash `fullOutputPath`, the exact shapes that used
+      // to be cut without a marker or pushed the page over budget.
+      manager.appendMessage({
+        role: "assistant",
+        content: [
+          { type: "text", text: "looking" },
+          { type: "toolCall", id: "call-1", name: "search", arguments: { q: "Q".repeat(400 * 1024) } },
+        ],
+        api: "anthropic",
+        provider: "anthropic",
+        model: "claude-test",
+        usage: usage(),
+        stopReason: "toolUse",
+        timestamp: NOW,
+      });
+      const sessionId = manager.getSessionId();
+      const budget = 64 * 1024;
+      const measured = (value: unknown) => Buffer.byteLength(`${JSON.stringify(value)}\n`, "utf8");
+
+      const page = await f.catalog.readSessionContext(sessionId, { maxResponseBytes: budget });
+      assert.ok(measured(page) <= budget, "every returned page must fit the budget");
+      assert.equal(page.entries.length, 1, "the entry is never dropped");
+      const entry = page.entries[0]!;
+      if (entry.message.role !== "assistant") throw new Error("unreachable");
+      // Every truncated payload carries its OWN visible marker.
+      const text = JSON.stringify(entry.message.content);
+      assert.match(text, /bytes truncated from initial history payload/);
+      // Identity is preserved so client keys/minimap stay stable, and the shrunk
+      // entry is still schema-valid on the wire.
+      assert.equal(entry.entryId, page.entries[0]!.entryId);
+      assert.equal(SessionContextSchema.safeParse(page).success, true);
+      assert.equal(SessionEntrySchema.safeParse(entry).success, true);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an unbounded bash fullOutputPath from blowing the budget while keeping truncated honest", async () => {
+    const f = await setup();
+    try {
+      const manager = SessionManager.create(f.cwd, f.sessionDir);
+      // The SDK persists a session file only once a real message lands, so seed
+      // one first; the oversized bash entry is the one under test.
+      manager.appendMessage({ role: "user", content: "run it", timestamp: NOW - 1 });
+      // A bash execution whose optional on-demand `fullOutputPath` is itself huge
+      // (adversarial: the path pointer must never outweigh the payload budget).
+      manager.appendMessage({
+        role: "bashExecution",
+        command: "run-something",
+        output: "partial output",
+        exitCode: 0,
+        cancelled: false,
+        truncated: true,
+        fullOutputPath: "P".repeat(400 * 1024),
+        timestamp: NOW,
+      } as never);
+      const sessionId = manager.getSessionId();
+      const budget = 64 * 1024;
+      const measured = (value: unknown) => Buffer.byteLength(`${JSON.stringify(value)}\n`, "utf8");
+
+      const page = await f.catalog.readSessionContext(sessionId, { maxResponseBytes: budget });
+      assert.ok(measured(page) <= budget, "an oversized fullOutputPath must not blow the budget");
+      const entry = page.entries.find((candidate) => candidate.message.role === "bashExecution");
+      assert.ok(entry, "the bash entry is never dropped");
+      if (entry.message.role !== "bashExecution") throw new Error("unreachable");
+      // The cut is visible; the entry stays schema-valid.
+      assert.equal(entry.message.truncated, true);
+      assert.equal(SessionEntrySchema.safeParse(entry).success, true);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("never returns an empty hasMore page; every page keeps at least one entry", async () => {
+    const f = await setup();
+    try {
+      const manager = SessionManager.create(f.cwd, f.sessionDir);
+      for (let index = 0; index < 6; index += 1) {
+        manager.appendMessage({ role: "user", content: `m${index}`, timestamp: NOW + index });
+        manager.appendMessage({
+          role: "assistant",
+          content: [{ type: "text", text: `a${index}` }],
+          api: "anthropic",
+          provider: "anthropic",
+          model: "claude-test",
+          usage: usage(),
+          stopReason: "stop",
+          timestamp: NOW + index + 1,
+        });
+      }
+      const sessionId = manager.getSessionId();
+      // Absurdly small budget: the entry itself cannot fit, but paging must still
+      // make progress and never hand back an empty page with a cursor.
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const page = await f.catalog.readSessionContext(sessionId, {
+          ...(cursor === undefined ? {} : { before: cursor }),
+          maxResponseBytes: 256,
+        });
+        pages += 1;
+        assert.ok(page.entries.length >= 1, "a hasMore page always carries at least one entry");
+        ids.unshift(...page.entries.map((entry) => entry.entryId));
+        cursor = page.pageInfo.nextCursor;
+      } while (cursor !== undefined && pages < 30);
+      assert.equal(new Set(ids).size, ids.length, "no duplicate entries across pages");
+      assert.equal(ids.length, 12, "the cursor chain still covers the whole branch");
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }

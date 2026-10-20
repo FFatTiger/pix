@@ -4069,7 +4069,7 @@ Fresh GLM verifier 首轮返回 FAIL，backend classifier/ownership、Runtime/St
 
 用户明确终止 History Read Plane v2 大重构，要求直接采用已验证的 source 行为。本切片不复制 Next.js 代码，只迁移历史读取与展示语义，并保留 pix 的 Protocol/runtime-core/adapter/sessiond/Host/Client 边界、JSONL authority 与 zero-Worker browsing。
 
-- **完整轻量 context**：`sessions.context` 未传 `limit` 时返回 selected persisted branch 的全部 projected entries，`pageInfo.hasMore=false`；显式 `limit/before` 的 1..200 cursor pagination 保留为 Protocol-v2 兼容 shim，当前仅供兼容调用和 visible-branch export。删除条件：Protocol v3 成为 minimum client，且 visible-branch export 不再 cursor-walk；届时 `before/limit/nextCursor` 与兼容测试一并删除。Client 默认只发一次 `/context?deferThinking=1&deferMedia=1`，不再发 `limit=150` 或 older-page HTTP waterfall。
+- **完整轻量 context（后续已被 §95 预算分页修正）**：`sessions.context` 未传 `limit` 时在 4 MiB 预算内返回 selected persisted branch 的全部 projected entries，`pageInfo.hasMore=false`；超出预算时的行为改为见 §95（原来直接 `unavailable` 失败）。显式 `limit/before` 的 1..200 cursor pagination 保留为 Protocol-v2 兼容 shim，当前仅供兼容调用和 visible-branch export。删除条件：Protocol v3 成为 minimum client，且 visible-branch export 不再 cursor-walk；届时 `before/limit/nextCursor` 与兼容测试一并删除。Client 默认只发一次 `/context?deferThinking=1&deferMedia=1`，不再发 `limit=150` 或 older-page HTTP waterfall。
 - **Thinking deferral**：仅 assistant 中非空 thinking block 投影为 `{thinking:"",deferred:true}`；空/纯空白 block 不改。新增 exact `sessions.thinking` RPC 与 `GET /v1/sessions/:id/entries/:entryId/thinking?blockIndex=N`，identity 为 `(sessionId,entryId,blockIndex)`；wrong role/type/index/member fail closed，不按顺序或文本猜测。Client 复用既有 100-entry promise LRU，经 typed API 注入 MessageView/ProcessGroup，无组件 raw fetch。
 - **Media deferral**：仅 toolResult 中 base64 image 从初始 context 移除，URL image、user image、assistant image不改；每条受影响 toolResult 追加 source-parity 文本摘要，诚实包含省略数量、MIME 集合和近似解码字节数。单个 >5 MiB decoded image 的 sessiond 对抗测试证明 base64 在 adapter 投影阶段已消失、RPC frame 保持低于上限，随后同连接 `system.ping` 健康且 Worker starts=0。没有提高 frame、queue 或 timeout。
 - **Client lifecycle**：history query 从 infinite query 改为 one complete query，key 仍精确绑定 `(sessionId,historyGeneration,anchor)`，same-session read-only→live placeholder 语义保留；persisted/live/optimistic exact identity merge 未改。AppShell 取消 prepare-before-navigation 和 pending row，点击立即提交 URL；TranscriptList 按 selected session key remount，local reveal identity 还包含 history generation/anchor，A 的迟到缓存不能显示为 B。
@@ -4333,3 +4333,17 @@ Typed native `method: "questionnaire"` request/response. Protocol major stays v2
 Pix 侧同步：`vendor/pi-claude-subagents-0.4.0.tgz` 取代 `0.3.9-pi1-eccf9bc.tgz`（file: 依赖与 lockfile 同步）；删除 `scripts/patch-pi-claude-subagents.mjs` 及其测试、根 package.json 的 postinstall/prebuild 钩子、`release-verify.mjs` 的 pristine/patched 双 SHA 门控（包身份校验仍由 `release-package.mjs` manifest 检查承担，channel 漂移由 adapter 合同测试兜底）。
 
 **Adapter 桥接重写**：`sdk-runtime.ts` 的 `installSubagentStreamBridge/uninstallSubagentStreamBridge` 不再写 `globalThis.__pixSubagentStream`。factory `construct()` 为每个会话 `createEventBus()` 并经 composition channels 注入 `DefaultResourceLoaderOptions.eventBus`（同一 resource loader 的全部扩展——含捆绑插件——共享该 bus；`session.reload()` 复用同一 loader，bus 跨 reload 稳定），driver 持同一 bus 引用按能力开关订阅/退订 `pi-claude-subagents:child-event`，generation 防陈旧与 capability loss/close 退订语义保持。payload 解码 fail-closed（非 string childSessionId/taskId 丢弃）。合同测试读取捆绑插件 `src/runtime.ts` 固定 channel 字面量与 0.x 版本线，升级漂移即失败。
+
+## 118. Oversized session history: newest page + older-page paging（超出 4 MiB 的会话不再打不开）
+
+**根因**：`sessiond/src/application.ts` 的 `sessions.context` 在响应序列化后超过 `MAX_HISTORY_RESPONSE_BYTES`（4 MiB 含换行）时直接 `throw SessiondError("unavailable", ...)`，而 Client 刻意不带 `limit` 请求完整分支，所以一个轻量历史 >4 MiB 的会话永久不可打开——协议里已有的 `before`/`nextCursor` 分页完全没被使用。
+
+**修正**：预算判断下移到唯一拥有该投影的 adapter catalog（`pi-sdk-adapter/src/internal/history-budget.ts`），按条目边界从最新往前累加：
+- 整页在预算内 → 原样返回（`pageInfo.hasMore=false`，小会话行为不变，仍是一次完整分支）。
+- 超预算 → 返回最新的、能放进预算的完整条目段，`pageInfo.hasMore=true` + `nextCursor`＝该页最旧 entryId；带 `before` 的请求同样按预算截断。游标链最终收敛到 `hasMore=false`，遍历全部分支且不重不漏。
+- 单条条目自身超预算 → 就地收缩：inline base64 图片换成诚实的 omission 摘要，超大文本截断并在原处追加 `[N bytes truncated from initial history payload]`（UTF-8 实际删除字节数），bashExecution 同时置 `truncated` 复用既有按需完整输出。不丢条目、不静默截断。
+- sessiond 只把 Protocol 的 `MAX_HISTORY_RESPONSE_BYTES` 作为 `maxResponseBytes` 传给 catalog，不再自己测量或因体积抛错；预算常量与数值未调整，Host/HTTP 契约、`sessions.context` 参数与 `pageInfo` DTO 均未变（无新 capability、无协议版本变更）。
+
+**Client**：`createSessionHistoryQueryOptions` 从 `queryOptions` 改为同一 key 的 `infiniteQueryOptions`（第一页不带 `before`，`getNextPageParam` 取 `nextCursor`），`useSessionTranscript` 按“旧页在前”拼接并新增 `hasOlder` / `isFetchingOlder` / `loadOlder`。TranscriptList 复用原有“本地 reveal 窗口”：本地还有未见行时滚到顶部仍只本地展开，本地窗口耗尽且 `hasOlder` 为真时同一手势请求更早一页并前插（沿用 scroll-height delta 高度补偿，阅读位置不跳），`hasMore=false` 后不再请求。实时新条目仍按 entryId 追加到合并尾部；minimap/统计基于已加载条目。
+
+**测试**：adapter `test/sessions.test.ts` 用 40 条 ~200 KiB 条目构造 >4 MiB 分支（首屏 ≤ 预算且 hasMore、游标链覆盖全部分支、单条超大条目截断带标记、inline 媒体换摘要）；sessiond 证明超预算 catalog 响应不再被二次拒绝并把预算下传；Client 单测覆盖 `infiniteQueryOptions` 的游标与页序、TranscriptList 的“本地耗尽才请求/前插保持位置/无 hasMore 不请求”。

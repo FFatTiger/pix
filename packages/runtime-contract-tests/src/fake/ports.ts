@@ -173,6 +173,7 @@ export class ReferenceSessionCatalog implements SessionCatalogPort {
       limit?: number;
       deferThinking?: boolean;
       deferMedia?: boolean;
+      maxResponseBytes?: number;
     },
   ): Promise<SessionContext> {
     const context = this.store.readSessionContext(sessionId, options?.leafId);
@@ -197,15 +198,18 @@ export class ReferenceSessionCatalog implements SessionCatalogPort {
       : projected.findIndex((entry) => entry.entryId === options.before);
     if (beforeIndex < 0) throw makeRuntimeError("invalid_input", "history cursor is invalid");
     const start = options?.limit === undefined ? 0 : Math.max(0, beforeIndex - options.limit);
-    const entries = projected.slice(start, beforeIndex);
-    return Promise.resolve({
+    const build = (entries: typeof projected, olderCount: number): SessionContext => ({
       ...context,
       entries,
       pageInfo: {
-        hasMore: start > 0,
-        ...(start > 0 && entries[0] !== undefined ? { nextCursor: entries[0].entryId } : {}),
+        hasMore: olderCount > 0,
+        ...(olderCount > 0 && entries[0] !== undefined ? { nextCursor: entries[0].entryId } : {}),
       },
     });
+    const complete = build(projected.slice(start, beforeIndex), start);
+    // This fake only models the cursor/paging contract; budget truncation is
+    // proven by the real adapters' own catalog tests.
+    return Promise.resolve(complete);
   }
 
   async readSessionThinking(

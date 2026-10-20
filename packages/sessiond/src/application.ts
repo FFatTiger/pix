@@ -140,18 +140,20 @@ export class SessiondApplication implements SessiondRpcHandler {
         const catalog = this.service.sessionCatalog();
         if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable");
         const input = params as SessiondMethodParams["sessions.context"];
+        // The lightweight history budget is enforced INSIDE the catalog that
+        // owns the projection: an over-budget branch is served as its newest
+        // page with `pageInfo.hasMore` instead of failing, so a large session
+        // still opens. sessiond only passes the shared protocol budget down
+        // (never re-declares it) and strict-parses the schema-valid result.
         const context = await catalog.readSessionContext(input.sessionId, {
           ...(input.leafId === undefined ? {} : { leafId: input.leafId }),
           ...(input.before === undefined ? {} : { before: input.before }),
           ...(input.limit === undefined ? {} : { limit: input.limit }),
           ...(input.deferThinking === undefined ? {} : { deferThinking: input.deferThinking }),
           ...(input.deferMedia === undefined ? {} : { deferMedia: input.deferMedia }),
+          maxResponseBytes: MAX_HISTORY_RESPONSE_BYTES,
         });
-        const parsed = SessionContextSchema.parse(context);
-        if (Buffer.byteLength(JSON.stringify(parsed) + "\n", "utf8") > MAX_HISTORY_RESPONSE_BYTES) {
-          throw new SessiondError("unavailable", "sessions.context exceeds the lightweight history budget", false);
-        }
-        return parsed;
+        return SessionContextSchema.parse(context);
       }
       case "sessions.thinking": {
         // Read-only deferred-thinking resolution over the SAME persisted-JSONL

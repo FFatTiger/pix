@@ -52,6 +52,7 @@ export interface PiSdkSessionStore {
       limit?: number;
       deferThinking?: boolean;
       deferMedia?: boolean;
+      maxResponseBytes?: number;
     },
   ): Promise<SessionContext>;
   /**
@@ -124,8 +125,8 @@ class PiSdkSessionCatalog implements SessionCatalogPort {
     return this.store.readSession(sessionId);
   }
 
-  readSessionContext(sessionId: string, options?: { leafId?: string; before?: string; limit?: number; deferThinking?: boolean; deferMedia?: boolean }): Promise<SessionContext> {
-    return this.store.readSessionContext(sessionId, { ...(options?.leafId === undefined ? {} : { leafId: options.leafId }), ...(options?.before === undefined ? {} : { before: options.before }), ...(options?.limit === undefined ? {} : { limit: options.limit }), ...(options?.deferThinking === undefined ? {} : { deferThinking: options.deferThinking }), ...(options?.deferMedia === undefined ? {} : { deferMedia: options.deferMedia }) });
+  readSessionContext(sessionId: string, options?: { leafId?: string; before?: string; limit?: number; deferThinking?: boolean; deferMedia?: boolean; maxResponseBytes?: number }): Promise<SessionContext> {
+    return this.store.readSessionContext(sessionId, { ...(options?.leafId === undefined ? {} : { leafId: options.leafId }), ...(options?.before === undefined ? {} : { before: options.before }), ...(options?.limit === undefined ? {} : { limit: options.limit }), ...(options?.deferThinking === undefined ? {} : { deferThinking: options.deferThinking }), ...(options?.deferMedia === undefined ? {} : { deferMedia: options.deferMedia }), ...(options?.maxResponseBytes === undefined ? {} : { maxResponseBytes: options.maxResponseBytes }) });
   }
 
   readSessionThinking(sessionId: string, entryId: string, blockIndex: number): Promise<SessionThinkingBlock> {

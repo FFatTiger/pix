@@ -73,14 +73,17 @@ Pi 防腐层（ACL）
 - `currentLeafId` 是**持久化目录头**（无 leafId 的 `sessions.context` 所解析的同一叶子）；live 运行时的内存 navigate 叶子可能尚未落盘，树**不伪造持久化**：live 模式活动叶子以 runtime snapshot（`RuntimeState.leafId`）为准覆盖，history 模式用 selected context leaf。该语义已在 runtime-core/protocol DTO 与 Client 助手中冻结。
 - 链路：adapter 纯投影器（复用同一 list 缓存/revision fence/openSession 身份校验）→ sessiond `sessions.tree` RPC → Host `GET /v1/sessions/:id/tree`（`sessions` capability，无新 token，拒绝任何 query）→ Client typed query（key 按 sessionId 隔离）。
 
-### 会话历史完整轻量读取（source-parity contract）
+### 会话历史轻量读取（source-parity contract）
 
-- `sessions.context` 未提供 `limit` 时返回 selected persisted branch 的**完整 projected entries**；显式 `limit/before` 继续作为有限兼容分页面。完整读取仍是 JSONL 只读投影、0 Worker，`pageInfo.hasMore=false`。
+- `sessions.context` 未提供 `limit` 时返回 selected persisted branch 的 projected entries：在 lightweight history 预算（`MAX_HISTORY_RESPONSE_BYTES`，4 MiB 含换行）内是**完整分支**（`pageInfo.hasMore=false`）；超出预算时返回**能放进预算的最新一段完整条目**，`pageInfo.hasMore=true` 并带 `before` 游标（`nextCursor` = 该页最旧条目 entryId），调用方用同一 `before` 语义继续往更早翻页，直到 `hasMore=false`。显式 `limit/before` 继续作为有限兼容分页面。完整读取与分页都仍是 JSONL 只读投影、0 Worker。**永不因体积报错。**
+- 截断只有一个所有者：拥有 `sessions.context` 投影的 adapter catalog（`pi-sdk-adapter/src/internal/history-budget.ts`）。sessiond 只把 Protocol 预算作为 `maxResponseBytes` 传下去，不二次测量、不因体积抛错；Host 原样转发 `pageInfo`。
+- 单条条目自身超过预算时（例如一次几 MB 的工具输出），在该条目的轻量投影里就地截断：inline base64 图片替换为诚实的 omission 摘要（与 `deferMedia` 同一套措辞），超大文本截断并在原处追加 `[N bytes truncated from initial history payload]` 标记，bashExecution 输出截断时同时置 `truncated` 以复用既有的按需完整输出通道。**不丢条目、不静默截断。**
 - Client 默认发送 `deferThinking=1&deferMedia=1`：非空 assistant thinking 只携带 `{thinking:"", deferred:true}`；toolResult 中 base64 图片从首包移除并替换为包含数量、MIME 与近似解码字节数的诚实文本摘要。URL 图片与 user/assistant 图片不被该规则改写。
+- Client 历史查询是同一个 infinite query（一台 cache authority）：第一页不带 `before`，后续页用上一页的 `nextCursor`。`hasMore` 为真且用户在 TranscriptList 已把本地 reveal 窗口耗尽时，滚到顶部会请求更早一页并前插（高度补偿，阅读位置不跳）；无 `hasMore` 时永不请求。加载中沿用既有样式，不加界面解释文案。
 - deferred thinking 只能通过 exact `(sessionId, entryId, blockIndex)` 读取；未知 session/entry、错误 role/block type 一律 `not_found`，禁止按文本、顺序或相邻 block 猜测。
-- Client session selection 立即提交 URL，不等待历史 body；Transcript subtree 按 session identity remount，Query key 绑定 `(sessionId, historyGeneration, anchor)`，迟到的 A 响应不能投影到 B。完整 branch 到达后只显示最后 50 个 rendered rows，向上每次仅在本地再 reveal 50，不发隐藏历史请求。
+- Client session selection 立即提交 URL，不等待历史 body；Transcript subtree 按 session identity remount，Query key 绑定 `(sessionId, historyGeneration, anchor)`，迟到的 A 响应不能投影到 B。已加载条目到达后只显示最后 50 个 rendered rows，向上每次先在本地再 reveal 50，只有本地窗口耗尽且仍有更早条目时才发一次分页请求。
 - 历史 JSON、Vite JS 与 CSS 由 Host 原生压缩中间件按 `Accept-Encoding` 压缩；206、已编码、SSE、图片与 binary 不进入该压缩面。
-- 任意单个 deferred media 即使超过 RPC frame 上限，也必须在 adapter 投影阶段被移除；不得提高 sessiond frame/queue/timeout 来容纳它。重文本导致完整轻量响应仍超过既有 lightweight-history 上限（`MAX_HISTORY_RESPONSE_BYTES`，4 MiB 含换行，与 live runtime frame 预算独立）时诚实失败，不伪装截断或成功。
+- 任意单个 deferred media 即使超过 RPC frame 上限，也必须在 adapter 投影阶段被移除；不得提高 sessiond frame/queue/timeout 来容纳它。重文本不再让 `sessions.context` 失败，按上面的预算分页与单条截断处理。
 - live runtime 帧容量由 Protocol `MAX_RUNTIME_FRAME_BYTES`（一张最大 inline 图 + 2 MiB 信封）与 `MAX_RUNTIME_QUEUED_BYTES`（两整帧含换行）拥有；Worker stdout/stdin、sessiond child stdio、RPC outbound、Host inbound WS `maxPayload`、Host outbound queue/buffer 走该契约。RPC inbound AUTH/非图片控制请求保持 2 MiB，lightweight history 保持 4 MiB，二者不因 live 媒体放大。输入图片数组上限 8 张、合计 base64 14M；整帧是聚合上限：多图仅在序列化信封仍落入预算时通过，否则 fail-closed。
 
 ### Materialized Catalog 分页契约

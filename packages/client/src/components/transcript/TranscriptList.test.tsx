@@ -271,6 +271,110 @@ describe("TranscriptList — local reveal window (one complete history response)
     expect(screen.queryByTestId("load-older-hint")).toBeNull();
   });
 
+  it("loads older pages on demand when the branch is over budget, prepending without a jump", async () => {
+    // Three budget-truncated pages, newest → oldest, each carrying its own
+    // `before` cursor. The newest page has 60 rows so the local reveal window
+    // exists first (the request only fires once the local window is exhausted).
+    const pageOf = (sessionId: string, from: number, to: number) =>
+      Array.from({ length: to - from }, (_, index) =>
+        userEntry(`${sessionId}-u${from + index + 1}`, `row ${from + index + 1} of ${sessionId}`));
+    const calls: string[] = [];
+    globalThis.fetch = stubFetch((path) => {
+      if (!path.includes("/v1/sessions/s1/context")) return json({});
+      calls.push(path);
+      const before = new URL(`https://pix.local${path}`).searchParams.get("before");
+      if (before === null) {
+        return json({ context: {
+          sessionId: "s1",
+          entries: pageOf("s1", 41, 101),
+          settings: { model: null, thinkingLevel: "off" },
+          pageInfo: { hasMore: true, nextCursor: "s1-u41" },
+        } });
+      }
+      if (before === "s1-u41") {
+        return json({ context: {
+          sessionId: "s1",
+          entries: pageOf("s1", 21, 41),
+          settings: { model: null, thinkingLevel: "off" },
+          pageInfo: { hasMore: true, nextCursor: "s1-u21" },
+        } });
+      }
+      return json({ context: {
+        sessionId: "s1",
+        entries: pageOf("s1", 1, 21),
+        settings: { model: null, thinkingLevel: "off" },
+        pageInfo: { hasMore: false },
+      } });
+    });
+    render(<Tree sessionId="s1" />);
+    await settle();
+    const transcript = screen.getByRole("log");
+    bindVirtualGeometry(transcript, 600);
+    // Exactly ONE initial request (the newest page) — scrolling is the only
+    // thing that asks for older pages.
+    expect(calls).toEqual(["/v1/sessions/s1/context?deferThinking=1&deferMedia=1"]);
+    expect(transcript.scrollTop).toBe(contentBottom(transcript));
+    expect(screen.getByText("row 100 of s1")).toBeTruthy();
+    expect(screen.queryByText("row 1 of s1")).toBeNull();
+
+    // Reach the top: the local window is still full (60 loaded rows ⇒ the final
+    // 50 are shown), so this only reveals locally and issues no request.
+    act(() => {
+      transcript.scrollTop = 0;
+      fireEvent.scroll(transcript);
+      IntersectionObserverStub.instances.forEach((observer) => observer.fire(true));
+    });
+    await settle();
+    expect(screen.getByTestId("load-older-hint")).toBeTruthy();
+    expect(calls).toHaveLength(1);
+    fireEvent.click(within(screen.getByTestId("load-older-hint")).getByRole("button"));
+    await settle();
+    act(() => fireEvent.scroll(transcript));
+    expect(calls).toHaveLength(1);
+
+    // Local window exhausted → reaching the top loads the page BEFORE it
+    // automatically (no click needed once there is nothing left to reveal).
+    const beforePrepend = transcript.scrollHeight;
+    act(() => {
+      transcript.scrollTop = 0;
+      fireEvent.scroll(transcript);
+      IntersectionObserverStub.instances.forEach((observer) => observer.fire(true));
+    });
+    await settle();
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain("before=s1-u41");
+    act(() => fireEvent.scroll(transcript));
+    // The page arrived and was prepended ABOVE the viewport; the reading
+    // position is held (scrollTop advanced by the prepended height, never reset
+    // to the top or dragged to the bottom).
+    const prepended = transcript.scrollHeight - beforePrepend;
+    expect(prepended).toBeGreaterThan(0);
+    expect(transcript.scrollTop).toBe(prepended);
+
+    // Second older page, after which the branch is complete.
+    act(() => {
+      transcript.scrollTop = 0;
+      fireEvent.scroll(transcript);
+      IntersectionObserverStub.instances.forEach((observer) => observer.fire(true));
+    });
+    await settle();
+    act(() => fireEvent.scroll(transcript));
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toContain("before=s1-u21");
+
+    // Complete branch: no further request can fire however far the user scrolls.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      act(() => {
+        transcript.scrollTop = 0;
+        fireEvent.scroll(transcript);
+        IntersectionObserverStub.instances.forEach((observer) => observer.fire(true));
+      });
+      await settle();
+    }
+    expect(calls).toHaveLength(3);
+    expect(screen.queryByTestId("load-older-hint")).toBeNull();
+  });
+
   it("one return-to-bottom click lands on the content bottom and survives later measurements", async () => {
     globalThis.fetch = stubFetch((path) => {
       if (path.includes("/v1/sessions/s1/context")) return contextResponse("s1", eightyUserEntries("s1"));

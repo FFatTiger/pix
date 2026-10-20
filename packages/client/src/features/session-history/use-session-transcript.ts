@@ -4,15 +4,19 @@
  * Replaces the old merged-view `messages` dependency. Live committed entries
  * come from the exact controller history layer (`historyGeneration` /
  * `historyAnchorLeafId` / `liveEntries`), persisted history comes from ONE
- * complete lightweight `GET /v1/sessions/:id/context` response (deferThinking
- * + deferMedia, no limit ⇒ the complete active branch, `hasMore:false`) via a
- * single `useQuery`:
+ * lightweight history query (`GET /v1/sessions/:id/context` with deferThinking
+ * + deferMedia) that yields the COMPLETE active branch when it fits the
+ * server's lightweight history budget (`pageInfo.hasMore:false`) and the
+ * NEWEST page plus older pages loaded through the `before` cursor when it does
+ * not:
  *
  *  - the query key includes (sessionId, historyGeneration, anchor leaf) so a
  *    fresh attach / epoch / branch / count rebase invalidates and refetches
- *    one complete response;
- *  - persisted entries are chronological and complete, then live committed
- *    entries are appended EXCLUDING ids already persisted;
+ *    the newest page;
+ *  - persisted entries are chronological (older pages first, then the newest);
+ *    live committed entries are appended EXCLUDING ids already persisted;
+ *  - older pages load only when the caller asks (`loadOlder`, driven by the
+ *    transcript scrolling to the top) and stop when `hasOlder` is false;
  *  - capability withdrawal disables the query immediately (cached history is
  *    hidden, never served stale);
  *  - an empty live snapshot (no leaf) skips history entirely and shows live
@@ -20,10 +24,11 @@
  *
  * TranscriptList, Composer, SessionInfoBar labels/stats and the minimap all
  * consume this single merged entry list so no surface can drift. Older-entry
- * reveal is a LOCAL TranscriptList window over this complete list — the server
- * never paginates.
+ * reveal is a LOCAL TranscriptList window over the loaded list; it only asks
+ * the server for another page once the local window reaches the oldest loaded
+ * entry and the branch still has older entries.
  */
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import type {
   ModelSelector,
@@ -59,9 +64,19 @@ export interface SessionTranscript {
    * with anything but the exact displayed model's catalog window.
    */
   readonly contextTokens: number | null | undefined;
-  /** True while the complete history response is loading. */
+  /** True while the newest history page is loading. */
   readonly isFetchingInitial: boolean;
-  /** Refetch the complete history (e.g. branch navigate / compaction rebase). */
+  /**
+   * True when older entries exist on the selected branch but have not been
+   * loaded yet (the newest page was budget-truncated). Only then may the UI
+   * request the previous page.
+   */
+  readonly hasOlder: boolean;
+  /** True while one older history page is in flight. */
+  readonly isFetchingOlder: boolean;
+  /** Load the next older page and prepend it (no-op when nothing is older). */
+  loadOlder(): void;
+  /** Refetch the newest history page (e.g. branch navigate / compaction rebase). */
   refetch(): void;
   /** True when history is unavailable (error). */
   readonly error: boolean;
@@ -232,15 +247,21 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
     anchor: liveAnchor,
     enabled: historyEnabled,
   });
-  const query = useQuery(historyQueryOptions);
+  const query = useInfiniteQuery(historyQueryOptions);
 
   // The query itself is the committed-history owner: `placeholderData` (same
-  // session) keeps the previous COMPLETE response — entries, settings and
+  // session) keeps the previous response — entries, settings and
   // contextTokens as one consistent snapshot — while a revision bump
   // (activation, turn-end leaf fence, rebase) is still in flight, so the
   // transcript never blanks and never mixes old rows with new metadata.
+  // Pages are fetched newest-first (each older page is addressed by the
+  // previous page's `before` cursor), so the persisted table is assembled
+  // oldest page first to stay chronological; an unbudgeted session is exactly
+  // one page and is untouched by this.
   const persistedEntries = useMemo(
-    () => query.data?.context.entries ?? [],
+    () => query.data === undefined
+      ? []
+      : [...query.data.pages].reverse().flatMap((page) => page.context.entries),
     [query.data],
   );
   const entries = useMemo(
@@ -248,8 +269,17 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
     [persistedEntries, liveEntries, optimisticCandidates],
   );
   const entryIds = useMemo(() => entries.map((entry) => entry.entryId), [entries]);
-  // Branch-wide metadata repeated on the complete response by the Host.
-  const persistedSettings = query.data?.context.settings;
+  // Branch-wide metadata repeated on every response page by the Host.
+  const persistedSettings = query.data?.pages[0]?.context.settings;
+
+  const hasOlder = query.hasNextPage === true;
+  const isFetchingOlder = query.isFetchingNextPage;
+  const loadOlder = useCallback(() => {
+    // Bounded by the cursor chain: no request once the branch is complete, and
+    // never two pages in flight at once.
+    if (query.hasNextPage !== true || query.isFetchingNextPage) return;
+    void query.fetchNextPage();
+  }, [query]);
 
   const refetch = useCallback(() => { void query.refetch(); }, [query]);
 
@@ -258,8 +288,11 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
     entryIds,
     persistedModel: persistedSettings?.model,
     persistedThinkingLevel: persistedSettings?.thinkingLevel,
-    contextTokens: query.data?.context.contextTokens,
+    contextTokens: query.data?.pages[0]?.context.contextTokens,
     isFetchingInitial: query.isPending && historyEnabled,
+    hasOlder,
+    isFetchingOlder,
+    loadOlder,
     refetch,
     error: query.isError === true,
   };

@@ -179,7 +179,15 @@ export interface SessionCatalogPort {
    *   as empty `deferred` placeholders (resolved later by
    *   {@link SessionCatalogPort.readSessionThinking});
    * - `deferMedia` omits base64 images from toolResult messages, replacing
-   *   them with one truthful summary per message (URL sources kept).
+   *   them with one truthful summary per message (URL sources kept);
+   * - `maxResponseBytes` bounds the serialized UTF-8 size of the returned
+   *   context (newline-inclusive, mirroring the sessiond RPC writer budget).
+   *   When the selected page exceeds it, the producer keeps the NEWEST suffix
+   *   of complete entries that fits and reports `pageInfo.hasMore === true`
+   *   with the `before` cursor for the next older page; a single entry that
+   *   alone exceeds the budget has its oversized payloads truncated with a
+   *   visible in-band marker (inline base64 images become truthful omission
+   *   summaries). Never drops entries and never fails on size alone.
    */
   readSessionContext(
     sessionId: string,
@@ -189,6 +197,7 @@ export interface SessionCatalogPort {
       limit?: number;
       deferThinking?: boolean;
       deferMedia?: boolean;
+      maxResponseBytes?: number;
     },
   ): Promise<SessionContext>;
   /**

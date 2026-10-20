@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { RuntimeCapabilitySet, RuntimeSnapshot, SessiondTurnStatusPush, SessiondMethodParams, SessiondRpcRequest, SessiondRuntimeAttachResult } from "@fffattiger/pix-protocol";
-import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
+import { MAX_HISTORY_RESPONSE_BYTES, PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import { isRuntimeError, makeRuntimeError, type SessionCatalogPort, type SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondApplication } from "../src/application.js";
 import { EventJournal } from "../src/journal.js";
@@ -2442,6 +2442,7 @@ test("sessions.context forwards defer flags and sessions.thinking resolves exact
         ...(options?.limit === undefined ? {} : { limit: options.limit }),
         ...(options?.deferThinking === undefined ? {} : { deferThinking: options.deferThinking }),
         ...(options?.deferMedia === undefined ? {} : { deferMedia: options.deferMedia }),
+        ...(options?.maxResponseBytes === undefined ? {} : { maxResponseBytes: options.maxResponseBytes }),
       });
       return { sessionId, entries: [], pageInfo: { hasMore: false } };
     },
@@ -2459,12 +2460,14 @@ test("sessions.context forwards defer flags and sessions.thinking resolves exact
   );
   const app = new SessiondApplication(service);
   try {
-    // Defer flags pass through 1:1; omitted flags stay omitted (full inline payload).
+    // Defer flags pass through 1:1; omitted flags stay omitted (full inline
+    // payload), and the shared lightweight history budget is handed to the
+    // catalog — the ONE truncation owner — instead of being re-checked here.
     await app.handle("sessions.context", { sessionId: "s-1", deferThinking: true, deferMedia: true });
     await app.handle("sessions.context", { sessionId: "s-2" });
     assert.deepEqual(contextCalls, [
-      { sessionId: "s-1", deferThinking: true, deferMedia: true },
-      { sessionId: "s-2" },
+      { sessionId: "s-1", deferThinking: true, deferMedia: true, maxResponseBytes: MAX_HISTORY_RESPONSE_BYTES },
+      { sessionId: "s-2", maxResponseBytes: MAX_HISTORY_RESPONSE_BYTES },
     ]);
 
     // Exact-identity thinking resolution echoes the identity verbatim.
@@ -2477,6 +2480,39 @@ test("sessions.context forwards defer flags and sessions.thinking resolves exact
       () => app.handle("sessions.thinking", { sessionId: "s-1", entryId: "entry-missing", blockIndex: 0 }),
       (error: unknown) => isRuntimeError(error) && error.code === "not_found",
     );
+  } finally {
+    await service.shutdown();
+  }
+});
+
+test("sessions.context never fails a size-over-budget catalog page (budget is enforced by the catalog)", async () => {
+  // The catalog is the single budget owner: it hands sessiond a page that
+  // ALREADY fits. sessiond must never re-measure and reject a large page —
+  // that was the defect that made a >4 MiB session unopenable. A catalog page
+  // carrying an over-budget payload therefore passes through unchanged.
+  const huge = "z".repeat(5 * 1024 * 1024);
+  const catalog: SessionCatalogPort = {
+    async listSessions() { return []; },
+    async readSession(sessionId) { return { sessionId, cwd: "/workspace", projectRoot: "/workspace", entries: [] }; },
+    async readSessionContext(sessionId) {
+      return {
+        sessionId,
+        entries: [{ entryId: "entry-huge", message: { role: "user", content: huge } }],
+        pageInfo: { hasMore: true, nextCursor: "entry-huge" },
+      };
+    },
+    async readSessionThinking(sessionId, entryId) { throw makeRuntimeError("not_found", `session not found: ${sessionId}/${entryId}`); },
+    async readSessionTree(sessionId) { return { sessionId, roots: [], entryCount: 0 }; },
+    async deleteSession() {},
+  };
+  const service = new SessiondService(
+    { sessionLocator: { async locate(sessionId) { return { sessionId, sessionFile: `/s/${sessionId}.jsonl`, exists: true }; }, async resolveLeafId() { return "leaf"; } }, activationContext: { async resolve(_id, _loc, cwd) { return { cwd: cwd ?? "/w", projectRoot: cwd ?? "/w" }; } }, workerFactory: new FakeWorkerFactory(), sessionCatalog: catalog },
+    { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 },
+  );
+  try {
+    const result = await new SessiondApplication(service).handle("sessions.context", { sessionId: "s-1" });
+    assert.deepEqual(result.pageInfo, { hasMore: true, nextCursor: "entry-huge" });
+    assert.equal(result.entries.length, 1);
   } finally {
     await service.shutdown();
   }
