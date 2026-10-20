@@ -401,6 +401,15 @@ export class RuntimeConnection implements RuntimeSocketHandler {
 
   connect(): void { this.socket.connect(); }
 
+  /**
+   * Update the push endpoint hash attached to every attention report
+   * (per-device push suppression). The app shell owns WHEN this changes
+   * (push subscribe/unsubscribe); the socket owns re-reporting it.
+   */
+  setPushEndpointHash(hash: string | undefined): void {
+    this.socket.setPushEndpointHash(hash);
+  }
+
   /** Proven-dead transport: tear the socket down and open a fresh one now.
    * No-op while a recovery attempt is already in flight. */
   recoverTransport(reason: string): void {

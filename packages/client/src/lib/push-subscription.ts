@@ -194,6 +194,31 @@ export async function currentPushEndpoint(env: PushBrowserEnv): Promise<string |
   return subscription?.endpoint ?? null;
 }
 
+/** Injectable Web Crypto digest surface (tests pass a fake). */
+export interface SubtleDigestLike {
+  digest(algorithm: "SHA-256", data: Uint8Array<ArrayBuffer>): Promise<ArrayBuffer>;
+}
+
+/**
+ * Lowercase SHA-256 hex of a string — the exact digest the Host compares
+ * (`hashPushEndpoint`): both sides hash the push endpoint this way so the
+ * endpoint itself never leaves the browser.
+ */
+export async function sha256Hex(value: string, subtle: SubtleDigestLike = globalThis.crypto.subtle): Promise<string> {
+  const digest = await subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Current push endpoint hash for the runtime attention report. Undefined when
+ * this browser has no usable subscription (unsupported / not granted / none) —
+ * such a page's "attended" report suppresses nothing.
+ */
+export async function currentPushEndpointHash(env: PushBrowserEnv): Promise<string | undefined> {
+  const endpoint = await currentPushEndpoint(env);
+  return endpoint === null ? undefined : sha256Hex(endpoint);
+}
+
 /**
  * Per-DEVICE marker: this browser already spent its one automatic push-enable
  * attempt. Device-local on purpose (never synced through the Host preference

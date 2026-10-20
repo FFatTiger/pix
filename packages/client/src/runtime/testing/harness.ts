@@ -97,11 +97,13 @@ export interface RuntimeHarness {
   readonly store: TestRuntimeStore;
   readonly sockets: FakeWebSocket[];
   readonly onlineListeners: Set<() => void>;
-  readonly visibilityListeners: Set<(visible: boolean) => void>;
+  readonly attentionListeners: Set<(attention: { visible: boolean; focused: boolean }) => void>;
   /** Explicit owner cleanup: disposes the registry exactly once (closes the one socket). */
   dispose(): void;
   goOnline(): void;
+  /** Visibility-only transition (focused stays true); for full control use changeAttention. */
   changeVisibility(visible: boolean): void;
+  changeAttention(attention: { visible: boolean; focused: boolean }): void;
   lastSocket(): FakeWebSocket;
   controller(sessionId: string): SessionController | null;
 }
@@ -109,7 +111,7 @@ export interface RuntimeHarness {
 export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
   const sockets: FakeWebSocket[] = [];
   const onlineListeners = new Set<() => void>();
-  const visibilityListeners = new Set<(visible: boolean) => void>();
+  const attentionListeners = new Set<(attention: { visible: boolean; focused: boolean }) => void>();
   let firstAttempt = true;
   const deps: RuntimeSocketDeps = {
     createWebSocket: (url) => {
@@ -131,9 +133,9 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
       onlineListeners.add(cb);
       return () => { onlineListeners.delete(cb); };
     },
-    onVisibility: (cb) => {
-      visibilityListeners.add(cb);
-      return () => { visibilityListeners.delete(cb); };
+    onAttention: (cb) => {
+      attentionListeners.add(cb);
+      return () => { attentionListeners.delete(cb); };
     },
     ...(options.features === undefined ? {} : { features: options.features }),
     ...(options.liveness === undefined ? {} : { liveness: options.liveness }),
@@ -157,10 +159,11 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
     store,
     sockets,
     onlineListeners,
-    visibilityListeners,
+    attentionListeners,
     dispose: () => registry.dispose(),
     goOnline: () => { for (const cb of onlineListeners) cb(); },
-    changeVisibility: (visible: boolean) => { for (const cb of visibilityListeners) cb(visible); },
+    changeVisibility: (visible: boolean) => { for (const cb of attentionListeners) cb({ visible, focused: true }); },
+    changeAttention: (attention: { visible: boolean; focused: boolean }) => { for (const cb of attentionListeners) cb(attention); },
     lastSocket: () => sockets[sockets.length - 1]!,
     controller: (sessionId) => registry.lookup(sessionId),
   };

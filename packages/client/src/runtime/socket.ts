@@ -70,6 +70,12 @@ export interface ManagedWebSocket {
 
 export type Timer = unknown;
 
+/** Page attention: visibility plus focus — both true only while someone is actually looking at this page. */
+export interface PageAttention {
+  readonly visible: boolean;
+  readonly focused: boolean;
+}
+
 export interface RuntimeSocketDeps {
   readonly createWebSocket: (url: string) => ManagedWebSocket;
   readonly now: () => number;
@@ -81,14 +87,19 @@ export interface RuntimeSocketDeps {
   /** Subscribe to "network came back online"; return an unsubscribe. */
   readonly onOnline: (cb: () => void) => () => void;
   /**
-   * Page visibility in BOTH directions. This is the socket's only visibility
-   * hook: on show it reconnects when the transport is dead, otherwise runs the
-   * wake liveness probe, restarts the heartbeat and reports visibility; on hide
-   * it stops the heartbeat and reports. Optional: without it the socket still
-   * heartbeats and probes on demand; it just cannot distinguish "briefly
-   * blurred" from "hidden long enough for the transport to have died".
+   * Page attention (visibility AND focus) in BOTH directions. This is the
+   * socket's only visibility/focus hook: on show it reconnects when the
+   * transport is dead, otherwise runs the wake liveness probe, restarts the
+   * heartbeat and reports attention; on hide it stops the heartbeat and
+   * reports. Focus changes only enrich the report (`attended` for per-device
+   * push suppression); recovery keys on visibility. Optional: without it the
+   * socket still heartbeats and probes on demand; it just cannot distinguish
+   * "briefly blurred" from "hidden long enough for the transport to have
+   * died".
    */
-  readonly onVisibility?: (cb: (visible: boolean) => void) => () => void;
+  readonly onAttention?: (cb: (attention: PageAttention) => void) => () => void;
+  /** Attention adopted before any hook fires (defaults to visible+focused). */
+  readonly initialAttention?: PageAttention;
   readonly features?: readonly string[];
   readonly backoff?: BackoffOptions;
   readonly handshakeTimeoutMs?: number;
@@ -202,15 +213,17 @@ export class RuntimeSocket {
   private connectTimer: Timer | null = null;
   private reconnectAttempt = 0;
   private unsubOnline: (() => void) | null = null;
-  private unsubVisibility: (() => void) | null = null;
+  private unsubAttention: (() => void) | null = null;
   /** Liveness (negotiated `runtime.liveness.v1`); disabled until acked. */
   private livenessNegotiated = false;
   /** Negotiated `runtime.visibility.v1`: this connection reports page visibility. */
   private visibilityNegotiated = false;
   private lastInboundAt = 0;
   private hiddenAt: number | null = null;
-  /** Last reported page visibility (assumed visible without a visibility hook). */
-  private pageVisible = true;
+  /** Last reported page attention (assumed visible+focused until the first report). */
+  private pageAttention: PageAttention;
+  /** SHA-256 hex of this browser's push endpoint, reported with attention (per-device push suppression). */
+  private pushEndpointHash: string | undefined;
   private heartbeatTimer: Timer | null = null;
   private pingDeadlineTimer: Timer | null = null;
   /** Absolute deadline of the armed pong, i.e. the ONE liveness deadline. */
@@ -228,6 +241,7 @@ export class RuntimeSocket {
     this.handshakeTimeoutMs = deps.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.connectTimeoutMs = deps.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this.liveness = { ...DEFAULT_LIVENESS, ...(deps.liveness ?? {}) };
+    this.pageAttention = deps.initialAttention ?? { visible: true, focused: true };
   }
 
   get connectionState(): ConnectionState { return this.state; }
@@ -469,10 +483,10 @@ export class RuntimeSocket {
       this.setState("ready");
       this.handler.onHandshakeAck(host, message.payload);
       if (this.livenessNegotiated) this.startHeartbeat();
-      // Visibility is reported on EVERY fresh connection (the Host's view is
+      // Attention is reported on EVERY fresh connection (the Host's view is
       // per-connection): right after the ack, and again on each change. A
-      // dropped connection simply stops counting as visible on the Host side.
-      this.sendVisibility(this.pageVisible);
+      // dropped connection simply stops suppressing on the Host side.
+      this.sendVisibility();
       return;
     }
     if (message.type === "handshake_reject") {
@@ -525,7 +539,7 @@ export class RuntimeSocket {
     }
     this.reconnectAttempt += 1;
     const backoffDelay = computeBackoffDelay(this.reconnectAttempt, this.deps.random, this.backoff);
-    const delay = this.pageVisible ? Math.min(backoffDelay, VISIBLE_RECONNECT_CAP_MS) : backoffDelay;
+    const delay = this.pageAttention.visible ? Math.min(backoffDelay, VISIBLE_RECONNECT_CAP_MS) : backoffDelay;
     this.setState("unavailable");
     this.reconnectTimer = this.deps.setTimeout(() => {
       this.reconnectTimer = null;
@@ -573,16 +587,19 @@ export class RuntimeSocket {
    * reconnect so the first user action lands on a PROVEN transport.
    */
   /**
-   * Wake-from-hidden decision AND the page-visibility report: the browser
-   * fires `visibilitychange` once, and this is its ONLY subscriber (a second
-   * hidden "page is visible → reconnect" hook would race this one). Coming
-   * back runs, in order: an immediate reconnect when the transport is dead or
-   * absent; otherwise the wake liveness probe, the heartbeat restart and the
-   * negotiated visibility report on this same connection.
+   * Wake-from-hidden decision AND the page-attention report: the browser's
+   * visibility/focus events reach the socket through this one hook (a second
+   * hidden "page is visible → reconnect" hook would race this one). A visible
+   * report runs, in order: an immediate reconnect when the transport is dead
+   * or absent; otherwise the wake liveness probe, the heartbeat restart and
+   * the negotiated attention report on this same connection. A hidden report
+   * stops the heartbeat. Focus changes carry no recovery semantics of their
+   * own — they only make the reported `attended` honest.
    */
-  private handleVisibilityChange(visible: boolean): void {
-    this.pageVisible = visible;
-    this.sendVisibility(visible);
+  private handleAttentionChange(next: PageAttention): void {
+    this.pageAttention = next;
+    this.sendVisibility();
+    const visible = next.visible;
     if (!visible) {
       this.hiddenAt = this.deps.now();
       // iOS suspends timers for a hidden page. Stop the chain here so a
@@ -625,16 +642,16 @@ export class RuntimeSocket {
 
   private attachEnvironmentHooks(): void {
     if (this.unsubOnline === null) this.unsubOnline = this.deps.onOnline(() => this.tryImmediateReconnect());
-    if (this.unsubVisibility === null && this.deps.onVisibility !== undefined) {
-      this.unsubVisibility = this.deps.onVisibility((visible) => this.handleVisibilityChange(visible));
+    if (this.unsubAttention === null && this.deps.onAttention !== undefined) {
+      this.unsubAttention = this.deps.onAttention((attention) => this.handleAttentionChange(attention));
     }
   }
 
   private detachEnvironmentHooks(): void {
     this.unsubOnline?.();
-    this.unsubVisibility?.();
+    this.unsubAttention?.();
     this.unsubOnline = null;
-    this.unsubVisibility = null;
+    this.unsubAttention = null;
   }
 
   private failClosed(reason: string): void {
@@ -655,21 +672,44 @@ export class RuntimeSocket {
     }
   }
 
-  // --- visibility reporting ------------------------------------------------
+  // --- attention reporting ------------------------------------------------
 
   /**
-   * Report page visibility on the live connection (negotiated
+   * Update the push endpoint hash reported with every attention frame
+   * (per-device push suppression). Undefined = this browser has no push
+   * subscription, so its reports never suppress any endpoint. A change
+   * re-reports immediately; the hash survives reconnects (the next handshake
+   * ack report picks it up).
+   */
+  setPushEndpointHash(hash: string | undefined): void {
+    if (this.pushEndpointHash === hash) return;
+    this.pushEndpointHash = hash;
+    this.sendVisibility();
+  }
+
+  /**
+   * Report page attention on the live connection (negotiated
    * `runtime.visibility.v1` only). Fire-and-forget: the Host keeps a plain
    * per-connection view; a lost connection is unregistered server-side. A
    * send throw is left to the transport's own failure handling (the liveness
    * machinery detects the dead socket) — never a reconnect from here.
    */
-  private sendVisibility(visible: boolean): void {
+  private sendVisibility(): void {
     if (!this.visibilityNegotiated || this.disposed) return;
     const ws = this.ws;
     if (!ws || ws.readyState !== WS_OPEN || !canSend(this.state)) return;
+    const { visible, focused } = this.pageAttention;
+    // "Being looked at" requires visibility AND focus: a desktop window that
+    // is merely open behind other apps is not attended and still gets push.
+    // The endpoint hash (never the endpoint or its keys) maps this browser to
+    // its push subscription for per-device suppression.
+    const payload = {
+      visible,
+      attended: visible && focused,
+      ...(this.pushEndpointHash === undefined ? {} : { pushEndpointHash: this.pushEndpointHash }),
+    };
     try {
-      ws.send(JSON.stringify({ type: "visibility", payload: { visible } }));
+      ws.send(JSON.stringify({ type: "visibility", payload }));
     } catch {
       /* dead socket — liveness/reconnect machinery owns recovery */
     }

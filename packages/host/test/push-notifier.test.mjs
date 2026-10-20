@@ -4,6 +4,7 @@ import {
   PushNotifier,
   decideNotifications,
   classifyEndedTurn,
+  hashPushEndpoint,
   notificationUrl,
   pickPushCopy,
   scanLastAssistant,
@@ -231,6 +232,15 @@ function makeHarness(options = {}) {
 }
 
 const SUB_A = { endpoint: "https://push.example/a", p256dh: "K".repeat(87), auth: "a".repeat(16), createdAt: "2020-01-01T00:00:00.000Z" };
+const SUB_B = { endpoint: "https://web.push.apple.com/v2/devices/b", p256dh: "K".repeat(87), auth: "b".repeat(16), createdAt: "2020-01-01T00:00:00.000Z" };
+
+// Same digest the Host matches against (lowercase SHA-256 hex of the endpoint).
+const endpointHash = hashPushEndpoint;
+
+test("hashPushEndpoint matches the canonical client digest vector (per-device suppression parity)", () => {
+  assert.equal(hashPushEndpoint("https://fcm.googleapis.com/fcm/send/abc"), "4e9bdab8bbe7189c00aebb0922fc49fe40e00594c400f3e1b5dcf97a35c79f85");
+  assert.equal(hashPushEndpoint("https://web.push.apple.com/v2/devices/xyz"), "8eb424fc52dc2c9e8392f25256694ed9c24a5569c9aca50ac98e918ff58c60aa");
+});
 
 test("notifier: waiting transition sends 等你回答 with the session name", async () => {
   const h = makeHarness();
@@ -350,25 +360,83 @@ test("notifier: debounce suppresses the same session+kind within the window; dif
   h.notifier.stop();
 });
 
-test("notifier: any visible client suppresses everything; unregister (disconnect) restores sending", async () => {
+test("notifier: an attended device is skipped, the other device still receives", async () => {
   const h = makeHarness();
-  h.store.document.subscriptions.push(SUB_A);
+  h.store.document.subscriptions.push(SUB_A, SUB_B);
+  // The desktop browser holding SUB_A is being looked at (visible + focused).
   const registration = h.visibility.register();
-  registration.report(true);
+  registration.report({ visible: true, attended: true, pushEndpointHash: endpointHash(SUB_A.endpoint) });
+  h.notifier.start();
+  await wait();
+  h.sessions.headers.set("s1", { sessionId: "s1", cwd: "/w", projectRoot: "/w", title: "T" });
+  await h.watch.deliver(state({ revision: 1, running: ["s1"], waiting: ["s1"] }));
+  await h.queueIdle();
+  assert.equal(h.sender.sent.length, 1);
+  assert.equal(h.sender.sent[0].endpoint, SUB_B.endpoint);
+  // The attended device stops being looked at (blur / hidden) → it receives again.
+  registration.report({ visible: true, attended: false, pushEndpointHash: endpointHash(SUB_A.endpoint) });
+  clockAdvance(h, 60_000);
+  await h.watch.deliver(state({ revision: 2, running: ["s1"] }));
+  await h.queueIdle();
+  await h.watch.deliver(state({ revision: 3, running: [], waiting: [] }));
+  await h.queueIdle();
+  assert.equal(h.sender.sent.length, 3); // A and B both received the ended turn
+  h.notifier.stop();
+});
+
+test("notifier: every device attended → nothing is sent; disconnect (unregister) restores sending", async () => {
+  const h = makeHarness();
+  h.store.document.subscriptions.push(SUB_A, SUB_B);
+  const regA = h.visibility.register();
+  const regB = h.visibility.register();
+  regA.report({ visible: true, attended: true, pushEndpointHash: endpointHash(SUB_A.endpoint) });
+  regB.report({ visible: true, attended: true, pushEndpointHash: endpointHash(SUB_B.endpoint) });
   h.notifier.start();
   await wait();
   h.sessions.headers.set("s1", { sessionId: "s1", cwd: "/w", projectRoot: "/w", title: "T" });
   await h.watch.deliver(state({ revision: 1, running: ["s1"], waiting: ["s1"] }));
   await h.queueIdle();
   assert.equal(h.sender.sent.length, 0);
-  // connection dies → not visible anymore
-  registration.unregister();
-  clockAdvance(h, 60_000);
-  await h.watch.deliver(state({ revision: 2, running: ["s1"] }));
-  await h.queueIdle();
-  await h.watch.deliver(state({ revision: 3, running: [], waiting: [] }));
+  // A connection dies → its endpoint is no longer suppressed
+  regA.unregister();
+  await h.watch.deliver(state({ revision: 2, running: [], waiting: [] }));
   await h.queueIdle();
   assert.equal(h.sender.sent.length, 1);
+  assert.equal(h.sender.sent[0].endpoint, SUB_A.endpoint);
+  h.notifier.stop();
+});
+
+test("notifier: legacy boolean reports and attended clients without a push mapping suppress nothing", async () => {
+  const h = makeHarness();
+  h.store.document.subscriptions.push(SUB_A, SUB_B);
+  // Old client shape (visible only, no attended/hash) …
+  const legacy = h.visibility.register();
+  legacy.report({ visible: true });
+  // … and an attended page with no push subscription (e.g. desktop browser
+  // without notifications, headless verification browser): no endpoint hash,
+  // so it cannot map to any subscription.
+  const unattendedDevice = h.visibility.register();
+  unattendedDevice.report({ visible: true, attended: true });
+  h.notifier.start();
+  await wait();
+  h.sessions.headers.set("s1", { sessionId: "s1", cwd: "/w", projectRoot: "/w", title: "T" });
+  await h.watch.deliver(state({ revision: 1, running: ["s1"], waiting: ["s1"] }));
+  await h.queueIdle();
+  assert.equal(h.sender.sent.length, 2); // every device still receives
+  h.notifier.stop();
+});
+
+test("notifier: a report that is not visible never suppresses (fail-safe against contradictory frames)", async () => {
+  const h = makeHarness();
+  h.store.document.subscriptions.push(SUB_A);
+  const registration = h.visibility.register();
+  registration.report({ visible: false, attended: true, pushEndpointHash: endpointHash(SUB_A.endpoint) });
+  h.notifier.start();
+  await wait();
+  h.sessions.headers.set("s1", { sessionId: "s1", cwd: "/w", projectRoot: "/w", title: "T" });
+  await h.watch.deliver(state({ revision: 1, running: ["s1"], waiting: ["s1"] }));
+  await h.queueIdle();
+  assert.equal(h.sender.sent.length, 1); // contradiction → not attended
   h.notifier.stop();
 });
 

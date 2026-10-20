@@ -353,7 +353,7 @@ test("ping without the negotiated liveness feature fails closed", async () => {
   assert.ok(session.closed, "unnegotiated ping must fail closed");
 });
 
-test("negotiated visibility: reports feed the Host tracker; close unregisters (never visible)", async () => {
+test("negotiated visibility: reports feed the Host tracker per endpoint; close unregisters (never suppresses)", async () => {
   const client = new FakeClient();
   const tracker = createVisibilityTracker();
   const session = await connect(makeGateway(client, { visibilityTracker: tracker }), visibilityHello);
@@ -361,22 +361,39 @@ test("negotiated visibility: reports feed the Host tracker; close unregisters (n
   const ack = session.jsonAt(0);
   assert.equal(ack.type, "handshake_ack");
   assert.deepEqual(ack.payload.acceptedFeatures, [RUNTIME_VISIBILITY_FEATURE]);
-  // A fresh connection is NOT visible until it reports.
-  assert.equal(tracker.hasVisible(), false);
+  // A fresh connection is NOT attended until it reports.
+  assert.equal(tracker.attendedEndpointHashes().size, 0);
+  // Legacy boolean-only report: visible but no endpoint mapping → suppresses nothing.
   session.receive(JSON.stringify({ type: "visibility", payload: { visible: true } }));
   await wait();
-  assert.equal(tracker.hasVisible(), true);
+  assert.equal(tracker.attendedEndpointHashes().size, 0);
   assert.equal(session.closed, null, "a negotiated visibility frame never closes the connection");
-  session.receive(JSON.stringify({ type: "visibility", payload: { visible: false } }));
+  // Attended (visible + focused) WITH this device's endpoint hash → suppress exactly that endpoint.
+  const hash = "4e9bdab8bbe7189c00aebb0922fc49fe40e00594c400f3e1b5dcf97a35c79f85";
+  session.receive(JSON.stringify({ type: "visibility", payload: { visible: true, attended: true, pushEndpointHash: hash } }));
   await wait();
-  assert.equal(tracker.hasVisible(), false);
-  // Report visible again, then drop the connection: close unregisters.
-  session.receive(JSON.stringify({ type: "visibility", payload: { visible: true } }));
+  assert.deepEqual([...tracker.attendedEndpointHashes()], [hash]);
+  // Blur (focus lost) stops suppressing even while still visible.
+  session.receive(JSON.stringify({ type: "visibility", payload: { visible: true, attended: false, pushEndpointHash: hash } }));
   await wait();
-  assert.equal(tracker.hasVisible(), true);
+  assert.equal(tracker.attendedEndpointHashes().size, 0);
+  // Attended again, then drop the connection: close unregisters.
+  session.receive(JSON.stringify({ type: "visibility", payload: { visible: true, attended: true, pushEndpointHash: hash } }));
+  await wait();
+  assert.deepEqual([...tracker.attendedEndpointHashes()], [hash]);
   session.close(1000, "bye");
   await wait();
-  assert.equal(tracker.hasVisible(), false);
+  assert.equal(tracker.attendedEndpointHashes().size, 0);
+});
+
+test("visibility frames with malformed endpoint hashes fail closed", async () => {
+  const client = new FakeClient();
+  const tracker = createVisibilityTracker();
+  const session = await connect(makeGateway(client, { visibilityTracker: tracker }), visibilityHello);
+  await wait();
+  session.receive(JSON.stringify({ type: "visibility", payload: { visible: true, attended: true, pushEndpointHash: "XYZ" } }));
+  await wait();
+  assert.ok(session.closed, "a malformed pushEndpointHash must fail closed (strict schema)");
 });
 
 test("visibility without the negotiated feature (or without a tracker) fails closed / is not accepted", async () => {

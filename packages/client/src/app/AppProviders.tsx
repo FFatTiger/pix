@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { HttpClientProvider } from "@/app/http-context";
-import { RuntimeProvider, ResumeRefetch } from "@/runtime";
+import { RuntimeProvider, ResumeRefetch, PushAttentionReporter } from "@/runtime";
 import { SessionStagingProvider } from "@/features/composer/session-staging-provider";
 import { ErrorBoundary } from "@/app/ErrorBoundary";
 import { I18nProvider } from "@/hooks/useI18n";
@@ -57,6 +57,10 @@ export function AppProviders({ children, host }: AppProvidersProps) {
               <SessionStagingProvider>
               {/* PWA resume: revalidate the boot surface on visibility/online/runtime reconnect. */}
               <ResumeRefetch />
+              {/* Per-device push suppression: report this browser's push
+                  endpoint hash with every attention frame; refresh it when the
+                  push subscription changes. */}
+              <PushAttentionReporter />
               {/* UI infrastructure providers: I18n outer, ContextMenu inner, both
                   wrapping the routed UI. Theme is owned by useTheme (html.dark
                   applied by the index.html bootstrap + runtime hook); Text Size
