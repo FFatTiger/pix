@@ -4372,7 +4372,7 @@ Pix 侧同步：`vendor/pi-claude-subagents-0.4.0.tgz` 取代 `0.3.9-pi1-eccf9bc
 
 **测试**：Host 新增 `test/npm-registry.test.mjs`（自定义镜像生效且 scoped 优先、npm 给不出值时用默认值、非 http(s) 值拒绝、静态守卫断言全模块只有一处 npmjs 常量且没有回退分支）；About 路由测试新增「按 npm 配置解析」「scoped 优先」「仅 npm 无值时回退默认」三例；CLI `update.test.ts` 新增静态守卫，禁止 update 路径再出现硬编码 registry URL。
 
-## 120. 门禁登录页重做 + 首次访问网页设置密码 + 选项目不再清草稿
+## 121. 门禁登录页重做 + 首次访问网页设置密码 + 选项目不再清草稿
 
 **登录页**：原 `/login` 是 “pix Gate / Authenticate to the host. LAN deployments require gate credentials.” 的英文调试页，还把 `required: true · authenticated: false` 直接打给用户。现在重做为与主界面同一套视觉的入口：复用 `.pix-mark` 品牌标记（与 home stack 同一个像素 P 标记，样式只留一份）、既有 token/圆角/按钮语言，居中单列、Pix 标记 + 一句标题 + 密钥框 + 登录按钮；调试字段与无实际意义的 “Back to workstation” 删除（开放主机的状态改为一个真正可点的 “打开工作台”）。全部文案走 i18n（zh-CN/en），失败提示用固定 copy（`describeLoginError` / `describeSetupError` 按 HttpError code/status 映射），绝不显示 host 原始 message；深浅色都只用既有 CSS 变量。
 
