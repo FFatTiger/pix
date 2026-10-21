@@ -164,6 +164,22 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await expect(h.store.sendCommand({ commandId: "busy-1", type: "set_auto_retry", enabled: true })).rejects.toMatchObject({ code: "session_busy" });
   });
 
+  it("stamps the optimistic bubble with the send instant so the turn has a start before the authority dates it", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const before = Date.now();
+    const sendP = h.store.sendPrompt("date this turn").catch(() => undefined);
+    await flush();
+    const timestamp = (h.store.getSnapshot().optimisticEntries[0]!.entry.message as { timestamp?: number }).timestamp;
+    expect(timestamp).toBeGreaterThanOrEqual(before);
+    expect(timestamp).toBeLessThanOrEqual(Date.now());
+    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
+    await flush();
+    await sendP;
+    h.dispose();
+  });
+
   it("accepted turn keeps the optimistic bubble until authority correlation and does NOT occupy pendingCommand; reads stay independent", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
@@ -175,8 +191,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await expect(sendP).resolves.toBeTruthy();
 
     // Bubble retained (accepted), never fabricated terminal data.
-    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual({ role: "user", content: "hello" });
-    // The turn does NOT occupy pendingCommand: a get_commands read (dedicated
+    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "hello" }));    // The turn does NOT occupy pendingCommand: a get_commands read (dedicated
     // read lane) still works while the turn is active.
     const toolsP = h.store.getCommands();
     await flush();
@@ -221,7 +236,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await expect(settled).resolves.toBe("rejected");
     // The bytes already reached the authority: this is NOT proven non-delivery.
     expect(error).toMatchObject({ code: "interrupted", phase: "uncertain", retryable: false });
-    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual({ role: "user", content: "in flight" });
+    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "in flight" }));
   });
 
   it("stop before the turn reached the wire stays a proven pre-wire failure (bubble removed, draft restored)", async () => {
@@ -292,7 +307,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await flush();
     await expect(sendP).rejects.toMatchObject({ code: "timeout", retryable: true, phase: "uncertain" });
     expect(h.store.getSnapshot().turnActive).toBe(false);
-    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual({ role: "user", content: "hello" });
+    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "hello" }));
   });
 
   it("same-epoch reconnect resends the SAME operationId + payload on a fresh envelope", async () => {
@@ -563,7 +578,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     expect(lastFrame(ws, "submit_turn")).toBeUndefined();
     await expect(sendP).rejects.toMatchObject({ code: "epoch_changed", retryable: true });
     // Bubble retained (uncertain, may have been delivered).
-    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual({ role: "user", content: "hello" });
+    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "hello" }));
     void operationId;
   });
 

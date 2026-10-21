@@ -5253,6 +5253,212 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(screen.queryByTestId("status-progress-section")).toBeNull();
   });
 
+  it("never shows the whole delegation history while the turn boundary is still unknown (refresh)", async () => {
+    const TURN_STARTED_AT = Date.parse("2026-09-27T01:00:00.000Z");
+    const contextDeferreds = new Map<string, Deferred>();
+    const parent: SessionHeader = {
+      sessionId: "parent",
+      sessionFile: "/sessions/parent.jsonl",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Parent",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 3,
+      workspaceAccess: AUTHORIZED,
+    };
+    // The snapshot carries a finished last turn: the history page that dates
+    // the turn is still in flight when the capsule is already rendered.
+    globalThis.fetch = controllableStubFetch({ sessions: [parent], contextDeferreds });
+    mountApp({ cwd: "/x", session: "parent" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("parent").catch(() => undefined);
+      const attach = await waitForAttach(ws, "parent");
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "parent",
+          capabilities: [...LIVE_CAPS, "runtime.subagents", "runtime.todo"],
+          subagents: {
+            revision: 1,
+            tasks: [
+              {
+                taskId: "task-old",
+                description: "Ended last turn",
+                agentType: "Explore",
+                status: "completed",
+                startedAt: TURN_STARTED_AT - 120_000,
+                completedAt: TURN_STARTED_AT - 60_000,
+              },
+            ],
+          },
+          todo: {
+            revision: 1,
+            items: [{ id: 1, subject: "Draft the capsule", blockedBy: [], status: "completed" }],
+          },
+        }),
+      });
+      await flush();
+    });
+    await settle();
+
+    // History not loaded yet: the capsule must not flash last turn's work.
+    expect(contextDeferreds.get("parent")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
+
+    await act(async () => {
+      contextDeferreds.get("parent")!.resolve(json({
+        context: {
+          sessionId: "parent",
+          entries: [{ entryId: "u1", message: { role: "user", content: "done with that", timestamp: TURN_STARTED_AT } }],
+          settings: { model: { provider: "anthropic", modelId: "claude-opus-4" }, thinkingLevel: "off" },
+          pageInfo: { hasMore: false },
+        },
+      }));
+      await flush(20);
+    });
+    await settle();
+    // Dated turn start arrives: still nothing from the previous turn.
+    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
+  });
+
+  it("keeps the current turn's capsule steady while the optimistic user message has no timestamp yet", async () => {
+    const TURN_STARTED_AT = Date.parse("2026-09-27T01:00:00.000Z");
+    const contextDeferreds = new Map<string, Deferred>();
+    const parent: SessionHeader = {
+      sessionId: "parent",
+      sessionFile: "/sessions/parent.jsonl",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Parent",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 3,
+      workspaceAccess: AUTHORIZED,
+    };
+    globalThis.fetch = controllableStubFetch({ sessions: [parent], contextDeferreds });
+    mountApp({ cwd: "/x", session: "parent" });
+    const ws = await connectReady();
+    const attach = await act(async () => {
+      void capturedStore!.openSession("parent").catch(() => undefined);
+      return waitForAttach(ws, "parent");
+    });
+    await act(async () => {
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "parent",
+          capabilities: [...LIVE_CAPS, "runtime.subagents", "runtime.todo"],
+          subagents: { revision: 1, tasks: [] },
+          todo: {
+            revision: 1,
+            items: [{ id: 1, subject: "Draft the capsule", blockedBy: [], status: "completed" }],
+          },
+        }),
+      });
+      await flush();
+    });
+    // The previous turn's checklist is out of the capsule, and it is the turn
+    // boundary the fresh send must NOT lose.
+    await settle();
+    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
+    await act(async () => {
+      contextDeferreds.get("parent")!.resolve(json({
+        context: {
+          sessionId: "parent",
+          entries: [{ entryId: "u1", message: { role: "user", content: "done with that", timestamp: TURN_STARTED_AT } }],
+          settings: { model: { provider: "anthropic", modelId: "claude-opus-4" }, thinkingLevel: "off" },
+          pageInfo: { hasMore: false },
+        },
+      }));
+      await flush(20);
+    });
+    await settle();
+    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
+
+    // The new send lands immediately (optimistic bubble, no timestamp) while
+    // the authority says the turn is running: the finished list must stay off.
+    await act(async () => {
+      void capturedStore!.sendPrompt("next task").catch(() => undefined);
+      await flush();
+      ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "parent", epoch: "e1", eventId: 1 } });
+      await flush();
+    });
+    await settle();
+    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
+
+    // A todo update from THIS turn may appear now, and it must stay put once
+    // the turn start is still the send instant.
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "todo_changed",
+          sessionId: "parent",
+          epoch: "e1",
+          eventId: 2,
+          todo: { revision: 2, items: [{ id: 2, subject: "Ship the panel", blockedBy: [], status: "in_progress" }] },
+        },
+      });
+      await flush();
+    });
+    await settle();
+    expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Ship the panel");
+  });
+
+  it("does not resurrect a finished checklist when a new turn starts running", async () => {
+    const TURN_STARTED_AT = Date.parse("2026-09-27T01:00:00.000Z");
+    const parent: SessionHeader = {
+      sessionId: "parent",
+      sessionFile: "/sessions/parent.jsonl",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Parent",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 3,
+      workspaceAccess: AUTHORIZED,
+    };
+    const contextEntries = new Map<string, SessionEntry[]>([[
+      "parent",
+      [{ entryId: "u1", message: { role: "user", content: "done with that", timestamp: TURN_STARTED_AT } }] as SessionEntry[],
+    ]]);
+    globalThis.fetch = controllableStubFetch({ sessions: [parent], contextEntries });
+    mountApp({ cwd: "/x", session: "parent" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("parent").catch(() => undefined);
+      const attach = await waitForAttach(ws, "parent");
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "parent",
+          capabilities: [...LIVE_CAPS, "runtime.subagents", "runtime.todo"],
+          todo: {
+            revision: 1,
+            items: [{ id: 1, subject: "Draft the capsule", blockedBy: [], status: "completed" }],
+          },
+        }),
+      });
+      await flush();
+    });
+    await settle();
+    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
+
+    // The turn runs with the last turn's finished snapshot still in state:
+    // nothing in this turn updated the checklist, so it stays hidden.
+    await act(async () => {
+      ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "parent", epoch: "e1", eventId: 1 } });
+      await flush();
+    });
+    await settle();
+    expect(screen.queryByRole("button", { name: "Expand status" })).toBeNull();
+  });
+
   it("the right-pane rail toggles the Files panel without a mobile-only corner toggle", async () => {
     globalThis.fetch = fileFetch();
     mountApp({ cwd: "/x" });

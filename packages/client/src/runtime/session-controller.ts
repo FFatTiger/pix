@@ -1435,7 +1435,11 @@ export class SessionController implements RuntimeControllerPort {
       ...this.optimisticUserEntries.slice(-4),
       {
         sessionId,
-        entry: { entryId: optimisticId, message: { role: "user", content: message } },
+        // The send instant is this bubble's own timestamp until the authority
+        // dates the committed entry. Without it the UI cannot tell which turn
+        // a delegation/todo belongs to and the status capsule went blank on
+        // every send.
+        entry: { entryId: optimisticId, message: { role: "user", content: message, timestamp: Date.now() } },
         ...(sessionId === this.sessionId
           ? { baseEntryId: this.liveEntries.at(-1)?.entryId ?? this.historyAnchorLeafId ?? this.snapshot?.state.leafId ?? null }
           : {}),

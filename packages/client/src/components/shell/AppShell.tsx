@@ -54,7 +54,7 @@ import type { FileViewerState } from "@/features/workspace/viewer/file-viewer-st
 import { useSelectedWorkspaceAccess } from "@/features/session-history/use-selected-workspace-access";
 import { useSubagentActivity } from "@/features/subagents/use-subagent-activity";
 import { useSessionTranscript } from "@/features/session-history/use-session-transcript";
-import { selectTurnActivities, selectTurnStartedAt, shouldShowTodos, type SubagentActivity } from "@/lib/subagent-activity";
+import { selectTurnActivities, selectTurnStartedAt, shouldShowTodos, watchTurnTodos, type SubagentActivity, type TurnTodoWatch } from "@/lib/subagent-activity";
 import { assistantPresentationKey, homePresentationKey, useRuntime, useRuntimeConnection, useRuntimeForegroundActivity, useRuntimeOwners, useSelectedRuntime, type PresentationProvenance } from "@/runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
 import { RUNTIME_OBSERVE_EXISTING_FEATURE } from "@fffattiger/pix-protocol";
@@ -788,6 +788,19 @@ export function AppShell({ search }: AppShellProps) {
     () => selectTurnStartedAt(statusTranscript.entries.map((entry) => entry.message)),
     [statusTranscript.entries],
   );
+  // "Did THIS turn update the checklist?" — tracked from the authority's todo
+  // revision, because the projection carries no timestamp. A baseline is kept
+  // per session/turn so a finished list from the last turn cannot come back
+  // when the next turn starts running. Derived during render (not in an
+  // effect) so the capsule never paints one frame with the previous answer.
+  const todoWatchRef = useRef<TurnTodoWatch | null>(null);
+  const todoWatch = watchTurnTodos(
+    todoWatchRef.current,
+    viewSessionId,
+    turnStartedAt,
+    subagentActivity.todoRevision,
+  );
+  todoWatchRef.current = todoWatch;
   const runningAgentCount = useMemo(
     () => subagentActivity.activities.filter((activity) => activity.status === "running").length,
     [subagentActivity.activities],
@@ -827,14 +840,12 @@ export function AppShell({ search }: AppShellProps) {
     () => selectTurnActivities(subagentActivity.activities, turnStartedAt),
     [subagentActivity.activities, turnStartedAt],
   );
-  const capsuleTodos = useMemo(() => {
-    // Without a dated user message the turn boundary is unknown (history still
-    // loading, older producer): keep the unfiltered list instead of guessing.
-    if (turnStartedAt === null || shouldShowTodos(subagentActivity.todos, turnRunning)) {
-      return subagentActivity.todos;
-    }
-    return [];
-  }, [subagentActivity.todos, turnRunning, turnStartedAt]);
+  const capsuleTodos = useMemo(
+    () => shouldShowTodos(subagentActivity.todos, turnRunning, todoWatch?.changed === true)
+      ? subagentActivity.todos
+      : [],
+    [subagentActivity.todos, turnRunning, todoWatch],
+  );
 
   // ── Global liveness for sidebar/tab indicators ──
   // connection.liveSessionIds is the authoritative list of session ids with a

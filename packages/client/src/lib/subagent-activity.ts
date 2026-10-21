@@ -76,14 +76,17 @@ function userMessageText(content: unknown): string {
  * the pane keeps that history, the capsule only carries the current turn.
  *
  * `turnStartedAt` is the timestamp of the session's most recent real user
- * message. `null` = unknown (history not loaded yet / snapshot missing): every
- * activity stays visible, never a silent hide.
+ * message. `null` = the turn boundary is not known yet (history page still in
+ * flight on a refresh, or an older producer that never dated its messages):
+ * only agents that are still RUNNING may show. Showing the whole delegation
+ * history until the boundary arrives made the capsule flash last turn's work
+ * for one paint and vanish again.
  */
 export function selectTurnActivities(
   activities: readonly SubagentActivity[],
   turnStartedAt: number | null,
 ): SubagentActivity[] {
-  if (turnStartedAt === null) return [...activities];
+  if (turnStartedAt === null) return activities.filter((activity) => activity.status === "running");
   return activities.filter((activity) =>
     activity.status === "running"
     || (activity.completedAt !== undefined && activity.completedAt >= turnStartedAt));
@@ -91,13 +94,68 @@ export function selectTurnActivities(
 
 /**
  * Todos stay off the capsule once the turn is over and everything is done — a
- * finished checklist is the last turn's work, not current state. While the
- * turn runs, a just-completed list stays visible so the user sees it land.
+ * finished checklist is the last turn's work, not current state. Unfinished
+ * items are current work whenever they exist; a fully completed list needs a
+ * todo update from THIS turn (`changedThisTurn`), otherwise starting the next
+ * turn would resurrect the previous checklist for as long as it runs.
  */
-export function shouldShowTodos(todos: readonly StatusTodoItem[], turnRunning: boolean): boolean {
+export function shouldShowTodos(
+  todos: readonly StatusTodoItem[],
+  turnRunning: boolean,
+  changedThisTurn: boolean,
+): boolean {
   if (todos.length === 0) return false;
-  if (turnRunning) return true;
-  return todos.some((item) => item.status !== "completed");
+  if (todos.some((item) => item.status !== "completed")) return true;
+  return turnRunning && changedThisTurn;
+}
+
+/** Todo-turn bookkeeping for the capsule: the todo projection revision and
+ * the turn start observed when it was baselined. */
+export interface TurnTodoWatch {
+  readonly sessionId: string | null;
+  readonly turnStartedAt: number | null;
+  readonly revision: number;
+  readonly changed: boolean;
+}
+
+/**
+ * Track whether the authority's todo projection advanced during THIS turn. That
+ * is the only client-determinable "this turn updated the checklist" signal: the
+ * projection carries `revision` but no timestamp, and the transcript is never
+ * allowed to date it.
+ *
+ * The baseline is re-taken when the selected session changes, when a different
+ * (non-null) turn start replaces the previous one, or when the revision goes
+ * backwards (a restarted Worker re-seeds its projection). A turn start that
+ * only becomes KNOWN later — the history page arriving after a refresh — keeps
+ * the current baseline so a todo update received while waiting is not hidden
+ * again.
+ */
+export function watchTurnTodos(
+  previous: TurnTodoWatch | null,
+  sessionId: string | null,
+  turnStartedAt: number | null,
+  revision: number | null,
+): TurnTodoWatch | null {
+  // No todo projection at all (capability off / older daemon): nothing to track.
+  if (revision === null) return null;
+  const newTurn = turnStartedAt !== null
+    && previous !== null
+    && previous.turnStartedAt !== null
+    && previous.turnStartedAt !== turnStartedAt;
+  const rewound = previous !== null && revision < previous.revision;
+  const turnStart = turnStartedAt ?? previous?.turnStartedAt ?? null;
+  if (previous === null || previous.sessionId !== sessionId || newTurn || rewound) {
+    return { sessionId, turnStartedAt: turnStart, revision, changed: false };
+  }
+  const changed = previous.changed || revision > previous.revision;
+  if (changed === previous.changed && turnStart === previous.turnStartedAt) return previous;
+  return {
+    sessionId,
+    turnStartedAt: turnStart,
+    revision: Math.max(previous.revision, revision),
+    changed,
+  };
 }
 
 /**

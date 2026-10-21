@@ -19,6 +19,12 @@ export interface SubagentActivityView {
   readonly todos: readonly StatusTodoItem[];
   /** Authoritative parent projection revision; null until a projection exists. */
   readonly revision: number | null;
+  /**
+   * Authoritative todo projection revision; null until a todo projection
+   * exists. The projection is strictly increasing while one Worker owns it, so
+   * a change is the only client-side "todo updated in this turn" signal.
+   */
+  readonly todoRevision: number | null;
   /** Parent runtime epoch fencing revision delivery; null while detached/unknown. */
   readonly epoch: string | null;
   readonly error: boolean;
@@ -49,6 +55,9 @@ export function useSubagentActivity(options: {
   const revision = enabled
     ? runtime?.snapshot?.state.subagents?.revision ?? null
     : null;
+  const todoRevision = enabled
+    ? runtime?.snapshot?.state.todo?.revision ?? null
+    : null;
   const streams = enabled
     ? readSubagentStreams(runtime?.snapshot?.state.subagents as { streams?: unknown } | undefined)
     : NO_STREAMS;
@@ -78,6 +87,7 @@ export function useSubagentActivity(options: {
     activities,
     todos,
     revision,
+    todoRevision,
     epoch: enabled ? runtime?.epoch ?? null : null,
     error: refreshError,
     loading: enabled && live && runtime?.available === true && runtime.snapshot === null,

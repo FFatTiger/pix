@@ -9,6 +9,7 @@ import {
   selectTurnStartedAt,
   shouldShowTodos,
   type SubagentActivity,
+  watchTurnTodos,
 } from "./subagent-activity";
 
 const TASKS: readonly SubagentTask[] = [
@@ -204,9 +205,11 @@ describe("selectTurnActivities", () => {
     expect(selectTurnActivities([{ ...AGENT, completedAt: 200 }], 200)).toHaveLength(1);
   });
 
-  it("keeps everything when the turn start is unknown", () => {
+  it("keeps only running agents when the turn start is unknown", () => {
     const all = [running, endedThisTurn, endedBefore, endedNoTimestamp];
-    expect(selectTurnActivities(all, null)).toEqual(all);
+    // History not loaded yet / older producer: never the whole delegation
+    // history — an undateable capsule is exactly what made it flash and vanish.
+    expect(selectTurnActivities(all, null)).toEqual([running]);
   });
 
   it("does not mutate its input", () => {
@@ -221,20 +224,67 @@ describe("shouldShowTodos", () => {
   const unfinished = [...done, { id: 2, subject: "Ship", status: "in_progress" as const }];
 
   it("hides a fully completed list once the turn is over", () => {
-    expect(shouldShowTodos(done, false)).toBe(false);
+    expect(shouldShowTodos(done, false, true)).toBe(false);
   });
 
-  it("keeps a fully completed list while the turn still runs", () => {
-    expect(shouldShowTodos(done, true)).toBe(true);
+  it("keeps a fully completed list only when this turn updated it", () => {
+    expect(shouldShowTodos(done, true, true)).toBe(true);
+    // A new turn starts running with the previous turn's finished snapshot:
+    // no update has arrived, so the checklist must not reappear.
+    expect(shouldShowTodos(done, true, false)).toBe(false);
   });
 
   it("keeps an unfinished list either way", () => {
-    expect(shouldShowTodos(unfinished, false)).toBe(true);
-    expect(shouldShowTodos(unfinished, true)).toBe(true);
+    expect(shouldShowTodos(unfinished, false, false)).toBe(true);
+    expect(shouldShowTodos(unfinished, true, false)).toBe(true);
+    expect(shouldShowTodos(unfinished, true, true)).toBe(true);
   });
 
   it("shows nothing for an empty list", () => {
-    expect(shouldShowTodos([], true)).toBe(false);
-    expect(shouldShowTodos([], false)).toBe(false);
+    expect(shouldShowTodos([], true, true)).toBe(false);
+    expect(shouldShowTodos([], false, false)).toBe(false);
+  });
+});
+
+describe("watchTurnTodos", () => {
+  it("reports a change only after the projection advances past the baseline", () => {
+    const first = watchTurnTodos(null, "s1", 100, 3)!;
+    expect(first.changed).toBe(false);
+    expect(watchTurnTodos(first, "s1", 100, 3)).toBe(first);
+    const advanced = watchTurnTodos(first, "s1", 100, 4)!;
+    expect(advanced.changed).toBe(true);
+    expect(watchTurnTodos(advanced, "s1", 100, 5)!.changed).toBe(true);
+  });
+
+  it("re-baselines when a new turn starts so it begins hidden", () => {
+    const previous = watchTurnTodos(watchTurnTodos(null, "s1", 100, 3)!, "s1", 100, 4)!;
+    expect(previous.changed).toBe(true);
+    const nextTurn = watchTurnTodos(previous, "s1", 200, 4)!;
+    expect(nextTurn.changed).toBe(false);
+    expect(watchTurnTodos(nextTurn, "s1", 200, 5)!.changed).toBe(true);
+  });
+
+  it("keeps the baseline when the turn start only becomes known later", () => {
+    // Refresh: the todo snapshot lands before the history page dates the turn.
+    const pending = watchTurnTodos(null, "s1", null, 3)!;
+    expect(pending.changed).toBe(false);
+    const dated = watchTurnTodos(pending, "s1", 100, 3)!;
+    expect(dated.changed).toBe(false);
+    expect(dated.turnStartedAt).toBe(100);
+    expect(watchTurnTodos(dated, "s1", 100, 4)!.changed).toBe(true);
+  });
+
+  it("re-baselines on a session switch and on a backwards revision", () => {
+    const previous = watchTurnTodos(watchTurnTodos(null, "s1", 100, 3)!, "s1", 100, 9)!;
+    expect(previous.changed).toBe(true);
+    expect(watchTurnTodos(previous, "s2", 100, 9)!.changed).toBe(false);
+    // A restarted Worker re-seeds its projection at a lower revision.
+    const rewound = watchTurnTodos(previous, "s1", 100, 2)!;
+    expect(rewound.changed).toBe(false);
+  });
+
+  it("tracks nothing while the capability provides no projection", () => {
+    expect(watchTurnTodos(null, "s1", 100, null)).toBeNull();
+    expect(watchTurnTodos(watchTurnTodos(null, "s1", 100, 3), "s1", 100, null)).toBeNull();
   });
 });

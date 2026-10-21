@@ -271,7 +271,7 @@ describe("SessionStore — uncertain-delivery reconciliation (lost admission rec
     // NOT a definite failure: uncertain-tagged (the Composer must show the
     // "unconfirmed" state, never "not sent", and never restore the draft).
     await expect(sendP).rejects.toMatchObject({ code: "timeout", retryable: true, phase: "uncertain" });
-    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual({ role: "user", content: "still unknown" });
+    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "still unknown" }));
     expect(h.store.getSnapshot().turnActive).toBe(false);
   });
 
@@ -305,7 +305,7 @@ describe("SessionStore — uncertain-delivery reconciliation (lost admission rec
     // Bytes of the first attempt were on the wire: the outcome is UNCERTAIN —
     // pre-wire activation semantics must not apply.
     await expect(settled).resolves.toMatchObject({ code: "timeout", retryable: true, phase: "uncertain" });
-    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual({ role: "user", content: "dies while reconciling" });
+    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "dies while reconciling" }));
   });
 
   it("an uncertain settle never allows a duplicate wire submit of a NEW operation for the same intent", async () => {
@@ -407,7 +407,7 @@ describe("SessionStore — one re-send budget, one deadline (SUBMIT_MAX_RESENDS)
     await flush();
     // Bytes were on the wire: uncertain delivery, bubble kept, never activation.
     await expect(settled).resolves.toMatchObject({ code: "timeout", phase: "uncertain" });
-    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual({ role: "user", content: "no receipt ever" });
+    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "no receipt ever" }));
     expect(h.store.getSnapshot().turnActive).toBe(false);
   });
 
