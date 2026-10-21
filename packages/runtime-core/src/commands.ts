@@ -130,18 +130,10 @@ export interface AbortCompactionCommand {
  * whose method does not match the pending request.
  */
 export type ExtensionUiResponseCommand =
-  | { type: "extension_ui_response"; id: string; method: "select" | "input" | "editor" | "custom"; value: string }
+  | { type: "extension_ui_response"; id: string; method: "select" | "input" | "editor"; value: string }
   | { type: "extension_ui_response"; id: string; method: "confirm"; confirmed: boolean }
   | { type: "extension_ui_response"; id: string; method: "questionnaire"; answers: readonly QuestionnaireAnswer[] }
-  | { type: "extension_ui_response"; id: string; method: "select" | "confirm" | "input" | "editor" | "custom" | "questionnaire"; cancelled: true };
-
-export interface ExtensionUiInputCommand {
-  type: "extension_ui_input";
-  id: string;
-  /** input/editor/custom accept incremental input; select/confirm are final-response-only. */
-  method: "input" | "editor" | "custom";
-  data: string;
-}
+  | { type: "extension_ui_response"; id: string; method: "select" | "confirm" | "input" | "editor" | "questionnaire"; cancelled: true };
 
 export interface SetAutoRetryCommand {
   type: "set_auto_retry";
@@ -215,7 +207,6 @@ export type RuntimeCommand =
   | ReloadCommand
   | AbortCompactionCommand
   | ExtensionUiResponseCommand
-  | ExtensionUiInputCommand
   | SetAutoRetryCommand
   | BashCommand
   | AbortBashCommand
@@ -249,7 +240,6 @@ export const RUNTIME_COMMAND_TYPES = [
   "reload",
   "abort_compaction",
   "extension_ui_response",
-  "extension_ui_input",
   "set_auto_retry",
   "bash",
   "abort_bash",

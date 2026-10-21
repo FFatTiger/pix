@@ -177,9 +177,6 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
       };
       return core;
     }
-    case "extension_ui_input":
-      // Strip commandId; carry the correlated method + incremental data string.
-      return { type: "extension_ui_input", id: command.id, method: command.method, data: command.data };
   }
 }
 

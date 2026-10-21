@@ -78,13 +78,12 @@ export type DriverContextState = RuntimeStateChangedContext;
 
 export interface DriverUiRequest {
   id: string;
-  method: "select" | "confirm" | "input" | "editor" | "custom" | "questionnaire";
+  method: "select" | "confirm" | "input" | "editor" | "questionnaire";
   title?: string;
   message?: string;
   options?: readonly string[];
   placeholder?: string;
   prefill?: string;
-  lines?: readonly string[];
   questions?: readonly QuestionnaireQuestion[];
   timeout?: number;
   settle(value: { value?: string; confirmed?: boolean; cancelled?: true; answers?: readonly QuestionnaireAnswer[] }): void;

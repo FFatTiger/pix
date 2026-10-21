@@ -402,6 +402,38 @@ export function assistantSentMessageBody(text: string): string {
  */
 export const ASSISTANT_NOTIFY_MESSAGE_PREFIX = "[Pix 助手工作通知]";
 
+/**
+ * Fixed marker prefix of the notice the adapter emits (through the existing
+ * `extension_notification` notice channel, no new wire kind) when an extension
+ * calls `ctx.ui.custom()`: pix runs headless, so a terminal-drawn extension UI
+ * has no web surface and `custom()` resolves `undefined` exactly like pi's own
+ * RPC mode.
+ *
+ * The adapter has no UI locale (it is a headless worker), so it emits this
+ * stable marker plus the optional triggering command name; the client owns the
+ * localized copy (`desktop.extensionCustomUnsupported`) and renders the marker
+ * line as text. One owner for the format, one owner for the copy.
+ */
+export const EXTENSION_CUSTOM_UNSUPPORTED_NOTICE_PREFIX = "[pix:ui-custom-unsupported]";
+
+/** Notice message for an unsupported `ctx.ui.custom()` call; `command` is the
+ * triggering slash command name without the leading slash when known. */
+export function extensionCustomUnsupportedNotice(command?: string): string {
+  return command === undefined || command === ""
+    ? EXTENSION_CUSTOM_UNSUPPORTED_NOTICE_PREFIX
+    : `${EXTENSION_CUSTOM_UNSUPPORTED_NOTICE_PREFIX} ${command}`;
+}
+
+/** Parsed marker line, or null when the notice is an ordinary extension notice. */
+export function parseExtensionCustomUnsupportedNotice(message: string): { command?: string } | null {
+  const firstLine = message.split("\n", 1)[0] ?? "";
+  if (firstLine !== EXTENSION_CUSTOM_UNSUPPORTED_NOTICE_PREFIX && !firstLine.startsWith(`${EXTENSION_CUSTOM_UNSUPPORTED_NOTICE_PREFIX} `)) {
+    return null;
+  }
+  const command = firstLine.slice(EXTENSION_CUSTOM_UNSUPPORTED_NOTICE_PREFIX.length).trim();
+  return command === "" ? {} : { command };
+}
+
 // --- Attachment marker-line conventions --------------------------------
 
 /**

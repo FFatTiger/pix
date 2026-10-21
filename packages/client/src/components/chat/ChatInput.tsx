@@ -232,6 +232,19 @@ const SLASH_SOURCE_ORDER: Record<SlashCommandSource, number> = {
   skill: 3,
 };
 
+/**
+ * Plugin commands the palette never offers. `/smart-compact` opens the bundled
+ * plugin's terminal-drawn panel, which pix renders natively instead: `/compact`
+ * and the settings page drive the same bundled smart-compact through the
+ * `session_before_compact` hook. Everything else the plugin registers stays
+ * off this list — only the panel-opening command is hidden.
+ */
+const HIDDEN_SLASH_COMMANDS: ReadonlySet<string> = new Set(["smart-compact"]);
+
+function isHiddenSlashCommand(command: SlashCommandPaletteItem): boolean {
+  return HIDDEN_SLASH_COMMANDS.has(command.name.toLowerCase());
+}
+
 function slashMatchRank(command: SlashCommandPaletteItem, query: string): number {
   const name = command.name.toLowerCase();
   const description = command.description?.toLowerCase() ?? "";
@@ -1240,6 +1253,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (slashQuery === null) return [];
     const commands = [...(isStreaming ? [] : builtinSlashCommands), ...(slashCommands ?? [])];
     return [...commands]
+      .filter((command) => !isHiddenSlashCommand(command))
       .filter((command) => {
         const name = command.name.toLowerCase();
         const description = command.description?.toLowerCase() ?? "";

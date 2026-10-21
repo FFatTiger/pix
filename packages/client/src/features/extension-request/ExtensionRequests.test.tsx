@@ -70,40 +70,7 @@ function ack() {
   return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
 }
 
-function extensionSnapshotFor(sessionId: string) {
-  return {
-    sessionId,
-    cwd: "/x",
-    projectRoot: "/x",
-    epoch: "e1",
-    lastEventId: 0,
-    workerStatus: "ready",
-    resumeStatus: "snapshot",
-    snapshot: {
-      sessionId,
-      cwd: "/x",
-      projectRoot: "/x",
-      state: {
-        sessionId,
-        isStreaming: false,
-        isPromptRunning: false,
-        isBashRunning: false,
-        isCompacting: false,
-        model: null,
-        messageCount: 0,
-        pendingExtensionUi: [{ id: "req-custom", method: "custom", lines: ["line one"] }],
-      },
-      capabilities: { capabilities: EXT_CAPS, version: 1 },
-      streaming: { active: false, phase: "idle" },
-    },
-  };
-}
-
-function extensionSnapshot() {
-  return extensionSnapshotFor("s1");
-}
-
-async function attachWithExtension(): Promise<FakeWebSocket> {
+async function attachWithExtension(sessionId = "s1", request: PendingUiRequest = { id: "req-input", method: "input", title: "Name", placeholder: "type" }): Promise<FakeWebSocket> {
   const store = capturedStore!;
   let ws: FakeWebSocket | undefined;
   await act(async () => {
@@ -112,29 +79,14 @@ async function attachWithExtension(): Promise<FakeWebSocket> {
     ws.serverOpen();
     ws.serverSend(ack());
     await flush();
-    void store.openSession("s1").catch(() => {});
+    void store.openSession(sessionId).catch(() => {});
     await flush();
     const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: extensionSnapshot() });
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: pendingSnapshot(sessionId, request) });
     await flush();
   });
   return ws!;
 }
-
-interface InputFrame {
-  type: string;
-  id: string;
-  payload: { sessionId: string; command: { commandId: string; type: string; data: string } };
-}
-
-function lastInputFrame(ws: FakeWebSocket): InputFrame {
-  for (let i = ws.sent.length - 1; i >= 0; i--) {
-    const frame = ws.sent[i] as InputFrame;
-    if (frame.payload?.command?.type === "extension_ui_input") return frame;
-  }
-  throw new Error("no extension_ui_input frame");
-}
-
 async function serverSend(ws: FakeWebSocket, message: unknown): Promise<void> {
   await act(async () => {
     ws.serverSend(message);
@@ -142,36 +94,33 @@ async function serverSend(ws: FakeWebSocket, message: unknown): Promise<void> {
   });
 }
 
-describe("ExtensionRequests — custom input error surfacing (F7)", () => {
+describe("ExtensionRequests — native dialog error surfacing (F7)", () => {
   beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
-  it("shows a transient FIXED error on custom input rejection and clears it on the next success", async () => {
+  it("shows a transient FIXED error on reply rejection and clears it on the next success", async () => {
     const composerRef = mountExtension();
-    const ws = await attachWithExtension();
-    // The custom panel renders with its hidden terminal textarea.
-    const textarea = screen.getByLabelText("Extension input");
-    expect(textarea).toBeTruthy();
+    const ws = await attachWithExtension("s1", { id: "req-input", method: "input", title: "Name", placeholder: "type" });
 
-    // First chunk (ArrowUp → "\x1b[A") is rejected by the runtime with session_busy.
-    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    const input = screen.getByPlaceholderText("type") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "typed answer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await flush();
-    const first = lastInputFrame(ws);
-    expect(first.payload.command.data).toBe("\x1b[A");
-    await serverSend(ws, { type: "response", id: first.id, payload: { ok: false, error: { code: "session_busy", message: "secret raw input payload", retryable: false } } });
+    const first = lastResponseFrame(ws);
+    expect(first.payload.command).toMatchObject({ id: "req-input", method: "input", value: "typed answer" });
+    await serverSend(ws, { type: "response", id: (first as { id: string }).id, payload: { ok: false, error: { code: "session_busy", message: "secret raw input payload", retryable: false } } });
 
     const alert = screen.getByRole("alert");
-    // FIXED copy only — the raw message/key/data never leak.
+    // FIXED copy only — the raw message/user text never leak.
     expect(alert.textContent).toBe("Another extension response is in progress.");
     expect(alert.textContent).not.toContain("secret");
-    expect(alert.textContent).not.toContain("\x1b[A");
+    expect(alert.textContent).not.toContain("typed answer");
 
-    // Next chunk (Enter → "\r") succeeds → the error clears.
-    fireEvent.keyDown(textarea, { key: "Enter" });
+    // The request is still pending (no close), so a second submit succeeds → error clears.
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await flush();
-    const second = lastInputFrame(ws);
-    expect(second.payload.command.data).toBe("\r");
-    await serverSend(ws, { type: "response", id: second.id, payload: { ok: true, result: { commandId: second.payload.command.commandId, result: { ok: true, type: "extension_ui_input" } } } });
+    const second = lastResponseFrame(ws);
+    await serverSend(ws, { type: "response", id: (second as { id: string }).id, payload: { ok: true, result: { commandId: second.payload.command.commandId, result: { ok: true, type: "extension_ui_response" } } } });
 
     expect(screen.queryByRole("alert")).toBeNull();
     expect(composerRef).toBeTruthy();
@@ -196,7 +145,7 @@ describe("ExtensionRequests — custom input error surfacing (F7)", () => {
           sessionId: "s1", cwd: "/x", projectRoot: "/x", epoch: "e1", lastEventId: 0, workerStatus: "ready", resumeStatus: "snapshot",
           snapshot: {
             sessionId: "s1", cwd: "/x", projectRoot: "/x",
-            state: { sessionId: "s1", isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0, pendingExtensionUi: [{ id: "req-custom", method: "custom", lines: ["x"] }] },
+            state: { sessionId: "s1", isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0, pendingExtensionUi: [{ id: "req-input", method: "input", title: "Name", placeholder: "type" }] },
             capabilities: { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 },
             streaming: { active: false, phase: "idle" },
             messages: [],
@@ -205,7 +154,7 @@ describe("ExtensionRequests — custom input error surfacing (F7)", () => {
       });
       await flush();
     });
-    expect(screen.queryByLabelText("Extension input")).toBeNull();
+    expect(screen.queryByPlaceholderText("type")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -248,22 +197,22 @@ describe("ExtensionRequests — custom input error surfacing (F7)", () => {
       ws.serverOpen();
       ws.serverSend(ack());
       await flush();
-      // Attach the selected session A with a pending custom extension request.
+      // Attach the selected session A with a pending extension request.
       void store.openSession("A").catch(() => {});
       await flush();
       const attachFrame = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
       expect(attachFrame.payload.sessionId).toBe("A");
-      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: extensionSnapshotFor("A") });
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: pendingSnapshot("A", { id: "req-A", method: "input", title: "Name", placeholder: "type" }) });
       await flush();
     });
-    // Selection A is live → the custom panel renders.
-    expect(screen.getByLabelText("Extension input")).toBeTruthy();
+    // Selection A is live → its dialog renders.
+    expect(screen.getByPlaceholderText("type")).toBeTruthy();
     const attachCountBefore = (ws!.sent as Array<{ type: string }>).filter((f) => f.type === "attach").length;
     const commandCountBefore = (ws!.sent as Array<{ type: string }>).filter((f) => f.type === "command").length;
     // Switch selection to unadmitted B: exact isolation → nothing renders, and
     // B is never admitted/attached (zero frames, zero registry admission).
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "selectB" })); await flush(); });
-    expect(screen.queryByLabelText("Extension input")).toBeNull();
+    expect(screen.queryByPlaceholderText("type")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     const attachFrames = (ws!.sent as Array<{ type: string; payload?: { sessionId?: string } }>).filter((f) => f.type === "attach");
     expect(attachFrames.length).toBe(attachCountBefore);
@@ -272,7 +221,7 @@ describe("ExtensionRequests — custom input error surfacing (F7)", () => {
     expect(store.registry.peek("B")).toBeNull();
     // Clear the selection entirely → still nothing rendered (home/file).
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "clear" })); await flush(); });
-    expect(screen.queryByLabelText("Extension input")).toBeNull();
+    expect(screen.queryByPlaceholderText("type")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
@@ -346,10 +295,10 @@ async function attachPending(
   return ws!;
 }
 
-function lastResponseFrame(ws: FakeWebSocket): { payload: { command: { type: string; id: string; method: string; value?: string; answers?: unknown } } } {
+function lastResponseFrame(ws: FakeWebSocket): { id: string; payload: { command: { type: string; commandId: string; id: string; method: string; value?: string; answers?: unknown } } } {
   for (let i = ws.sent.length - 1; i >= 0; i--) {
-    const frame = ws.sent[i] as { payload?: { command?: { type: string; id: string; method: string; value?: string; answers?: unknown } } };
-    if (frame.payload?.command?.type === "extension_ui_response") return frame as { payload: { command: { type: string; id: string; method: string; value?: string; answers?: unknown } } };
+    const frame = ws.sent[i] as { id: string; payload?: { command?: { type: string; commandId: string; id: string; method: string; value?: string; answers?: unknown } } };
+    if (frame.payload?.command?.type === "extension_ui_response") return frame as { id: string; payload: { command: { type: string; commandId: string; id: string; method: string; value?: string; answers?: unknown } } };
   }
   throw new Error("no extension_ui_response frame");
 }

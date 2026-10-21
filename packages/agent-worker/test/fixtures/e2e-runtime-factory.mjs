@@ -29,8 +29,8 @@ import { join } from "node:path";
 // reload triple runtime.tools.read (get_tools) / runtime.tools.write (set_tools)
 // / runtime.reload (reload), the D2-P7 manual-compact pair
 // runtime.compact (compact) / runtime.compact.abort (abort_compaction), the
-// D2-P8 extension-UI token runtime.extension_ui (extension_ui_response /
-// extension_ui_input), the D2 navigate token runtime.navigate (navigate_tree),
+// D2-P8 extension-UI token runtime.extension_ui (extension_ui_response),
+// the D2 navigate token runtime.navigate (navigate_tree),
 // the D2 fork token runtime.fork (fork) and the D2 auto_name token
 // runtime.auto_name (generate_session_title) are the capability-gated unlocks —
 // every runtime command is now open.
@@ -96,7 +96,6 @@ const REQUIRED_CAP = {
   reload: "runtime.reload",
   abort_compaction: "runtime.compact.abort",
   extension_ui_response: "runtime.extension_ui",
-  extension_ui_input: "runtime.extension_ui",
   set_auto_retry: "runtime.queue",
   bash: "runtime.bash",
   abort_bash: "runtime.bash.abort",
@@ -366,7 +365,7 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
 
   function waitForUi(request) {
     return new Promise((resolve) => {
-      const entry = { request, resolve, data: "", settled: false, baseLines: Array.isArray(request.lines) ? [...request.lines] : undefined, updates: 0 };
+      const entry = { request, resolve, data: "", settled: false };
       pendingUi = [...pendingUi, entry];
       emit({ type: "extension_ui_request", sessionId, request });
       emit({ type: "runtime_state_changed", sessionId });
@@ -386,7 +385,6 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       case "confirm": return { ...base, method, title: "Confirm", message: "Continue?" };
       case "input": return { ...base, method, title: "Enter", placeholder: "value" };
       case "editor": return { ...base, method, title: "Edit", prefill: "prefill" };
-      case "custom": return { ...base, method, lines: ["Custom UI lines"] };
       default: throw new Error(`unknown ui method: ${method}`);
     }
   }
@@ -887,36 +885,6 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           const cancelled = command.responseKind === "cancelled";
           settleUi(entry, { cancelled, abort: false }, entry.data);
           return { ok: true, type: "extension_ui_response" };
-        }
-        case "extension_ui_input": {
-          const entry = pendingUi.find((item) => item.request.id === command.id);
-          if (!entry) {
-            return { ok: false, type: "extension_ui_input", error: { code: "not_found", message: `no pending extension UI input: ${command.id}`, retryable: false } };
-          }
-          // Exact method correlation: only input/editor/custom carry incremental
-          // input (select/confirm are final-response-only and reject at the
-          // Protocol schema before ever reaching here).
-          if (entry.request.method !== command.method) {
-            return { ok: false, type: "extension_ui_input", error: { code: "invalid_input", message: `extension input method mismatch for request ${command.id}`, retryable: false } };
-          }
-          entry.data = `${entry.data}${command.data}`;
-          // E15: a custom panel re-publishes the SAME request id with updated
-          // lines (canonical upsert — the shared projection replaces by id, so
-          // live/replay observers see incremental updates; a close tombstone
-          // still removes it and can never be resurrected by replay).
-          if (entry.request.method === "custom") {
-            entry.updates += 1;
-            entry.request = {
-              ...entry.request,
-              lines: [
-                ...(entry.baseLines ?? []),
-                `seq:${entry.updates} chunk=${JSON.stringify(command.data)} buf=${JSON.stringify(entry.data)}`,
-              ],
-            };
-            emit({ type: "extension_ui_request", sessionId, request: structuredClone(entry.request) });
-            emit({ type: "runtime_state_changed", sessionId });
-          }
-          return { ok: true, type: "extension_ui_input" };
         }
         default:
           break;

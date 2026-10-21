@@ -449,8 +449,6 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       }
       case "extension_ui_response":
         return this.executeExtensionResponse(command);
-      case "extension_ui_input":
-        return this.executeExtensionResponse(command);
       case "set_auto_retry":
         this.autoRetry = command.enabled;
         this.emitStateChanged();
@@ -975,7 +973,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
   }
 
   private executeExtensionResponse(
-    command: Extract<RuntimeCommand, { type: "extension_ui_response" | "extension_ui_input" }>,
+    command: Extract<RuntimeCommand, { type: "extension_ui_response" }>,
   ): RuntimeCommandResult {
     const pending = this.pendingExtension;
     if (!pending || pending.request.id !== command.id) {
@@ -1276,13 +1274,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
             resolve({ aborted: true, data: "" });
             return;
           }
-          resolve({
-            aborted: false,
-            data:
-              result.command.type === "extension_ui_input"
-                ? result.command.data
-                : "",
-          });
+          resolve({ aborted: false, data: "" });
         },
       };
     });

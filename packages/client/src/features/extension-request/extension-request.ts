@@ -13,9 +13,9 @@ import type { ExtensionUiInteractiveMethod, ExtensionUiRequest, QuestionnaireAns
 export const EXTENSION_UI_CAPABILITY = "runtime.extension_ui";
 
 /** Interactive request methods — the only ones that produce a client response. */
-const INTERACTIVE_METHODS = new Set<string>(["select", "confirm", "input", "editor", "custom", "questionnaire"]);
+const INTERACTIVE_METHODS = new Set<string>(["select", "confirm", "input", "editor", "questionnaire"]);
 
-/** An interactive extension request (select/confirm/input/editor/custom). */
+/** An interactive extension request (select/confirm/input/editor/questionnaire). */
 export type InteractiveExtensionUiRequest = Extract<ExtensionUiRequest, { method: ExtensionUiInteractiveMethod }>;
 
 /** A pending request is interactive when the user must answer it. */
@@ -70,7 +70,7 @@ export function isExtensionReplyCompatible(
     case "cancelled": return isInteractiveRequest(request);
     case "selected": return request.method === "select";
     case "confirmed": return request.method === "confirm";
-    case "value": return request.method === "input" || request.method === "editor" || request.method === "custom";
+    case "value": return request.method === "input" || request.method === "editor";
     case "questionnaire": return request.method === "questionnaire";
     default: return false;
   }

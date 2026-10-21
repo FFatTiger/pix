@@ -1,8 +1,5 @@
 import { z } from "zod";
-import {
-  ExtensionUiInputCommandSchema,
-  ExtensionUiResponseCommandSchema,
-} from "./extension.js";
+import { ExtensionUiResponseCommandSchema } from "./extension.js";
 import { SideChatIdSchema, MAX_SIDE_CHAT_MESSAGE_CHARS } from "./side-chat.js";
 import {
   ImageAttachmentArraySchema,
@@ -148,7 +145,7 @@ export const AbortCompactionCommandSchema = z.strictObject({
   type: z.literal("abort_compaction"),
 });
 
-export { ExtensionUiResponseCommandSchema, ExtensionUiInputCommandSchema } from "./extension.js";
+export { ExtensionUiResponseCommandSchema } from "./extension.js";
 
 export const SetAutoRetryCommandSchema = z.strictObject({
   ...commandBase,
@@ -244,7 +241,6 @@ export const RuntimeCommandSchema = z.union([
     SideChatSetModelCommandSchema,
   ]),
   ExtensionUiResponseCommandSchema,
-  ExtensionUiInputCommandSchema,
 ]);
 
 export type RuntimeCommand = z.infer<typeof RuntimeCommandSchema>;
@@ -272,7 +268,6 @@ export const RUNTIME_COMMAND_TYPES = [
   "reload",
   "abort_compaction",
   "extension_ui_response",
-  "extension_ui_input",
   "set_auto_retry",
   "bash",
   "abort_bash",

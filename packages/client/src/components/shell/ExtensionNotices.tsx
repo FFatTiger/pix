@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { BellSimple, X } from "@phosphor-icons/react";
 import type { ExtensionNotificationItem } from "@fffattiger/pix-protocol";
+import { parseExtensionCustomUnsupportedNotice } from "@fffattiger/pix-protocol";
 import { useI18n } from "@/hooks/useI18n";
 
 /** How long a new notice stays before it fades. The bell holds the full text. */
@@ -9,6 +10,20 @@ const TOAST_AUTO_HIDE_MS = 4000;
 const TOAST_FADE_MS = 200;
 
 const URL_PATTERN = /https?:\/\/\S+/g;
+
+/**
+ * Notice copy for display. An adapter-emitted "custom UI unsupported" notice
+ * carries a stable protocol marker line plus the triggering command name (the
+ * headless worker has no UI locale); the localized sentence is owned here, so
+ * the user sees prose instead of the marker. Every other notice is shown as-is.
+ */
+function noticeText(notice: ExtensionNotificationItem, t: (key: string, params?: Record<string, string | number>) => string): string {
+  const parsed = parseExtensionCustomUnsupportedNotice(notice.message);
+  if (parsed === null) return notice.message;
+  return parsed.command === undefined
+    ? t("desktop.extensionCustomUnsupported")
+    : t("desktop.extensionCustomUnsupportedCommand", { command: parsed.command.startsWith("/") ? parsed.command : `/${parsed.command}` });
+}
 
 function noticeKey(notice: ExtensionNotificationItem): string {
   return `${notice.at}:${notice.message}`;
@@ -105,7 +120,7 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
           aria-label={latest.message}
         >
           <span className="extension-notice-level-dot" aria-hidden="true" />
-          <span className="extension-notice-message">{latest.message}</span>
+          <span className="extension-notice-message">{noticeText(latest, t)}</span>
         </div>
       ) : null}
       {phase === "hidden" && !listOpen ? (
@@ -144,7 +159,7 @@ export function ExtensionNotices({ notices }: { notices: readonly ExtensionNotif
           {recent.map((notice) => (
             <div key={noticeKey(notice)} className="extension-notice-row" data-level={notice.level}>
               <span className="extension-notice-level-dot" aria-hidden="true" />
-              <span className="extension-notice-row-text">{noticeBody(notice.message)}</span>
+              <span className="extension-notice-row-text">{noticeBody(noticeText(notice, t))}</span>
             </div>
           ))}
         </div>

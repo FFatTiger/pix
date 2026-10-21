@@ -78,6 +78,28 @@ describe("ExtensionNotices", () => {
     expect(link?.getAttribute("href")).toBe("https://api.loremem.com");
   });
 
+  it("renders the localized custom-panel notice instead of its wire marker line", () => {
+    window.localStorage.setItem("pi-locale", "zh-CN");
+    const withCommand = notice("[pix:ui-custom-unsupported] smart-compact", 1);
+    const withoutCommand = notice("[pix:ui-custom-unsupported]", 2);
+    mount([withCommand]);
+    expect(screen.getByTestId("extension-notices").textContent).toBe(
+      "/smart-compact：此插件功能需要终端界面，网页端不支持，可在终端 pi 中使用。",
+    );
+    cleanup();
+    window.localStorage.setItem("pi-locale", "en");
+    mount([withCommand]);
+    expect(screen.getByTestId("extension-notices").textContent).toBe(
+      "/smart-compact: this plugin feature needs a terminal UI, which the web app does not support. Use it in the terminal pi.",
+    );
+    cleanup();
+    mount([withoutCommand]);
+    expect(screen.getByTestId("extension-notices").textContent).toBe(
+      "This plugin feature needs a terminal UI, which the web app does not support. Use it in the terminal pi.",
+    );
+    window.localStorage.removeItem("pi-locale");
+  });
+
   it("renders nothing when there are no notices", () => {
     mount([]);
     expect(screen.queryByTestId("extension-notices")).toBeNull();

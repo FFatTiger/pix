@@ -104,7 +104,7 @@ describe("independent interrupt wire path", () => {
 
 describe("ACL0 semantic fixtures remain protocol-local", () => {
   it("keeps exhaustive command and interrupt capability matrices", () => {
-    assert.equal(Object.keys(RUNTIME_COMMAND_CAPABILITY_MATRIX).length, 31);
+    assert.equal(Object.keys(RUNTIME_COMMAND_CAPABILITY_MATRIX).length, 30);
     assert.deepEqual(RUNTIME_INTERRUPT_CAPABILITY_MATRIX, {
       abort: "runtime.abort",
       abort_compaction: "runtime.compact.abort",
@@ -230,7 +230,7 @@ describe("strict response and UI correlation", () => {
   it("requires extension response correlation ids and exclusive variants", async () => {
     const { RuntimeCommandSchema } = await import("../dist/index.js");
     assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_response", commandId: "c", id: "ui", method: "confirm", responseKind: "confirmed", confirmed: false }).success, true);
-    assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method: "input", data: "x" }).success, true);
+    assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method: "input", data: "x" }).success, false, "incremental extension input was removed with the custom panel");
     assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_response", commandId: "c", method: "confirm", responseKind: "confirmed", confirmed: true }).success, false);
     assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_response", commandId: "c", id: "ui", method: "confirm", responseKind: "value", value: "x" }).success, false);
   });

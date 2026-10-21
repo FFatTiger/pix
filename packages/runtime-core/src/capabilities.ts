@@ -29,7 +29,7 @@ import type { RuntimeInterruptType } from "./interrupt.js";
  * - bash          → `runtime.bash`
  * - abort_bash    → `runtime.bash.abort`
  * - reload        → `runtime.reload`
- * - extension_ui_response / extension_ui_input → `runtime.extension_ui`
+ * - extension_ui_response → `runtime.extension_ui`
  * - generate_session_title → `runtime.auto_name`
  * - set_session_name → `runtime.session.rename`
  * - get_session_stats → `runtime.stats`
@@ -97,7 +97,6 @@ export const RUNTIME_COMMAND_CAPABILITIES = {
   reload: "runtime.reload",
   abort_compaction: "runtime.compact.abort",
   extension_ui_response: "runtime.extension_ui",
-  extension_ui_input: "runtime.extension_ui",
   set_auto_retry: "runtime.queue",
   bash: "runtime.bash",
   abort_bash: "runtime.bash.abort",

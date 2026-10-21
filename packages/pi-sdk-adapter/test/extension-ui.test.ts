@@ -212,77 +212,20 @@ describe("adapter extension UI (D2-P8)", () => {
     assert.deepEqual(await pendingIds(adapter), []);
   });
 
-  it("custom incremental input: exact-method key data reaches the driver in order, final response closes, late input is not_found", async () => {
-    const { driver, controls } = makeDriver();
-    const adapter = new CanonicalAgentRuntimeAdapter(driver);
-    await adapter.ready();
-    const events = await collectEvents(adapter);
-    controls.requestUi({ id: "ui-custom-1", method: "custom", lines: ["terminal"] });
-    assert.deepEqual(await pendingIds(adapter), ["ui-custom-1"]);
-
-    // E15: a custom panel streams raw terminal key data — arrows, characters,
-    // Ctrl+C — and every chunk must reach driver.input in send order.
-    const keys = ["\x1b[A", "a", "b", "\x03"];
-    for (const data of keys) {
-      const result = await adapter.execute({ type: "extension_ui_input", id: "ui-custom-1", method: "custom", data } as RuntimeCommand);
-      assert.equal(result.ok, true, JSON.stringify(result));
-    }
-    assert.deepEqual(
-      controls.inputCalls.map((call) => call.data),
-      keys,
-      "custom input chunks must be delivered to the driver in exact FIFO order",
-    );
-    assert.deepEqual(await pendingIds(adapter), ["ui-custom-1"], "incremental custom input must NOT close the request");
-    assert.equal(uiRequests(events).filter((r) => r.closed === true).length, 0);
-
-    // Wrong-method input against the custom request: invalid_input, no driver
-    // call, request stays pending (exact method correlation).
-    const wrong = await adapter.execute({ type: "extension_ui_input", id: "ui-custom-1", method: "editor", data: "x" } as RuntimeCommand);
-    assert.equal(wrong.ok, false);
-    if (!wrong.ok) assert.equal(wrong.error.code, "invalid_input");
-    assert.equal(controls.inputCalls.length, keys.length, "wrong-method input must never reach the driver");
-
-    // Final response settles the driver with the accumulated value → exactly
-    // one close tombstone + snapshot removal.
-    const response = await adapter.execute({ type: "extension_ui_response", id: "ui-custom-1", method: "custom", value: "done" } as RuntimeCommand);
-    assert.equal(response.ok, true);
-    assert.deepEqual(controls.settleCalls, [{ id: "ui-custom-1", value: { value: "done" } }]);
-    const closes = uiRequests(events).filter((r) => r.closed === true);
-    assert.equal(closes.length, 1);
-    assert.ok(closes[0], "close tombstone must be present");
-    assert.equal(closes[0]!.id, "ui-custom-1");
-    assert.deepEqual(await pendingIds(adapter), []);
-
-    // Late input after close: not_found, never reaches the driver, no second close.
-    const late = await adapter.execute({ type: "extension_ui_input", id: "ui-custom-1", method: "custom", data: "z" } as RuntimeCommand);
-    assert.equal(late.ok, false);
-    if (!late.ok) assert.equal(late.error.code, "not_found");
-    assert.equal(controls.inputCalls.length, keys.length, "late input must never reach the driver");
-    assert.equal(uiRequests(events).filter((r) => r.closed === true).length, 1);
-
-    // Key data never leaks into errors (only the request id appears).
-    for (const failure of [wrong, late]) {
-      const serialized = JSON.stringify(failure);
-      assert.ok(!serialized.includes("\\u001b") && !serialized.includes("\\u0003"), "raw key data must never leak into errors");
-    }
-  });
-
-  it("input forwards only for the exact method and never closes; final response closes", async () => {
+  it("the removed incremental extension input is rejected (custom panel removal)", async () => {
     const { driver, controls } = makeDriver();
     const adapter = new CanonicalAgentRuntimeAdapter(driver);
     await adapter.ready();
     const events = await collectEvents(adapter);
     controls.requestUi({ id: "ui-4", method: "input", title: "Enter", placeholder: "v" });
 
-    const wrong = await adapter.execute({ type: "extension_ui_input", id: "ui-4", method: "editor", data: "x" } as RuntimeCommand);
-    assert.equal(wrong.ok, false);
-    if (!wrong.ok) assert.equal(wrong.error.code, "invalid_input");
-    assert.deepEqual(controls.inputCalls, [], "wrong-method input must never reach the driver");
-
-    const okInput = await adapter.execute({ type: "extension_ui_input", id: "ui-4", method: "input", data: "hello" } as RuntimeCommand);
-    assert.equal(okInput.ok, true);
-    assert.deepEqual(controls.inputCalls, [{ id: "ui-4", data: "hello" }]);
-    assert.deepEqual(await pendingIds(adapter), ["ui-4"], "incremental input must NOT close the request");
+    // No legacy frame can reach the driver: the command type no longer exists
+    // on the runtime surface at all.
+    const legacy = { type: "extension_ui_input", id: "ui-4", method: "input", data: "hello" } as unknown as RuntimeCommand;
+    const rejected = await adapter.execute(legacy);
+    assert.equal(rejected.ok, false);
+    assert.deepEqual(controls.inputCalls, [], "no incremental input must reach the driver");
+    assert.deepEqual(await pendingIds(adapter), ["ui-4"], "the pending request stays open");
     assert.equal(uiRequests(events).filter((r) => r.closed === true).length, 0);
 
     const response = await adapter.execute({ type: "extension_ui_response", id: "ui-4", method: "input", value: "hello" } as RuntimeCommand);
@@ -405,11 +348,10 @@ describe("adapter extension UI (D2-P8)", () => {
     const incremental = await adapter.execute({
       type: "extension_ui_input",
       id: "ui-q",
-      method: "custom",
+      method: "questionnaire",
       data: "x",
-    } as RuntimeCommand);
+    } as unknown as RuntimeCommand);
     assert.equal(incremental.ok, false);
-    if (!incremental.ok) assert.equal(incremental.error.code, "invalid_input");
     assert.deepEqual(await pendingIds(adapter), ["ui-q"]);
 
     const numericCustom = await adapter.execute({

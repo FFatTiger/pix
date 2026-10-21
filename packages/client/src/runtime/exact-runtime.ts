@@ -142,7 +142,6 @@ export interface ExactRuntimeApi extends ExactRuntimeView {
     activationSettings?: PromptActivationSettings,
   ) => Promise<unknown>;
   readonly respondExtensionUi: (request: ExtensionUiRequest, reply: ExtensionUiReply) => Promise<void>;
-  readonly sendExtensionUiInput: (request: ExtensionUiRequest, data: string) => Promise<void>;
   readonly steer: (message: string, images?: readonly ImageAttachment[]) => Promise<unknown>;
   readonly followUp: (message: string, images?: readonly ImageAttachment[]) => Promise<unknown>;
   readonly clearQueue: () => Promise<unknown>;
@@ -291,7 +290,6 @@ export function createExactActions(
     sendPromptToSession: (message, images, activationSettings) =>
       withController((controller) => controller.sendPromptToSession(sessionId, message, images, activationSettings), true),
     respondExtensionUi: (request, reply) => withController((controller) => controller.respondExtensionUi(request, reply)),
-    sendExtensionUiInput: (request, data) => withController((controller) => controller.sendExtensionUiInput(request, data)),
     steer: (message, images) => withController((controller) => controller.steer(message, images), true),
     followUp: (message, images) => withController((controller) => controller.followUp(message, images), true),
     clearQueue: () => withController((controller) => controller.clearQueue()),

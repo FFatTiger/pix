@@ -30,7 +30,6 @@ export const RUNTIME_COMMAND_CAPABILITY_MATRIX = {
   reload: "runtime.reload",
   abort_compaction: "runtime.compact.abort",
   extension_ui_response: "runtime.extension_ui",
-  extension_ui_input: "runtime.extension_ui",
   set_auto_retry: "runtime.queue",
   bash: "runtime.bash",
   abort_bash: "runtime.bash.abort",

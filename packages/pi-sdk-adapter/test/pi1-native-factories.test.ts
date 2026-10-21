@@ -435,3 +435,81 @@ describe("Pi 1.0 global tool selection (pixDefaultTools)", () => {
     }
   });
 });
+
+/**
+ * pi RPC-mode semantics for terminal self-drawn extension UIs: `ctx.ui.custom()`
+ * resolves `undefined` immediately, no TUI factory runs, no custom panel request
+ * is published, and the user gets ONE notice naming the triggering command.
+ */
+describe("ctx.ui.custom() follows pi RPC-mode semantics", () => {
+  it("resolves undefined, renders nothing, emits one notice naming the command, and never hangs the command", async () => {
+    let factoryRan = false;
+    let customResult: unknown = "unset";
+    const h = await buildHarness({
+      extraFactories: [{
+        name: "terminal-panel-command",
+        factory: (pi) => {
+          pi.registerCommand("terminal-panel", {
+            description: "opens a terminal-drawn panel",
+            handler: async (_args, ctx) => {
+              // pi-written plugins branch on undefined; a plugin that does not
+              // still just continues (no dialog is left waiting).
+              customResult = await ctx.ui.custom(() => { factoryRan = true; throw new Error("factory must not run"); });
+            },
+          });
+        },
+      }],
+    });
+    try {
+      const receipt = await h.driver.prompt("/terminal-panel");
+      assert.equal(receipt.disposition, "handled", "the command handler returns instead of hanging on a panel");
+      assert.equal(factoryRan, false, "the TUI factory is never invoked");
+      assert.equal(customResult, undefined, "custom() resolves undefined like pi RPC mode");
+      assert.deepEqual(
+        h.emitted.filter((event) => event.type === "extension_ui_request"),
+        [],
+        "no custom panel request is ever published",
+      );
+
+      const notices = h.emitted.filter((event) => event.type === "extension_notification");
+      assert.equal(notices.length, 1, "exactly one notice per custom() call");
+      const notice = notices[0];
+      assert.equal(notice?.type === "extension_notification" ? notice.level : null, "info");
+      const message = notice?.type === "extension_notification" ? notice.message : "";
+      assert.ok(message.startsWith("[pix:ui-custom-unsupported]"), `marker line expected, got ${message}`);
+      assert.ok(message.endsWith(" terminal-panel"), `triggering command expected, got ${message}`);
+      assert.equal(h.emitted.some((event) => event.type === "extension_error"), false, "not an error");
+      assert.equal(h.driver.getState().messageCount, 0, "no transcript entries appended");
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("omits the command name when custom() is not reached through a slash command", async () => {
+    let customResult: unknown = "unset";
+    let ran = false;
+    const h = await buildHarness({
+      extraFactories: [{
+        name: "turn-custom",
+        factory: (pi) => {
+          pi.on("session_start", async (_event, ctx) => {
+            if (ran) return;
+            ran = true;
+            customResult = await ctx.ui.custom(() => { throw new Error("factory must not run"); });
+          });
+        },
+      }],
+    });
+    try {
+      // session_start fires during bindExtensions — no slash command involved.
+      assert.equal(ran, true, "the hook ran");
+      assert.equal(customResult, undefined, "custom() resolves undefined outside a command too");
+      const notices = h.emitted.filter((event) => event.type === "extension_notification");
+      assert.equal(notices.length, 1);
+      const message = notices[0]?.type === "extension_notification" ? notices[0].message : "";
+      assert.equal(message, "[pix:ui-custom-unsupported]", "marker only, no fabricated command name");
+    } finally {
+      await h.close();
+    }
+  });
+});

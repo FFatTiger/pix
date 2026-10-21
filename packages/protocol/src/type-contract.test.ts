@@ -39,8 +39,7 @@ export type ProtocolTypeAssertions =
   | Assert<Equal<WsVisibility["payload"]["visible"], boolean>>
   | Assert<Equal<WsInterruptResult["payload"]["interruptType"], RuntimeInterruptResult["type"]>>
   | Assert<Equal<import("./extension.js").ExtensionUiResponseExchange["command"]["type"], "extension_ui_response">>
-  | Assert<Equal<import("./extension.js").ExtensionUiInputExchange["command"]["method"], "input" | "editor" | "custom">>
-  | Assert<Equal<import("./extension.js").ExtensionUiInteractiveMethod, "select" | "confirm" | "input" | "editor" | "custom" | "questionnaire">>
+  | Assert<Equal<import("./extension.js").ExtensionUiInteractiveMethod, "select" | "confirm" | "input" | "editor" | "questionnaire">>
   | Assert<Equal<Extract<import("./extension.js").ExtensionUiRequest, { method: "questionnaire" }> ["questions"][number]["multiSelect"], boolean>>
   | Assert<Equal<Extract<import("./extension.js").ExtensionUiResponseCommand, { responseKind: "questionnaire" }> ["answers"][number]["kind"], "option" | "multi" | "custom">>
   | Assert<Equal<

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  ExtensionUiInputExchangeSchema,
   ExtensionUiRequestSchema,
   ExtensionUiResponseExchangeSchema,
   ImageAttachmentArraySchema,
@@ -170,7 +169,6 @@ describe("C: extension method/response binding", () => {
     { id: "7", method: "setWidget", widgetKey: "w" },
     { id: "8", method: "setTitle", title: "T" },
     { id: "9", method: "set_editor_text", text: "x" },
-    { id: "10", method: "custom", lines: ["x"] },
     { id: "11", method: "questionnaire", questions: [{ header: "H", question: "Q?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }], multiSelect: false }] },
   ];
   it("accepts every request method and rejects cross-method fields", () => {
@@ -187,7 +185,7 @@ describe("C: extension method/response binding", () => {
     assert.equal(command({ method: "confirm", responseKind: "value", value: "x" }), false);
     assert.equal(command({ method: "select", responseKind: "confirmed", confirmed: true }), false);
     assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method: "confirm", data: "x" }).success, false);
-    assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method: "custom", data: "\x1b[A" }).success, true, "E15 custom incremental input");
+    assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method: "custom", data: "\x1b[A" }).success, false, "the custom panel method was removed");
     for (const method of ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]) {
       assert.equal(command({ method, responseKind: "cancelled", cancelled: true }), false, method);
       assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method, data: "x" }).success, false, method);
@@ -200,29 +198,18 @@ describe("C: extension method/response binding", () => {
     assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request: confirmRequest, command: { type: "extension_ui_response", commandId: "c-1", id: "ui-confirm", method: "select", responseKind: "selected", selected: "fake" } }).success, false);
     assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request: confirmRequest, command: { ...confirmCommand, id: "other" } }).success, false);
 
-    const inputRequest = { id: "ui-input", method: "input", title: "Input" };
-    const inputCommand = { type: "extension_ui_input", commandId: "c-2", id: "ui-input", method: "input", data: "x" };
-    assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request: inputRequest, command: inputCommand }).success, true);
-    assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request: { id: "ui-editor", method: "editor", title: "Edit" }, command: inputCommand }).success, false);
-    // E15: a custom request accepts custom incremental key data (exact method),
-    // but never an input/editor-method input command (mismatch).
-    const customInputCommand = { type: "extension_ui_input", commandId: "c-3", id: "ui-custom", method: "custom", data: "\x03" };
-    assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request: { id: "ui-custom", method: "custom", lines: ["x"] }, command: customInputCommand }).success, true);
-    assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request: { id: "ui-custom", method: "custom", lines: ["x"] }, command: { ...customInputCommand, method: "input" } }).success, false);
+    // Non-interactive methods never produce a client response command.
+    const inputCommand = { type: "extension_ui_response", commandId: "c-2", id: "ui-note", method: "input", responseKind: "cancelled", cancelled: true };
     for (const request of [
-      { id: "ui-custom", method: "custom", lines: ["x"] },
       { id: "ui-notify", method: "notify", message: "x", notifyType: "info" },
       { id: "ui-status", method: "setStatus", statusKey: "k" },
       { id: "ui-widget", method: "setWidget", widgetKey: "w" },
       { id: "ui-title", method: "setTitle", title: "t" },
       { id: "ui-editor-text", method: "set_editor_text", text: "x" },
     ]) {
-      assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request, command: { ...inputCommand, id: request.id } }).success, false, request.method);
-      if (request.method !== "custom") {
-        assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request, command: { type: "extension_ui_response", commandId: "c", id: request.id, method: "input", responseKind: "cancelled", cancelled: true } }).success, false, request.method);
-      }
+      assert.equal(ExtensionUiRequestSchema.safeParse(request).success, true, request.method);
+      assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request, command: { ...inputCommand, id: request.id } }).success, false, request.method);
     }
-    assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request: { id: "ui-custom", method: "custom", lines: ["x"] }, command: { type: "extension_ui_response", commandId: "c", id: "ui-custom", method: "custom", responseKind: "value", value: "done" } }).success, true);
   });
 });
 

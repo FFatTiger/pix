@@ -108,20 +108,10 @@ describe("command-mapper (protocol → core, commandId stripped)", () => {
     );
   });
 
-  it("extension_ui_input preserves method/commandId-strip and carries data", () => {
+  it("extension_ui_response keeps the correlated method and drops commandId", () => {
     assert.deepEqual(
-      coreFor({ type: "extension_ui_input", id: "r1", method: "input", data: "incremental" }),
-      { type: "extension_ui_input", id: "r1", method: "input", data: "incremental" },
-    );
-    assert.deepEqual(
-      coreFor({ type: "extension_ui_input", id: "r1", method: "editor", data: "edit" }),
-      { type: "extension_ui_input", id: "r1", method: "editor", data: "edit" },
-    );
-    // E15: custom incremental key data keeps its method (exact correlation is
-    // enforced downstream against the pending request, never widened here).
-    assert.deepEqual(
-      coreFor({ type: "extension_ui_input", id: "r1", method: "custom", data: "\x1b[A" }),
-      { type: "extension_ui_input", id: "r1", method: "custom", data: "\x1b[A" },
+      coreFor({ type: "extension_ui_response", id: "r1", method: "editor", responseKind: "value", value: "edit" }),
+      { type: "extension_ui_response", id: "r1", method: "editor", value: "edit" },
     );
   });
 });

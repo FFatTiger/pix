@@ -4,10 +4,10 @@ import {
   ExtensionUiRequestSchema,
   ExtensionUiRequestEventDataSchema,
   ExtensionUiResponseCommandSchema,
-  ExtensionUiInputCommandSchema,
   ExtensionUiResponseExchangeSchema,
-  ExtensionUiInputExchangeSchema,
   ExtensionUiInteractiveMethodSchema,
+  ExtensionUiRequestMethodSchema,
+  RuntimeCommandSchema,
   reduceRuntimeEventData,
 } from "../dist/index.js";
 
@@ -72,7 +72,6 @@ describe("ExtensionUiRequestSchema — strict optional closed marker", () => {
       { id: "a", method: "setWidget", widgetKey: "k", closed: true },
       { id: "a", method: "setTitle", title: "t", closed: true },
       { id: "a", method: "set_editor_text", text: "t", closed: true },
-      { id: "a", method: "custom", lines: ["l"], closed: true },
       { id: "a", method: "questionnaire", questions: [{ header: "H", question: "Q?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }], multiSelect: false }], closed: true },
     ]) {
       assert.equal(ExtensionUiRequestSchema.parse(request).closed, true);
@@ -88,8 +87,8 @@ describe("ExtensionUiRequestSchema — strict optional closed marker", () => {
     assert.equal(event.request.closed, true);
   });
 
-  it("interactive methods are exactly select/confirm/input/editor/custom/questionnaire", () => {
-    assert.deepEqual([...ExtensionUiInteractiveMethodSchema.options], ["select", "confirm", "input", "editor", "custom", "questionnaire"]);
+  it("interactive methods are exactly select/confirm/input/editor/questionnaire", () => {
+    assert.deepEqual([...ExtensionUiInteractiveMethodSchema.options], ["select", "confirm", "input", "editor", "questionnaire"]);
   });
 });
 
@@ -198,21 +197,25 @@ describe("extension command correlation — exact method on the wire", () => {
     assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request, command }).success, false);
   });
 
-  it("ExtensionUiInputExchangeSchema rejects method mismatch", () => {
-    const request = inputRequest("r1");
-    const command = { commandId: "c1", type: "extension_ui_input", id: "r1", method: "editor", data: "x" };
-    assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request, command }).success, false);
+  it("incremental extension input is gone (custom panel removal)", () => {
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "input", data: "x" }).success, false);
   });
 
-  it("ExtensionUiInputCommandSchema permits input/editor/custom and rejects select/confirm + non-interactive", () => {
-    assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "input", data: "x" }).success, true);
-    assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "editor", data: "x" }).success, true);
-    assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "custom", data: "\x1b[A" }).success, true, "E15 custom incremental key data");
-    assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "confirm", data: "x" }).success, false);
-    assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "select", data: "x" }).success, false);
-    for (const method of ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]) {
-      assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method, data: "x" }).success, false, method);
+  it("no extension request method accepts incremental input any more", () => {
+    for (const method of ["input", "editor", "custom", "select", "confirm", "questionnaire"]) {
+      assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method, data: "x" }).success, false, method);
     }
+  });
+
+  it("removed custom panel method is rejected on every extension-UI union", () => {
+    const customRequest = { id: "r1", method: "custom", lines: ["x"] };
+    assert.equal(ExtensionUiRequestSchema.safeParse(customRequest).success, false);
+    assert.equal(ExtensionUiRequestMethodSchema.safeParse("custom").success, false);
+    assert.equal(ExtensionUiInteractiveMethodSchema.safeParse("custom").success, false);
+    assert.equal(ExtensionUiResponseCommandSchema.safeParse({
+      commandId: "c1", type: "extension_ui_response", id: "r1", method: "custom", responseKind: "value", value: "v",
+    }).success, false);
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "custom", data: "x" }).success, false);
   });
 
   it("wrong result variant is rejected at the schema (fail-closed, no coercion)", () => {
@@ -220,7 +223,7 @@ describe("extension command correlation — exact method on the wire", () => {
     assert.equal(ExtensionUiResponseCommandSchema.safeParse({
       commandId: "c1", type: "extension_ui_response", id: "r1", method: "select", responseKind: "value", value: "optA",
     }).success, false);
-    // input/editor/custom can only carry value|cancelled — confirmed is invalid.
+    // input/editor can only carry value|cancelled — confirmed is invalid.
     assert.equal(ExtensionUiResponseCommandSchema.safeParse({
       commandId: "c1", type: "extension_ui_response", id: "r1", method: "input", responseKind: "confirmed", confirmed: true,
     }).success, false);
@@ -248,11 +251,8 @@ const questionnaireRequest = {
 };
 
 describe("native questionnaire request/response", () => {
-  it("accepts questionnaire requests and rejects incremental input", () => {
+  it("accepts questionnaire requests", () => {
     assert.equal(ExtensionUiRequestSchema.safeParse(questionnaireRequest).success, true);
-    assert.equal(ExtensionUiInputCommandSchema.safeParse({
-      commandId: "c1", type: "extension_ui_input", id: "q1", method: "questionnaire", data: "x",
-    }).success, false);
   });
 
   it("keeps numeric custom text as custom and allows empty multi", () => {

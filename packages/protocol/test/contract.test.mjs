@@ -288,13 +288,6 @@ describe("RuntimeCommand", () => {
       responseKind: "value",
       value: "ok",
     },
-    extension_ui_input: {
-      type: "extension_ui_input",
-      commandId: "c-ui-i",
-      id: "ui-2",
-      method: "input",
-      data: "typed",
-    },
     set_auto_retry: {
       type: "set_auto_retry",
       commandId: "c-retry",
@@ -317,9 +310,9 @@ describe("RuntimeCommand", () => {
     side_chat_set_model: { type: "side_chat_set_model", commandId: "c-side-model", conversationId: "side-1", provider: "test", modelId: "model", thinkingLevel: "medium" },
   };
 
-  it("enumerates exactly 31 command types", () => {
-    assert.equal(RUNTIME_COMMAND_TYPES.length, 31);
-    assert.equal(Object.keys(samples).length, 31);
+  it("enumerates exactly 30 command types", () => {
+    assert.equal(RUNTIME_COMMAND_TYPES.length, 30);
+    assert.equal(Object.keys(samples).length, 30);
   });
 
   it("parses every command type with commandId", () => {
@@ -458,7 +451,7 @@ describe("RuntimeCommand", () => {
     assert.equal(safeParseRuntimeCommand({ type: "extension_ui_response", commandId: "c1", id: "ui", method: "select", responseKind: "selected", selected: "a" }).success, true);
     assert.equal(safeParseRuntimeCommand({ type: "extension_ui_response", commandId: "c1", id: "ui", method: "confirm", responseKind: "value", value: "x" }).success, false);
     assert.equal(safeParseRuntimeCommand({ type: "extension_ui_response", commandId: "c1", id: "ui", method: "select", responseKind: "confirmed", confirmed: true }).success, false);
-    assert.equal(safeParseRuntimeCommand({ type: "extension_ui_input", commandId: "c1", id: "ui", method: "confirm", data: "x" }).success, false);
+    assert.equal(safeParseRuntimeCommand({ type: "extension_ui_input", commandId: "c1", id: "ui", method: "custom", data: "x" }).success, false, "the custom panel method was removed");
   });
 });
 

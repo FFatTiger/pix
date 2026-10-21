@@ -663,7 +663,6 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           return { ok: true, type: "reload" };
         }
         case "extension_ui_response": return this.resolveUi(command);
-        case "extension_ui_input": return this.inputUi(command);
         case "bash": {
           const deferCommitUntilSettled = this.driver.getState().isStreaming;
           // R0 frozen bash semantics:
@@ -1548,7 +1547,6 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       ...(driver.options === undefined ? {} : { options: driver.options }),
       ...(driver.placeholder === undefined ? {} : { placeholder: driver.placeholder }),
       ...(driver.prefill === undefined ? {} : { prefill: driver.prefill }),
-      ...(driver.lines === undefined ? {} : { lines: driver.lines }),
       ...(driver.questions === undefined ? {} : { questions: driver.questions }),
       ...(driver.timeout === undefined ? {} : { timeout: driver.timeout, expiresAt: Date.now() + driver.timeout }),
     };
@@ -1593,23 +1591,6 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     else if ("confirmed" in command) pending.driver.settle({ confirmed: command.confirmed });
     else pending.driver.settle({ cancelled: true });
     return { ok: true, type: command.type };
-  }
-
-  private inputUi(command: Extract<RuntimeCommand, { type: "extension_ui_input" }>): RuntimeCommandResult {
-    const pending = this.pendingUi.get(command.id);
-    if (!pending || !pending.driver.input) return this.failure("extension_ui_input", makeRuntimeError("not_found", `no pending extension UI input: ${command.id}`));
-    // Exact method correlation. The input command carries input/editor/custom
-    // (E15: custom panels stream raw key data), so a mismatch rejects
-    // select/confirm with structured invalid_input; the request stays pending
-    // and usable (no SDK input call, no close).
-    if (pending.request.method === "questionnaire") {
-      return this.failure("extension_ui_input", makeRuntimeError("invalid_input", `questionnaire requests do not accept incremental input: ${command.id}`));
-    }
-    if (pending.request.method !== command.method) {
-      return this.failure("extension_ui_input", makeRuntimeError("invalid_input", `extension input method mismatch for request ${command.id}`));
-    }
-    pending.driver.input(command.data);
-    return { ok: true, type: "extension_ui_input" };
   }
 
   private async reapplyPinnedThinking(): Promise<void> {

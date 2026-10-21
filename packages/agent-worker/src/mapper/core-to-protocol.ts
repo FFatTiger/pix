@@ -400,8 +400,6 @@ export function mapExtensionUiRequest(request: ExtensionUiRequest): ProtocolExte
       return { id, method: "setTitle", title: request.title ?? "", ...timing, ...closed };
     case "set_editor_text":
       return { id, method: "set_editor_text", text: request.text ?? "", ...timing, ...closed };
-    case "custom":
-      return { id, method: "custom", lines: [...(request.lines ?? [])], ...timing, ...closed };
     case "questionnaire":
       return {
         id,

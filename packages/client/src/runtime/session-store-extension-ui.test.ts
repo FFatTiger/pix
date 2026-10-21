@@ -33,7 +33,6 @@ const confirmRequest: ExtensionUiRequest = { id: "req-confirm", method: "confirm
 const selectRequest: ExtensionUiRequest = { id: "req-select", method: "select", title: "Pick one", options: ["Alpha", "Beta"] };
 const inputRequest: ExtensionUiRequest = { id: "req-input", method: "input", title: "Name", placeholder: "type here" };
 const editorRequest: ExtensionUiRequest = { id: "req-editor", method: "editor", title: "Edit", prefill: "seed text" };
-const customRequest: ExtensionUiRequest = { id: "req-custom", method: "custom", lines: ["line one"] };
 const questionnaireRequest: ExtensionUiRequest = {
   id: "req-questionnaire",
   method: "questionnaire",
@@ -62,19 +61,6 @@ function respondErr(ws: FakeWebSocket, id: string, error: { code: string; messag
   ws.serverSend({ type: "response", id, payload: { ok: false, error } });
 }
 
-/** E15 incremental-input frame helper (mirrors the input suite; kept local). */
-interface InputCommandFrame {
-  type: string;
-  id: string;
-  payload: { sessionId: string; command: { commandId: string; type: string; id: string; method: string; data: string } };
-}
-const inputFrames = (ws: FakeWebSocket): InputCommandFrame[] =>
-  ws.sent.filter((f) => (f as InputCommandFrame).payload?.command?.type === "extension_ui_input") as InputCommandFrame[];
-
-function ackInput(ws: FakeWebSocket, frame: InputCommandFrame): void {
-  ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: "extension_ui_input" } } } });
-}
-
 /** Canonical close tombstone event (request.closed: true) for `requestId`. */
 function closeEvent(request: ExtensionUiRequest, eventId: number): { type: string; sessionId: string; eventId: number; epoch: string; request: ExtensionUiRequest & { closed: true } } {
   return { type: "extension_ui_request", sessionId: "s1", eventId, epoch: "e1", request: { ...request, closed: true } };
@@ -89,7 +75,7 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("sends the exact extension_ui_response command for every reply variant/method and never extension_ui_input", async () => {
+  it("sends the exact extension_ui_response command for every reply variant/method and never a removed extension_ui_input", async () => {
     const h = createHarness();
     const ws = await attach(h, EXT_CAPS);
 
@@ -98,7 +84,6 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
       { request: selectRequest, reply: { responseKind: "selected", selected: "Beta" }, expectCommand: { id: "req-select", method: "select", responseKind: "selected", selected: "Beta" } },
       { request: inputRequest, reply: { responseKind: "value", value: "typed" }, expectCommand: { id: "req-input", method: "input", responseKind: "value", value: "typed" } },
       { request: editorRequest, reply: { responseKind: "value", value: "edited" }, expectCommand: { id: "req-editor", method: "editor", responseKind: "value", value: "edited" } },
-      { request: customRequest, reply: { responseKind: "value", value: "custom answer" }, expectCommand: { id: "req-custom", method: "custom", responseKind: "value", value: "custom answer" } },
       { request: questionnaireRequest, reply: { responseKind: "questionnaire", answers: [{ kind: "option", questionIndex: 0, optionIndex: 1 }] }, expectCommand: { id: "req-questionnaire", method: "questionnaire", responseKind: "questionnaire", answers: [{ kind: "option", questionIndex: 0, optionIndex: 1 }] } },
     ];
     for (const c of cases) {
@@ -118,7 +103,7 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
     }
 
     // cancelled is valid for every interactive method.
-    for (const request of [confirmRequest, selectRequest, inputRequest, editorRequest, customRequest, questionnaireRequest]) {
+    for (const request of [confirmRequest, selectRequest, inputRequest, editorRequest, questionnaireRequest]) {
       const p = h.store.respondExtensionUi(request, { responseKind: "cancelled", cancelled: true });
       await flush();
       const frame = extFrame(ws);
@@ -127,7 +112,7 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
       await expect(p).resolves.toBeUndefined();
     }
 
-    // Final-response only: never an extension_ui_input frame.
+    // Final-response only: never a removed incremental-input frame.
     const allFrames = h.sockets.flatMap((sock) => sock.sent);
     expect(allFrames.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "extension_ui_input")).toHaveLength(0);
   });
@@ -555,34 +540,21 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
     await expect(p2).resolves.toBeUndefined();
   });
 
-  it("F6: a request close settles only the FINAL-response slot — the E15 input FIFO stays independent", async () => {
+  it("F6: a request close settles the in-flight reply and the slot recovers", async () => {
     const h = createHarness();
     const ws = await attach(h, EXT_CAPS);
-    // An in-flight input head + a queued tail for the same request.
-    const input1 = h.store.sendExtensionUiInput(customRequest, "a");
-    const input2 = h.store.sendExtensionUiInput(customRequest, "b");
-    await flush();
-    const inputFrame = inputFrames(ws)[0]!;
-
-    // The final response occupies its own independent slot.
-    const reply = h.store.respondExtensionUi(customRequest, { responseKind: "value", value: "done" });
+    const reply = h.store.respondExtensionUi(inputRequest, { responseKind: "value", value: "done" });
     await flush();
     expect(h.store.getSnapshot().extensionUiReplyPending).toBe(true);
 
-    // The close settles ONLY the reply slot — the input FIFO is never cleared.
-    ws.serverSend({ type: "event", payload: closeEvent(customRequest, 1) });
+    ws.serverSend({ type: "event", payload: closeEvent(inputRequest, 1) });
     await flush();
     await expect(reply).rejects.toMatchObject({ code: "interrupted" });
     expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
 
-    // The input head still settles on its own ack and the queued tail dispatches
-    // + settles normally.
-    ackInput(ws, inputFrame);
-    await expect(input1).resolves.toBeUndefined();
-    const tail = inputFrames(ws)[1]!;
-    expect(tail.payload.command.data).toBe("b");
-    ackInput(ws, tail);
-    await expect(input2).resolves.toBeUndefined();
+    // A removed custom-panel incremental input is rejected before any send.
+    const legacy = { id: "req-custom", method: "custom", lines: ["line one"] } as unknown as ExtensionUiRequest;
+    await expect(h.store.respondExtensionUi(legacy, { responseKind: "value", value: "x" })).rejects.toMatchObject({ code: "invalid_input" });
   });
 
   it("F6: a close on the CURRENT generation settles the resynced reply (stale-generation close is socket-dropped)", async () => {

@@ -16,6 +16,7 @@ import type {
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES, BUILTIN_CAPABILITY_REGISTRY } from "@fffattiger/pix-runtime-core";
+import { extensionCustomUnsupportedNotice } from "@fffattiger/pix-protocol";
 import { effectiveAssistantSystemPromptFor, ensureAssistantToolsActive, assistantExtensionFactoriesForCwd } from "./assistant-tools.js";
 import { createShowFilesExtension } from "./show-files.js";
 import { renderAssistantPreamble } from "./assistant-system-prompt.js";
@@ -555,6 +556,9 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   private subagentStreamUnsubscribe: (() => void) | undefined;
   private readonly subagentEvents: EventBus | undefined;
   private todo: TodoProjection | undefined;
+  /** Slash command currently executing inside this session (see
+   * {@link currentCommandInvocation}). */
+  private activeCommand: string | undefined;
 
   constructor(
     private readonly session: AgentSession,
@@ -591,11 +595,24 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   }
 
   /**
-   * Narrow read-lane accessors (Phase 2B). Each returns ONLY the requested
-   * projection — a get_tools / get_commands read never pays for the monolithic
-   * {@link getState} (O(all entries) via session stats). One source of truth
-   * with {@link driverState} (shared view helpers).
+   * Slash command currently executing in this session, for the
+   * `ctx.ui.custom()` notice. Set for the duration of the `prompt()` that
+   * dispatched it (an extension command handler runs inside that call) and
+   * cleared when the call resolves. Best effort: a bare turn or a tool-driven
+   * prompt leaves it unset and the notice omits the command name.
    */
+  private currentCommandInvocation(): string | undefined {
+    return this.activeCommand;
+  }
+
+  /** The registered extension command a prompt text dispatches, if any. */
+  private extensionCommandOf(text: string): string | undefined {
+    if (!text.startsWith("/")) return undefined;
+    const name = (text.slice(1).split(/\s/, 1)[0] ?? "");
+    if (name === "") return undefined;
+    return this.session.extensionRunner.getCommand(name) === undefined ? undefined : name;
+  }
+
   getTools(): readonly ToolInfo[] { return toolsView(this.session); }
   getCommands(): readonly SlashCommandInfo[] { return commandsView(this.session); }
   getSessionStats(): DriverState["sessionStats"] { return sessionStatsView(this.session, this.contextUsage()); }
@@ -830,12 +847,21 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     // owed and reusing a historical last-assistant as the "final" would be
     // wrong. "queued" parks the input; the turn happens when the queue drains.
     let disposition: PromptDisposition | undefined;
-    await this.session.prompt(message, {
-      ...(attached && attached.length > 0 ? { images: images(attached)! } : {}),
-      ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
-      source: "rpc",
-      preflightResult: (value) => { disposition = value; },
-    });
+    // A slash command's handler (and any ctx.ui.custom() it triggers) runs
+    // inside this call; remember it so the unsupported-custom notice can name
+    // the command the user typed.
+    const command = this.extensionCommandOf(message);
+    if (command !== undefined) this.activeCommand = command;
+    try {
+      await this.session.prompt(message, {
+        ...(attached && attached.length > 0 ? { images: images(attached)! } : {}),
+        ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
+        source: "rpc",
+        preflightResult: (value) => { disposition = value; },
+      });
+    } finally {
+      this.activeCommand = undefined;
+    }
     if (disposition === undefined) throw new Error("prompt completed without an input disposition receipt");
     if (disposition !== "started") return { disposition };
     const final = [...this.session.messages].reverse().find((item): item is Extract<typeof item, { role: "assistant" }> => item.role === "assistant");
@@ -1196,9 +1222,9 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   private createUiContext(): ExtensionUIContext {
     type UiSettle = { value?: string; confirmed?: boolean; cancelled?: true; answers?: readonly QuestionnaireAnswer[] };
     const request = <T>(
-      body: Omit<DriverUiRequest, "settle" | "cancel" | "input" | "fail" | "onSettled">,
+      body: Omit<DriverUiRequest, "settle" | "cancel" | "fail" | "onSettled">,
       parse: (result: UiSettle) => T,
-      options?: { signal?: AbortSignal; timeout?: number; incremental?: boolean; operational?: boolean },
+      options?: { signal?: AbortSignal; timeout?: number; operational?: boolean },
     ): Promise<T> => new Promise((resolve, reject) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1244,7 +1270,6 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
         ...body,
         ...(options?.timeout === undefined ? {} : { timeout: options.timeout }),
         settle: finish,
-        input: options?.incremental ? () => {} : (data) => finish({ value: data }),
         cancel,
         fail,
         onSettled: (listener) => { if (settled) listener(); else listeners.add(listener); },
@@ -1305,8 +1330,21 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
             operational: true,
           });
         }
+        // pi RPC-mode semantics: terminal self-drawn extension UIs are not
+        // supported headless, so `custom()` resolves `undefined` immediately
+        // (plugins written for pi already handle it). The factory is never
+        // invoked, so no TUI component is built and no custom panel request is
+        // published. The user still learns why nothing appeared: one notice
+        // through the existing extension notification channel.
         void factory;
-        return request({ id: crypto.randomUUID(), method: "custom", lines: ["Custom extension UI"] }, (result) => result.value as never, { incremental: true });
+        this.emitCanonical?.({
+          type: "extension_notification",
+          sessionId: this.session.sessionId,
+          level: "info",
+          message: extensionCustomUnsupportedNotice(this.currentCommandInvocation()),
+          at: Date.now(),
+        } as never);
+        return undefined as never;
       },
       pasteToEditor: unsupported,
       setEditorText: unsupported,

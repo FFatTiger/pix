@@ -172,8 +172,6 @@ function fixtureFor(type: RuntimeCommandType): RuntimeCommand {
       return { type };
     case "extension_ui_response":
       return { type, id: "nope", method: "confirm", cancelled: true };
-    case "extension_ui_input":
-      return { type, id: "nope", method: "input", data: "x" };
     case "set_auto_retry":
       return { type, enabled: true };
     case "bash":
@@ -295,9 +293,9 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
 
       it("every product command type executes with minimal valid input", async () => {
         const types = RUNTIME_COMMAND_TYPES.filter(
-          (type) => type !== "extension_ui_response" && type !== "extension_ui_input",
+          (type) => type !== "extension_ui_response",
         );
-        assert.equal(types.length, 29, "31 commands minus 2 extension-response types");
+        assert.equal(types.length, 29, "30 commands minus the extension-response type");
         for (const type of types) {
           const factory = await harness.createFactory();
           const port = await factory.create({ cwd: "/workspace" });
@@ -339,11 +337,10 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         }
       });
 
-      it("extension_ui_response/input are covered by the extension UI suite", () => {
-        // Explicit marker: both extension command types are exercised against
+      it("extension_ui_response is covered by the extension UI suite", () => {
+        // Explicit marker: the extension response command is exercised against
         // real pending requests in the "extension UI" section.
         assert.ok(RUNTIME_COMMAND_TYPES.includes("extension_ui_response"));
-        assert.ok(RUNTIME_COMMAND_TYPES.includes("extension_ui_input"));
       });
 
       it("missing capability returns unsupported_capability", async () => {
@@ -1350,31 +1347,6 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         assert.equal(response.ok, true);
         const result = await pending;
         assert.equal(result.ok, true);
-        await port.close("user");
-      });
-
-      it("extension_ui_input delivers data into the turn", async () => {
-        const { port } = await newRuntime(harness);
-        const collector = new EventCollector(port);
-        const pending = port.execute({ type: "prompt", message: "input-request" });
-        const requestEvent = await collector.waitFor(
-          (event) => event.type === "extension_ui_request" && event.request.method === "input",
-        );
-        assert.equal(requestEvent.type, "extension_ui_request");
-        const response = await port.execute({
-          type: "extension_ui_input",
-          id: requestEvent.request.id,
-          method: "input",
-          data: "hello-data",
-        });
-        assert.equal(response.ok, true);
-        const result = await pending;
-        assert.equal(result.ok, true);
-        const last = await port.execute({ type: "get_last_assistant_text" });
-        assert.equal(last.ok, true);
-        if (last.ok && last.type === "get_last_assistant_text") {
-          assert.ok(last.text.includes("hello-data"), "input data must reach the turn");
-        }
         await port.close("user");
       });
 

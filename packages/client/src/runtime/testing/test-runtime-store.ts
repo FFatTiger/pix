@@ -206,10 +206,6 @@ export class TestRuntimeStore {
     return this.withCurrent((controller) => controller.respondExtensionUi(request, reply));
   }
 
-  sendExtensionUiInput(request: ExtensionUiRequest, data: string): Promise<void> {
-    return this.withCurrent((controller) => controller.sendExtensionUiInput(request, data));
-  }
-
   steer(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
     return this.withCurrent((controller) => controller.steer(message, images));
   }

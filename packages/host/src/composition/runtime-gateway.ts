@@ -695,7 +695,6 @@ function isInterleavingCommand(message: WsClientMessage): boolean {
   return type === "steer"
     || type === "follow_up"
     || type === "extension_ui_response"
-    || type === "extension_ui_input"
     || type === "side_chat_start"
     || type === "side_chat_send"
     || type === "side_chat_reset"

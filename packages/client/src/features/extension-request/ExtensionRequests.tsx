@@ -1,16 +1,9 @@
 /**
  * ExtensionRequests — exact extension UI surface for the live session.
  *
- * Replaces the former pix inline extension cards with the components migrated
- * verbatim from the source ChatWindow:
- *  - a pending `custom` request renders the ExtensionCustomPanel
- *    (custom-ui-terminal): every keydown travels as raw terminal data through
- *    {@link ExactRuntimeApi.sendExtensionUiInput} — the exact controller's
- *    dedicated FIFO lane preserves exact per-key order while the final-response
- *    slot stays independent; Close sends `\x03` exactly like the source.
- *  - every other interactive request (select/confirm/input/editor) renders the
- *    source ExtensionDialog; its reply travels through the dedicated
- *    {@link ExactRuntimeApi.respondExtensionUi} final-response slot.
+ * Every interactive extension request (select/confirm/input/editor/
+ * questionnaire) renders its native web dialog; its reply travels through the
+ * dedicated {@link ExactRuntimeApi.respondExtensionUi} final-response slot.
  *
  * Only the FIRST pending interactive request is operable (projection order is
  * deterministic); later requests wait — the runtime would answer
@@ -26,7 +19,6 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 import { useSelectedRuntime, type ExactRuntimeApi } from "@/runtime";
 import { useI18n } from "@/hooks/useI18n";
 import { ExtensionDialog, type ExtensionDialogRequest, type ExtensionDialogResponse } from "@/components/chat/ExtensionDialog";
-import { ExtensionCustomPanel, type ExtensionCustomRequest } from "@/components/chat/ExtensionCustomPanel";
 import { ExtensionQuestionnaire, type ExtensionQuestionnaireRequest, type ExtensionQuestionnaireResponse } from "@/components/chat/ExtensionQuestionnaire";
 import {
   EXTENSION_UI_CAPABILITY,
@@ -213,34 +205,10 @@ export function ExtensionRequests({ live, runtime, composerTextareaRef }: Extens
     });
   };
 
-  const runInput = (request: ExtensionCustomRequest, data: string): void => {
-    if (!mountedRef.current || !liveRef.current || !capabilityRef.current) return;
-    if (exact === null) return;
-    // Per-key FIFO ordering, overflow handling and same-epoch resend are owned
-    // by the store's extension-UI input lane. A rejection here (FIFO overflow,
-    // capability loss, session change…) surfaces a transient FIXED error via
-    // describeExtensionUiError — never raw key/data/message. A generation +
-    // session guard drops late settles, and the next successful input (or the
-    // pending-landscape effect) clears the error.
-    const sessionId = sessionIdRef.current;
-    const epoch = epochRef.current;
-    const gen = ++requestGenRef.current;
-    void exact.sendExtensionUiInput(request, data).then(
-      () => {
-        if (isCurrent(gen, sessionId, epoch)) setError(null);
-      },
-      (cause: unknown) => {
-        if (isCurrent(gen, sessionId, epoch)) setError(describeExtensionUiError(cause));
-      },
-    );
-  };
-
   const dialogKey = `${exact.sessionId}:${exact.epoch ?? ""}:${first.id}:${first.method}`;
   return (
     <section className="extension-requests" aria-label={t("desktop.extensionRequestSection")}>
-      {first.method === "custom" ? (
-        <ExtensionCustomPanel request={first} onInput={runInput} />
-      ) : first.method === "questionnaire" ? (
+      {first.method === "questionnaire" ? (
         <ExtensionQuestionnaire key={dialogKey} request={first} onRespond={runQuestionnaireRespond} />
       ) : (
         <ExtensionDialog key={dialogKey} request={first} onRespond={runRespond} />

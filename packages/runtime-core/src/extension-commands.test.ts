@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { ExtensionUiResponseCommand, ExtensionUiInputCommand } from "./commands.js";
+import type { ExtensionUiResponseCommand } from "./commands.js";
 
 /** True when A and B are the exact same type. */
 type IsExact<A, B> =
@@ -21,10 +21,10 @@ type IsExact<A, B> =
     : false;
 
 // The value variant may only carry methods that produce a value (select's
-// "selected" collapses to value, input/editor/custom use responseKind value).
+// "selected" collapses to value, input/editor use responseKind value).
 const _valueMethods: IsExact<
   Extract<ExtensionUiResponseCommand, { value: string }>["method"],
-  "select" | "input" | "editor" | "custom"
+  "select" | "input" | "editor"
 > = true;
 
 // The confirmed variant is confirm-only.
@@ -36,16 +36,13 @@ const _confirmedMethod: IsExact<
 // The cancelled variant is allowed for every interactive method.
 const _cancelledMethods: IsExact<
   Extract<ExtensionUiResponseCommand, { cancelled: true }>["method"],
-  "select" | "confirm" | "input" | "editor" | "custom" | "questionnaire"
+  "select" | "confirm" | "input" | "editor" | "questionnaire"
 > = true;
 
 const _questionnaireMethods: IsExact<
   Extract<ExtensionUiResponseCommand, { answers: readonly import("./questionnaire.js").QuestionnaireAnswer[] }> ["method"],
   "questionnaire"
 > = true;
-
-// Incremental input is input/editor/custom (E15: custom panels stream raw key data).
-const _inputMethods: IsExact<ExtensionUiInputCommand["method"], "input" | "editor" | "custom"> = true;
 
 test("extension_ui_response carries the exact correlated method", () => {
   const selected: ExtensionUiResponseCommand = { type: "extension_ui_response", id: "r1", method: "select", value: "optA" };
@@ -58,16 +55,13 @@ test("extension_ui_response carries the exact correlated method", () => {
   assert.doesNotThrow(() => JSON.parse(JSON.stringify([selected, confirmed, cancelled])));
 });
 
-test("extension_ui_input carries the exact correlated method", () => {
-  const input: ExtensionUiInputCommand = { type: "extension_ui_input", id: "r1", method: "input", data: "x" };
-  const editor: ExtensionUiInputCommand = { type: "extension_ui_input", id: "r1", method: "editor", data: "y" };
-  const custom: ExtensionUiInputCommand = { type: "extension_ui_input", id: "r1", method: "custom", data: "\x1b[A" };
-  assert.equal(input.method, "input");
-  assert.equal(editor.method, "editor");
-  assert.equal(custom.method, "custom");
-  // JSON-serializable, backend-neutral (terminal control bytes survive a wire hop).
-  assert.doesNotThrow(() => JSON.parse(JSON.stringify([input, editor, custom])));
-});
+// The removed custom (terminal self-drawn UI) method must never come back on
+// any response variant: the whole union's method set is exactly the native
+// web prompts plus questionnaire.
+const _responseMethods: IsExact<
+  ExtensionUiResponseCommand["method"],
+  "select" | "confirm" | "input" | "editor" | "questionnaire"
+> = true;
 
 test("questionnaire response carries explicit answers without collapsing custom text", () => {
   const answers: import("./questionnaire.js").QuestionnaireAnswer[] = [

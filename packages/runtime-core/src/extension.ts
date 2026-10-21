@@ -16,7 +16,6 @@ export const EXTENSION_UI_METHODS = [
   "setWidget",
   "setTitle",
   "set_editor_text",
-  "custom",
   "questionnaire",
 ] as const;
 
@@ -59,7 +58,6 @@ export interface ExtensionNotificationItem {
  * - setWidget    → widgetKey, widgetLines, widgetPlacement
  * - setTitle     → title
  * - set_editor_text → text
- * - custom       → lines
  * - questionnaire → questions
  */
 export interface ExtensionUiRequest {
@@ -79,7 +77,6 @@ export interface ExtensionUiRequest {
   widgetLines?: readonly string[];
   widgetPlacement?: ExtensionWidgetPlacement;
   text?: string;
-  lines?: readonly string[];
   questions?: readonly QuestionnaireQuestion[];
   closed?: boolean;
 }

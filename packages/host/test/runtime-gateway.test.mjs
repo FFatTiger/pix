@@ -1305,7 +1305,6 @@ const getCommandsFrame = (id) => JSON.stringify({ type: "command", id, payload: 
 const steerFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "steer", message: "steer" } } });
 const followFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "follow_up", message: "follow" } } });
 const extensionResponseFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_response", id: "ui-1", method: "confirm", responseKind: "confirmed", confirmed: true } } });
-const extensionInputFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_input", id: "ui-1", method: "input", data: "typed" } } });
 const sideSendFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "side_chat_send", conversationId: "side-1", message: "question" } } });
 const promptFrame = (id) => cmdFrame(id);
 const getSnapshotFrame = (id) => JSON.stringify({ type: "getSnapshot", id, payload: { sessionId: "s1" } });
@@ -1479,10 +1478,10 @@ test("D2-P4: create stays on the serial lane and never runs concurrently with a 
 
 // --- D2-P8: extension UI response/input interleave on the interleaving lane ---
 
-test("D2-P8: extension_ui_response/input dispatch on the interleaving lane while a prompt HOLs the serial lane", async () => {
+test("D2-P8: extension_ui_response dispatches on the interleaving lane while a prompt HOLs the serial lane", async () => {
   const client = new FakeClient();
   // The prompt (awaiting an extension request) hangs on the serial lane;
-  // response/input resolve immediately on the interleaving lane.
+  // the response resolves immediately on the interleaving lane.
   client.handlers["runtime.command"] = (p) => (p.command.type === "prompt" ? hang() : okByType(p));
   const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
   const session = await connect(gw);
@@ -1491,23 +1490,16 @@ test("D2-P8: extension_ui_response/input dispatch on the interleaving lane while
   await wait();
   session.receive(extensionResponseFrame("r1")); // interleaving lane → NOT HOL-blocked
   await wait();
-  session.receive(extensionInputFrame("i1")); // interleaving lane FIFO after r1
-  await wait();
 
-  // response + input both opened an RPC while the prompt is still hanging.
   const cmds = commandCalls(client);
-  assert.equal(cmds.length, 3, "prompt + response + input must each open an RPC");
+  assert.equal(cmds.length, 2, "prompt + response must each open an RPC");
   assert.deepEqual(
     cmds.map((c) => c.params.command.type).sort(),
-    ["extension_ui_input", "extension_ui_response", "prompt"],
+    ["extension_ui_response", "prompt"],
   );
-  // Both extension responses arrived (the prompt's response is still pending).
   const ids = responseIds(session);
   assert.ok(ids.includes("r1"), `responses=${ids.join(",")}`);
-  assert.ok(ids.includes("i1"), `responses=${ids.join(",")}`);
   assert.ok(!ids.includes("p1"), "hung prompt must not have a response");
-  // Interleaving lane is FIFO: r1 response before i1 response.
-  assert.ok(ids.indexOf("r1") < ids.indexOf("i1"), `order=${ids.join(",")}`);
   assert.ok(!session.closed, "socket must stay open");
 });
 
@@ -1541,7 +1533,7 @@ test("D2-P8: interleaving lane overflow fails closed 1009 and opens no extra RPC
   const session = await connect(gw);
   session.receive(extensionResponseFrame("r1")); // interleaving lane dispatches + RPC hangs
   await wait();
-  session.receive(extensionInputFrame("r2")); // queued behind r1 (pending = 2)
+  session.receive(extensionResponseFrame("r2")); // queued behind r1 (pending = 2)
   await wait();
   session.receive(extensionResponseFrame("r3")); // 3rd pending interleaving frame → overflow
   await wait();
@@ -1559,11 +1551,11 @@ test("D2-P8: extension UI flood cannot bypass the interleaving lane limits", asy
     logger: { warn: (msg, fields) => warned.push({ msg, fields }) },
   });
   const session = await connect(gw);
-  session.receive(extensionInputFrame("f1"));
+  session.receive(extensionResponseFrame("f1"));
   await wait();
-  session.receive(extensionInputFrame("f2"));
+  session.receive(extensionResponseFrame("f2"));
   await wait();
-  session.receive(extensionInputFrame("f3")); // overflow
+  session.receive(extensionResponseFrame("f3")); // overflow
   await wait();
   assert.equal(session.closed.code, 1009);
   assert.equal(warned.length, 1);
@@ -1580,97 +1572,12 @@ test("D2-P8: browser close short-circuits queued extension commands (no extra RP
   const session = await connect(gw);
   session.receive(promptFrame("p1")); // serial: dispatched + RPC hangs
   session.receive(extensionResponseFrame("r1")); // interleaving: dispatched + RPC hangs
-  session.receive(extensionInputFrame("r2")); // interleaving: queued behind r1
+  session.receive(extensionResponseFrame("r2")); // interleaving: queued behind r1
   await wait();
   session.close();
   await wait();
   // Only the two dispatched commands opened RPCs; queued r2 short-circuits.
   assert.equal(commandCalls(client).length, 2);
-});
-
-// --- E15: custom incremental input rides the SAME interleaving lane (no new lane) ---
-
-const extensionCustomInputFrame = (id, data = "\u001b[A") =>
-  JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_input", id: "ui-custom", method: "custom", data } } });
-
-test("E15: custom extension_ui_input is admitted (schema) and dispatches on the interleaving lane while a prompt HOLs the serial lane; FIFO with the response", async () => {
-  const client = new FakeClient();
-  // The prompt (awaiting a custom extension request) hangs on the serial lane;
-  // custom key data resolves immediately on the interleaving lane.
-  client.handlers["runtime.command"] = (p) => (p.command.type === "prompt" ? hang() : okByType(p));
-  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
-  const session = await connect(gw);
-
-  session.receive(promptFrame("p1")); // serial lane dispatches + RPC hangs
-  await wait();
-  session.receive(extensionResponseFrame("r1")); // interleaving lane → NOT HOL-blocked
-  await wait();
-  session.receive(extensionCustomInputFrame("c1", "\u001b[A")); // interleaving lane FIFO after r1
-  await wait();
-  session.receive(extensionCustomInputFrame("c2", "\u0003")); // FIFO after c1
-  await wait();
-
-  const cmds = commandCalls(client);
-  assert.equal(cmds.length, 4, "prompt + response + two custom inputs must each open an RPC");
-  assert.deepEqual(
-    cmds.map((c) => `${c.params.command.type}:${c.params.command.method ?? "-"}`).sort(),
-    ["extension_ui_input:custom", "extension_ui_input:custom", "extension_ui_response:confirm", "prompt:-"],
-  );
-  const ids = responseIds(session);
-  assert.ok(ids.includes("c1") && ids.includes("c2"), `responses=${ids.join(",")}`);
-  assert.ok(!ids.includes("p1"), "hung prompt must not have a response");
-  // Interleaving lane is FIFO: r1 → c1 → c2 responses in receive order.
-  assert.ok(ids.indexOf("r1") < ids.indexOf("c1") && ids.indexOf("c1") < ids.indexOf("c2"), `order=${ids.join(",")}`);
-  assert.ok(!session.closed, "socket must stay open");
-});
-
-test("E15: custom input flood cannot bypass the interleaving lane limits; raw key bytes never leak into the overflow log", async () => {
-  const client = new FakeClient();
-  client.handlers["runtime.command"] = () => hang();
-  const warned = [];
-  const gw = makeGateway(client, {
-    inbound: { maxSerialFrames: 2, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 },
-    logger: { warn: (msg, fields) => warned.push({ msg, fields }) },
-  });
-  const session = await connect(gw);
-  session.receive(extensionCustomInputFrame("k1"));
-  await wait();
-  session.receive(extensionCustomInputFrame("k2"));
-  await wait();
-  session.receive(extensionCustomInputFrame("k3")); // 3rd pending interleaving frame → overflow
-  await wait();
-  assert.equal(session.closed.code, 1009);
-  assert.equal(warned.length, 1);
-  assert.equal(warned[0].fields.lane, "interleaving");
-  // No raw key data (escape/control bytes) leaks into the overflow log.
-  assert.equal(JSON.stringify(warned).includes("\\u001b"), false);
-  assert.equal(JSON.stringify(warned).includes("\\u0003"), false);
-  assert.equal(commandCalls(client).length, 1, "only the dispatched frame opened an RPC");
-});
-
-test("E15: browser close short-circuits queued custom input (no extra RPC); select/confirm input still rejected at the schema", async () => {
-  const client = new FakeClient();
-  client.handlers["runtime.command"] = () => hang();
-  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
-  const session = await connect(gw);
-  session.receive(extensionCustomInputFrame("c1")); // interleaving: dispatched + RPC hangs
-  session.receive(extensionCustomInputFrame("c2")); // interleaving: queued behind c1
-  await wait();
-  session.close();
-  await wait();
-  assert.equal(commandCalls(client).length, 1, "queued c2 must short-circuit without an RPC");
-
-  // A second connection proves the schema boundary: select/confirm methods on
-  // extension_ui_input are still rejected (fail-protocol, no dispatch).
-  const client2 = new FakeClient();
-  client2.handlers["runtime.command"] = okByType;
-  const gw2 = makeGateway(client2, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
-  const session2 = await connect(gw2);
-  session2.receive(JSON.stringify({ type: "command", id: "bad1", payload: { sessionId: "s1", command: { commandId: "bad1", type: "extension_ui_input", id: "ui-custom", method: "confirm", data: "x" } } }));
-  session2.receive(JSON.stringify({ type: "command", id: "bad2", payload: { sessionId: "s1", command: { commandId: "bad2", type: "extension_ui_input", id: "ui-custom", method: "select", data: "x" } } }));
-  await wait();
-  assert.ok(session2.closed, "select/confirm extension_ui_input must fail protocol");
-  assert.equal(commandCalls(client2).length, 0);
 });
 
 // --- Phase 3 atomic submit-turn gateway -------------------------------------
@@ -2501,10 +2408,10 @@ test("negotiated native questionnaire reply forwards the exact command once", as
   assert.deepEqual(calls[0].params, payload);
 });
 
-test("questionnaire incremental input is rejected before RPC", async () => {
+test("the removed incremental extension input is rejected before RPC", async () => {
   const client = new FakeClient();
   const session = await connect(makeGateway(client));
-  session.receive(JSON.stringify({ type: "command", id: "input-1", payload: { sessionId: "s1", command: { commandId: "input-1", type: "extension_ui_input", id: "q1", method: "questionnaire", data: "typed" } } }));
+  session.receive(JSON.stringify({ type: "command", id: "input-1", payload: { sessionId: "s1", command: { commandId: "input-1", type: "extension_ui_input", id: "q1", method: "input", data: "typed" } } }));
   await wait();
   assert.equal(client.calls.some((call) => call.method === "runtime.command"), false);
   assert.equal(session.closed?.code, 1008);
