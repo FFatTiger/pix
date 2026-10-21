@@ -967,6 +967,29 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
     [data?.content],
   );
   const hasGitDiff = gitDiff?.supported === true && typeof gitDiff.patch === "string";
+  // "No baseline" is only a fact once the diff query answered; while it is
+  // pending the requested diff mode is unresolved, not missing. A disabled
+  // query (no cwd) never answers, so it counts as settled immediately.
+  const diffSettled = cwd === undefined || !filePath || diffQuery.isFetched;
+
+  // A "diff" open promises a change view. A file written outside any git
+  // repository has no baseline (the host answers `supported: false`), and the
+  // all-added patch for a new file inside a repo is synthesized by the host,
+  // never here — so there may be nothing to diff. Leaving the requested diff
+  // mode standing renders the raw file under a diff label: raw markdown source
+  // with syntax line numbers where the document should be. Resolve the request
+  // to the file's ordinary display instead (markdown previews exactly like a
+  // plain open, anything else shows its source), unless a live watch diff has
+  // supplied real changes. A layout effect so the resolved mode lands before
+  // paint — never a visible flash of raw markdown. A restored tab whose saved
+  // "diff" mode no longer has any diff resolves the same way; a restored tab
+  // with a real diff keeps the mode the user left.
+  useLayoutEffect(() => {
+    if (!diffSettled || requestedInitialDisplayMode !== "diff") return;
+    if (hasGitDiff || prevContent !== null) return;
+    setViewMode("source");
+    if (readQuery.data?.language === "markdown") setPreviewMode(true);
+  }, [diffSettled, requestedInitialDisplayMode, hasGitDiff, prevContent, readQuery.data?.language]);
 
   useEffect(() => {
     // Auto-switch to the diff view only on a fresh open. A tab restored from
@@ -1004,7 +1027,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
 
   const isDeletedGitDiff = hasGitDiff && gitDiff?.status === "deleted";
 
-  if (readQuery.isLoading) {
+  if (readQuery.isLoading || (requestedInitialDisplayMode === "diff" && !diffSettled)) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
         {t("desktop.loadingFile")}

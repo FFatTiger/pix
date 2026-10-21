@@ -351,7 +351,13 @@ function haveSameTurnActions(previous: TurnAction[] | undefined, next: TurnActio
 function haveSameTurnFiles(previous: TurnFileRow[] | undefined, next: TurnFileRow[] | undefined): boolean {
   if (previous === next) return true;
   if (!previous || !next || previous.length !== next.length) return false;
-  return previous.every((file, i) => file.filePath === next[i]?.filePath && file.source === next[i]?.source);
+  return previous.every((file, i) => {
+    const other = next[i];
+    return file.filePath === other?.filePath
+      && file.source === other?.source
+      && file.additions === other?.additions
+      && file.deletions === other?.deletions;
+  });
 }
 
 function haveSameWrittenFiles(previous: WrittenFile[] | undefined, next: WrittenFile[] | undefined): boolean {

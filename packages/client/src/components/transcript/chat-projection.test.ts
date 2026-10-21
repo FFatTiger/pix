@@ -206,6 +206,26 @@ describe("chat-projection — user → process → final", () => {
     expect(final).toBeDefined();
     expect(final!.writtenFiles).toEqual([{ filePath: "/x/a.ts", additions: 2 }]);
   });
+
+  it("renders a file the turn wrote AND showed as one shown row carrying the write stats", () => {
+    const rows = build([
+      user("write then show it"),
+      assistant([{ type: "toolCall", toolCallId: "w1", toolName: "write", input: { file_path: "/x/SCOPE-STATUS.md", content: "# A\n| b | c |\n" } }]),
+      toolResult("w1", "ok"),
+      assistant([{ type: "toolCall", toolCallId: "s1", toolName: "show_files", input: { files: ["/x/SCOPE-STATUS.md"] } }]),
+      toolResult("s1", "ok", { details: { files: [{ path: "/x/SCOPE-STATUS.md", name: "SCOPE-STATUS.md", kind: "file" }] } }),
+      assistant([{ type: "text", text: "done" }]),
+    ]);
+    const final = rows.find((row): row is Extract<ChatTranscriptRow, { kind: "message" }> =>
+      row.kind === "message" && row.message.role === "assistant");
+    const other = rows.find((row): row is Extract<ChatTranscriptRow, { kind: "message" }> =>
+      row.kind === "message" && row.message.role === "user");
+    expect(final!.turnFiles).toEqual([
+      { source: "shown", filePath: "/x/SCOPE-STATUS.md", kind: "file", additions: 2 },
+    ]);
+    // Written-only files never leak into the shown list.
+    expect(other!.turnFiles).toBeUndefined();
+  });
 });
 
 describe("chat-projection — live merge", () => {

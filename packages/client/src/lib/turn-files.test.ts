@@ -40,14 +40,25 @@ describe("shown files", () => {
     ]);
   });
 
-  it("puts written files before shown files and drops a path that was both", () => {
+  it("renders a path both written and shown as the shown card, keeping the write stats as a marker", () => {
     const rows = mergeTurnFileRows(
-      [{ filePath: "/x/a.ts", additions: 2 }],
+      [{ filePath: "/x/a.ts", additions: 2, deletions: 1 }],
       [{ filePath: "/x/a.ts", kind: "file" }, { filePath: "/x/b.png", kind: "image" }],
     );
     expect(rows).toEqual([
-      { source: "written", filePath: "/x/a.ts", additions: 2 },
+      { source: "shown", filePath: "/x/a.ts", kind: "file", additions: 2, deletions: 1 },
       { source: "shown", filePath: "/x/b.png", kind: "image" },
+    ]);
+  });
+
+  it("keeps written-only files as chips and drops zero stats from the shown card", () => {
+    const rows = mergeTurnFileRows(
+      [{ filePath: "/x/a.ts" }, { filePath: "/x/b.ts", additions: 0, deletions: 3 }],
+      [{ filePath: "/x/b.ts", kind: "file" }],
+    );
+    expect(rows).toEqual([
+      { source: "written", filePath: "/x/a.ts" },
+      { source: "shown", filePath: "/x/b.ts", kind: "file", deletions: 3 },
     ]);
   });
 });

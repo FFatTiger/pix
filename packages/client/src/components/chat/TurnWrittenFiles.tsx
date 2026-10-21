@@ -37,7 +37,9 @@ function homeDirectory(): string | undefined {
 /**
  * Files a turn wrote or handed to the user (`show_files`).
  * Shown images are an album grid; other shown files are a compact list with
- * the parent directory. Written files stay the existing chips and open as a diff.
+ * the parent directory. A shown file that the same turn also wrote keeps this
+ * card and carries its write stats as a secondary marker; written-only files
+ * stay the existing chips and open as a diff.
  */
 export function TurnWrittenFiles({ files, onOpenFile, sessionId, cwd }: {
   files: TurnFileRow[];
@@ -92,6 +94,12 @@ export function TurnWrittenFiles({ files, onOpenFile, sessionId, cwd }: {
                 >
                   {getFileIcon(name, 16)}
                   <span className="turn-shown-name">{name}</span>
+                  {file.source === "shown" && file.additions !== undefined && (
+                    <span className="turn-shown-stats">
+                      <span style={{ color: "var(--accent-green)" }}>+{file.additions}</span>
+                      {file.deletions !== undefined && <span style={{ color: "var(--accent-red)" }}>-{file.deletions}</span>}
+                    </span>
+                  )}
                   {parent ? <span className="turn-shown-dir">{parent}</span> : null}
                 </button>
               );

@@ -19,9 +19,15 @@ export interface ShownFile {
   kind: "image" | "file";
 }
 
+export interface ShownFileRow extends ShownFile {
+  /** This turn also wrote the path: kept as a secondary marker on the card. */
+  additions?: number;
+  deletions?: number;
+}
+
 export type TurnFileRow =
   | ({ source: "written" } & WrittenFile)
-  | ({ source: "shown" } & ShownFile);
+  | ({ source: "shown" } & ShownFileRow);
 
 function isFileWritingToolName(toolName: string): boolean {
   return isWriteToolName(toolName) || isEditToolName(toolName);
@@ -186,14 +192,35 @@ export function extractTurnShownFiles(
   return [...byPath.values()];
 }
 
-/** Written files first, then files the turn showed, deduped by path. */
+/**
+ * Written files plus files the turn showed, deduped by path.
+ *
+ * A path the turn both wrote and handed over via `show_files` renders as the
+ * shown card: showing is the agent's explicit "look at this" intent, so the
+ * row must look and open exactly like a show-only turn (normal preview). The
+ * turn's write stats survive as a secondary marker on that card instead of
+ * forking the row into two different components. Files that were only written
+ * keep the written chip (diff).
+ */
 export function mergeTurnFileRows(written: readonly WrittenFile[], shown: readonly ShownFile[]): TurnFileRow[] {
-  const rows: TurnFileRow[] = written.map((file) => ({ source: "written", ...file }));
-  const seen = new Set(written.map((file) => file.filePath));
+  const writtenByPath = new Map(written.map((file) => [file.filePath, file]));
+  const shownPaths = new Set(shown.map((file) => file.filePath));
+  const rows: TurnFileRow[] = written
+    .filter((file) => !shownPaths.has(file.filePath))
+    .map((file) => ({ source: "written", ...file }));
+  const seen = new Set<string>();
   for (const file of shown) {
     if (seen.has(file.filePath)) continue;
     seen.add(file.filePath);
-    rows.push({ source: "shown", ...file });
+    const stats = writtenByPath.get(file.filePath);
+    const additions = stats?.additions !== undefined && stats.additions > 0 ? stats.additions : undefined;
+    const deletions = stats?.deletions !== undefined && stats.deletions > 0 ? stats.deletions : undefined;
+    rows.push({
+      source: "shown",
+      ...file,
+      ...(additions === undefined ? {} : { additions }),
+      ...(deletions === undefined ? {} : { deletions }),
+    });
   }
   return rows;
 }

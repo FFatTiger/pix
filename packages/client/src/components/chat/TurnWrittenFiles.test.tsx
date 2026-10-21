@@ -52,4 +52,18 @@ describe("TurnWrittenFiles", () => {
     expect(onOpenFile).toHaveBeenNthCalledWith(1, "/proj/a.ts", { source: "turn-files", initialDisplayMode: "diff" });
     expect(onOpenFile).toHaveBeenNthCalledWith(2, "/proj/shot.png", { source: "turn-files" });
   });
+
+  it("renders a written+shown file as the shown card with a stats marker and a plain preview open", () => {
+    const onOpenFile = mount([
+      { source: "shown", filePath: "/proj/src/scope.md", kind: "file", additions: 68 },
+    ]);
+    const card = screen.getByRole("button", { name: "Open scope.md" });
+    // Exactly the show-only card: no written chip in the same row.
+    expect(card.className).toContain("turn-shown-row");
+    expect(document.querySelector(".turn-written-file-chip")).toBeNull();
+    expect(card.querySelector(".turn-shown-stats")?.textContent).toBe("+68");
+    expect(card.querySelector(".turn-shown-dir")?.textContent).toBe("src");
+    fireEvent.click(card);
+    expect(onOpenFile).toHaveBeenCalledWith("/proj/src/scope.md", { source: "turn-files" });
+  });
 });

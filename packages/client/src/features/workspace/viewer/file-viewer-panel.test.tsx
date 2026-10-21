@@ -249,3 +249,55 @@ describe("FileViewer — default display mode", () => {
     await screen.findByText("alphasource");
   });
 });
+
+describe("FileViewer — diff open without a baseline", () => {
+  const markdown = "# Title\n\n| 项目 | 状态 |\n|---|---|\n| video | 26.9% |\n";
+
+  function serveDiff(content: string, language: string, diff: unknown) {
+    setWatchSessionFactory(() => fakeWatchSession().session);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("op=read")) return json({ content, language, size: content.length });
+      if (url.includes("/v1/git/diff")) return json(diff);
+      return json({ error: "not found" }, 404);
+    }) as unknown as typeof fetch);
+    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  }
+
+  it("falls back to the rendered markdown preview when the host has no baseline", async () => {
+    // Non-git directory: /v1/git/diff answers supported:false, so there is no
+    // patch to render. The 'diff' request must not leave raw source (with
+    // syntax line numbers) under a diff label.
+    mount(
+      serveDiff(markdown, "markdown", { supported: false }),
+      <FileViewer filePath="/notes/SCOPE-STATUS.md" cwd="/notes" initialDisplayMode="diff" />,
+    );
+    const cell = await screen.findByText("video");
+    expect(cell.tagName).toBe("TD");
+    expect(cell.closest("table")).toBeTruthy();
+    expect(screen.queryByText(/^# Title$/)).toBeNull();
+    expect(screen.queryByText(/\| 项目 \| 状态 \|/)).toBeNull();
+  });
+
+  it("renders the synthesized all-added patch for a new file inside a repo", async () => {
+    // Inside a git repo the host synthesizes the new-file patch; that is a real
+    // diff and must keep rendering as one (an added line, no context).
+    const patch = [
+      "diff --git a/notes/SCOPE-STATUS.md b/notes/SCOPE-STATUS.md",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/notes/SCOPE-STATUS.md",
+      "@@ -0,0 +1,2 @@",
+      "+# Title",
+      "+| 项目 | 状态 |",
+    ].join("\n");
+    mount(
+      serveDiff("# Title\n| 项目 | 状态 |\n", "markdown", { supported: true, status: "untracked", patch }),
+      <FileViewer filePath="/repo/notes/SCOPE-STATUS.md" cwd="/repo" initialDisplayMode="diff" />,
+    );
+    await screen.findByText(/# Title/);
+    // The rendered document must NOT be what a diff open shows.
+    expect(screen.queryByRole("heading", { name: "Title" })).toBeNull();
+    expect(document.body.textContent).toContain("| 项目 | 状态 |");
+  });
+});
