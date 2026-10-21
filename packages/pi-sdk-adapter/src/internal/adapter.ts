@@ -930,10 +930,16 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       return rejected(unsupportedCapabilityError(promptCapability));
     }
     const overrides = input.activationOverrides;
-    if (overrides?.model !== undefined) {
+    const model = overrides?.model;
+    if (model !== undefined && (!model.provider.trim() || !model.modelId.trim())) {
+      return rejected(makeRuntimeError("invalid_input", "model selector is invalid"));
+    }
+    const currentModel = model === undefined ? null : this.driver.getState().model;
+    const changeModel = model !== undefined
+      && (currentModel?.provider !== model.provider || currentModel?.id !== model.modelId);
+    if (changeModel) {
       const capability = requiredCapabilityForCommand("set_model");
       if (capability && !this.capabilities.capabilities.includes(capability)) return rejected(unsupportedCapabilityError(capability));
-      if (!overrides.model.provider.trim() || !overrides.model.modelId.trim()) return rejected(makeRuntimeError("invalid_input", "model selector is invalid"));
     }
     if (overrides?.thinkingLevel !== undefined) {
       const capability = requiredCapabilityForCommand("set_thinking_level");
@@ -947,8 +953,8 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     try {
       // Model first because model changes can clamp/reset thinking. Reapply the
       // prior pin, then the explicit turn override wins last.
-      if (overrides?.model !== undefined) {
-        await this.driver.setModel({ provider: overrides.model.provider, id: overrides.model.modelId });
+      if (changeModel && model !== undefined) {
+        await this.driver.setModel({ provider: model.provider, id: model.modelId });
         await this.reapplyPinnedThinking();
       }
       if (overrides?.thinkingLevel !== undefined) {

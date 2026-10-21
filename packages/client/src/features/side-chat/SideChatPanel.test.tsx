@@ -172,7 +172,7 @@ describe("SideChatPanel", () => {
     expect(screen.getByRole("button", { name: "Stop side chat" })).toBeTruthy();
   });
 
-  it("sends on IME-safe Enter, suppresses duplicate admission, and keeps a failed draft", async () => {
+  it("sends on IME-safe Enter, suppresses duplicates, and keeps uncertain delivery out of the draft", async () => {
     let rejectSend!: (error: unknown) => void;
     const pending = new Promise<string>((_resolve, reject) => { rejectSend = reject; });
     const send = vi.fn(() => pending);
@@ -192,11 +192,19 @@ describe("SideChatPanel", () => {
     expect(send).toHaveBeenCalledWith("conversation-1", "keep this");
 
     await act(async () => { rejectSend({ code: "timeout", message: "raw provider text", retryable: true }); });
-    expect((input as HTMLTextAreaElement).value).toBe("keep this");
-    // Retryable transport timeout is still reconnecting — the dedicated copy
-    // replaces the generic timed-out text; raw provider text never leaks.
-    expect(screen.getByRole("alert").textContent).toBe("Connection lost — reconnecting. Your draft is kept; try again shortly.");
+    expect((input as HTMLTextAreaElement).value).toBe("");
+    expect(screen.getByRole("alert").textContent).toContain("Delivery is still being confirmed");
     expect(screen.getByRole("alert").textContent).not.toContain("raw provider text");
+  });
+
+  it("restores a side-chat draft only on proven pre-dispatch failure", async () => {
+    const send = vi.fn(async () => { throw { code: "session_busy", message: "busy", retryable: false, phase: "activation" }; });
+    mount(runtime(sideState(), { sideChatSend: send }));
+    const input = screen.getByRole("textbox", { name: "Side chat message" });
+    fireEvent.change(input, { target: { value: "keep this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send to side chat" }));
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe("keep this"));
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("uses exact conversation identity for reset and stop, with no mode or overlap controls", async () => {

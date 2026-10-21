@@ -141,6 +141,20 @@ const MODEL_A = { provider: "openai", id: "gpt-5" } as const;
 const MODEL_B = { provider: "anthropic", id: "claude-opus-4" } as const;
 
 describe("adapter model-mutation admission barrier", () => {
+  it("an unchanged model override does not call setModel or add a model_change", { timeout: 10000 }, async () => {
+    const { driver, controls } = makeDriver();
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+    const handle = await adapter.submitTurn({ prompt: "hi", activationOverrides: { model: { provider: "anthropic", modelId: "claude-sonnet-4" } } });
+    assert.equal(handle.admission.ok, true);
+    await controls.promptStarted();
+    assert.deepEqual(controls.setModelCalls, []);
+    assert.deepEqual(controls.promptModels, [{ provider: "anthropic", id: "claude-sonnet-4" }]);
+    controls.releaseNextPrompt();
+    assert.equal((await handle.completion).ok, true);
+    await adapter.close("user");
+  });
+
   it("plain set_model in flight → submitTurn with model override fails closed session_busy with zero prompts; retry after release runs on the override model", { timeout: 10000 }, async () => {
     const { driver, controls } = makeDriver();
     const adapter = new CanonicalAgentRuntimeAdapter(driver);

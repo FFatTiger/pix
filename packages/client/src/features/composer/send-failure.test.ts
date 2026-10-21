@@ -1,40 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { isActivationSendFailure, isConsumedQueuedReceipt, isDefiniteSendFailure, isUncertainSendSettle } from "./send-failure";
+import { isConsumedQueuedReceipt, isDefiniteSendFailure } from "./send-failure";
 
 const conflict = { code: "conflict", message: "session revision changed", retryable: false };
 const timeoutRetryable = { code: "timeout", message: "runtime not sendable in time", retryable: true };
 const unavailableFinal = { code: "unavailable", message: "sessiond request failed", retryable: false };
 
 describe("send-failure judgment", () => {
-  it("activation-tagged causes are proven non-delivery", () => {
-    expect(isActivationSendFailure({ ...conflict, phase: "activation" })).toBe(true);
-    expect(isActivationSendFailure({ ...timeoutRetryable, phase: "activation" })).toBe(true);
-    expect(isActivationSendFailure(conflict)).toBe(false);
-    expect(isActivationSendFailure(null)).toBe(false);
+  it("only pre-dispatch activation or a correlated authority rejection proves non-delivery", () => {
+    expect(isDefiniteSendFailure({ ...conflict, phase: "activation" })).toBe(true);
+    expect(isDefiniteSendFailure({ ...timeoutRetryable, phase: "activation" })).toBe(true);
+    expect(isDefiniteSendFailure({ status: "rejected", delivery: "not_delivered", error: conflict })).toBe(true);
+    expect(isDefiniteSendFailure({ status: "rejected", delivery: "uncertain", error: conflict })).toBe(false);
+    expect(isDefiniteSendFailure({ status: "duplicate", delivery: "not_delivered", error: conflict })).toBe(false);
   });
 
-  it("uncertain-tagged causes are never definite, regardless of retryable", () => {
-    expect(isUncertainSendSettle({ ...unavailableFinal, phase: "uncertain" })).toBe(true);
-    expect(isUncertainSendSettle({ ...timeoutRetryable, phase: "uncertain" })).toBe(true);
-    expect(isDefiniteSendFailure({ ...unavailableFinal, phase: "uncertain" })).toBe(false);
-    expect(isDefiniteSendFailure({ ...conflict, phase: "uncertain" })).toBe(false);
-  });
-
-  it("retryable transport failures are not definite (owner keeps retrying)", () => {
-    expect(isDefiniteSendFailure(timeoutRetryable)).toBe(false);
-  });
-
-  it("only an explicit non-retryable, non-uncertain rejection is definite", () => {
-    expect(isDefiniteSendFailure(conflict)).toBe(true);
-    expect(isDefiniteSendFailure(unavailableFinal)).toBe(true);
-    expect(isDefiniteSendFailure({ code: "invalid_input", message: "x", retryable: false, phase: "activation" })).toBe(true);
-  });
-
-  it("malformed causes stay definite-false-positive-safe only via shape, never truthiness of junk", () => {
-    expect(isDefiniteSendFailure(new Error("raw"))).toBe(true);
-    expect(isDefiniteSendFailure("string")).toBe(true);
-    expect(isUncertainSendSettle("string")).toBe(false);
-    expect(isActivationSendFailure(42)).toBe(false);
+  it("defaults every unproven failure to uncertain, regardless of retryable or code", () => {
+    for (const cause of [
+      { ...unavailableFinal, phase: "uncertain" },
+      { ...conflict, phase: "uncertain" },
+      conflict,
+      unavailableFinal,
+      timeoutRetryable,
+      new Error("raw"),
+      new TypeError("socket closed"),
+      new DOMException("aborted", "AbortError"),
+      "string",
+      null,
+    ]) {
+      expect(isDefiniteSendFailure(cause)).toBe(false);
+    }
   });
 
   it("a consumed queued-turn receipt is not a queue entry", () => {

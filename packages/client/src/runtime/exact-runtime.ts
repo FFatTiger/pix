@@ -255,11 +255,15 @@ export function createExactActions(
   registry: SessionControllerRegistry,
   sessionId: string,
 ): Omit<ExactRuntimeApi, keyof ExactRuntimeView> {
-  const withController = <T>(run: (controller: SessionController) => Promise<T>): Promise<T> => {
+  const withController = <T>(run: (controller: SessionController) => Promise<T>, sending = false): Promise<T> => {
     let controller: SessionController;
     try {
       controller = registry.getOrCreate(sessionId);
     } catch (error) {
+      if (sending) {
+        const fields = error !== null && typeof error === "object" ? error : {};
+        return Promise.reject({ ...fields, ...(error instanceof Error ? { message: error.message } : {}), phase: "activation" });
+      }
       return Promise.reject(error);
     }
     try {
@@ -279,17 +283,17 @@ export function createExactActions(
     stop: (reason) => registry.stop(sessionId, reason),
     fetchSnapshot: () => withController((controller) => controller.fetchSnapshot()),
     sendCommand: (command) => withController((controller) => controller.sendCommand(command)),
-    sendPrompt: (message, images) => withController((controller) => controller.sendPrompt(message, images)),
-    submitTurn: (input) => withController((controller) => controller.submitTurn({ ...input, sessionId })),
+    sendPrompt: (message, images) => withController((controller) => controller.sendPrompt(message, images), true),
+    submitTurn: (input) => withController((controller) => controller.submitTurn({ ...input, sessionId }), true),
     subscribeTurnTerminal: (listener) => registry.subscribeTurnTerminal((terminal) => {
       if (terminal.sessionId === sessionId) listener(terminal);
     }),
     sendPromptToSession: (message, images, activationSettings) =>
-      withController((controller) => controller.sendPromptToSession(sessionId, message, images, activationSettings)),
+      withController((controller) => controller.sendPromptToSession(sessionId, message, images, activationSettings), true),
     respondExtensionUi: (request, reply) => withController((controller) => controller.respondExtensionUi(request, reply)),
     sendExtensionUiInput: (request, data) => withController((controller) => controller.sendExtensionUiInput(request, data)),
-    steer: (message, images) => withController((controller) => controller.steer(message, images)),
-    followUp: (message, images) => withController((controller) => controller.followUp(message, images)),
+    steer: (message, images) => withController((controller) => controller.steer(message, images), true),
+    followUp: (message, images) => withController((controller) => controller.followUp(message, images), true),
     clearQueue: () => withController((controller) => controller.clearQueue()),
     switchQueuedDelivery: (address) => withController((controller) => controller.switchQueuedDelivery(address)),
     runBash: (command, options) => withController((controller) => controller.runBash(command, options)),
@@ -306,7 +310,7 @@ export function createExactActions(
     setTools: (names: readonly string[], options?: { includeExtensionTools?: boolean }) => withController((controller) => controller.setTools(names, options)),
     reload: () => withController((controller) => controller.reload()),
     sideChatStart: () => withController((controller) => controller.sideChatStart()),
-    sideChatSend: (conversationId, message) => withController((controller) => controller.sideChatSend(conversationId, message)),
+    sideChatSend: (conversationId, message) => withController((controller) => controller.sideChatSend(conversationId, message), true),
     sideChatReset: (conversationId, mode) => withController((controller) => controller.sideChatReset(conversationId, mode)),
     sideChatSetModel: (conversationId, provider, modelId, thinkingLevel) => withController((controller) => controller.sideChatSetModel(conversationId, provider, modelId, thinkingLevel)),
     abortSideChat: (conversationId) => withController((controller) => controller.abortSideChat(conversationId)),

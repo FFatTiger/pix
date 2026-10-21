@@ -18,7 +18,7 @@ import {
   type StagingKey,
 } from "@/features/composer/session-staging-store";
 import { captureSubmitModel } from "@/features/composer/submit-activation";
-import { isActivationSendFailure, isConsumedQueuedReceipt, isDefiniteSendFailure, isUncertainSendSettle } from "@/features/composer/send-failure";
+import { isConsumedQueuedReceipt, isDefiniteSendFailure } from "@/features/composer/send-failure";
 import { useHttpClient } from "@/app/http-context";
 import {
   configuredTitleModel,
@@ -725,21 +725,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
    * "not sent") could duplicate the message. */
   const isDefiniteFailure = isDefiniteSendFailure;
 
-  /**
-   * True when a failure happened in the ACTIVATION phase (before the prompt
-   * command was dispatched) — the prompt is PROVEN non-delivery regardless of
-   * any retryable transport metadata, so the draft must be restored/retained
-   * and no phantom bubble may remain. Tagged by the store (`phase:
-   * "activation"`).
-   */
-  const isActivationFailure = isActivationSendFailure;
-
-  /** True when the store settled a send as UNCERTAIN delivery (the turn may
-   *  still be admitted/running server-side). Never "not sent"; the draft is
-   *  never restored for it (a manual re-send could duplicate the turn). */
-  const isUncertainFailure = isUncertainSendSettle;
-
-  /** Restore the text into the composer when a send-path command fails. */
+  /** Restore the text into the composer when non-delivery was proved. */
   const restoreDraft = useCallback((message: string) => {
     inputRef.current?.insertIfEmpty(message);
   }, []);
@@ -748,6 +734,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
    *  fails with `invalid_input` — say so instead of the generic failure text.
    *  Any other code keeps the generic copy (never a raw ProtocolError). */
   const describeSendFailure = useCallback((cause: unknown): string => {
+    if (!isDefiniteFailure(cause)) return t("desktop.sendUnconfirmed");
     if (cause && typeof cause === "object" && "code" in cause) {
       const code = (cause as { code?: unknown }).code;
       if (code === "invalid_input") return t("desktop.selectProjectFirst");
@@ -755,19 +742,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         const message = (cause as { message?: unknown }).message;
         if (typeof message === "string" && message.length > 0) return message;
       }
-      // Retryable transport loss is still reconnecting — say so instead of the
-      // generic failure text (the transport owner keeps retrying in the back).
-      // An UNCERTAIN-delivery settle wins over this: its bytes may already be
-      // admitted server-side, so "reconnecting" would understate it.
-      if (!isUncertainFailure(cause)
-        && (code === "timeout" || code === "unavailable")
+      if ((code === "timeout" || code === "unavailable")
         && (cause as { retryable?: unknown }).retryable === true) {
         return t("desktop.sendReconnecting");
       }
     }
-    // An uncertain-delivery settle is NEVER "not sent": the turn may be
-    // admitted server-side. Dedicated copy; the draft is NOT restored.
-    if (isUncertainFailure(cause)) return t("desktop.sendUnconfirmed");
     return t("desktop.sendFailed");
   }, [t]);
 
@@ -790,27 +769,25 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         setSendError(describeWorkspaceAccess(workspaceDecision, t));
         return false;
       }
-      // Synchronous, before ANY await in this handler (user gesture).
-      autoEnablePush();
-      const wireImages = toImageAttachments(images);
-      // The model displayed IMMEDIATELY BEFORE this send is what the turn must
-      // run with, carried on the SAME atomic submit activation overrides
-      // (negotiated `runtime.submit-turn.v1`): the staged choice, the detached
-      // branch-resolved history default, the home catalog default, or the
-      // known live authority baseline — never a side-channel set_model+prompt.
-      // The finite legacy v2 shim keeps its documented staged-only semantics;
-      // a missing known model is never replaced by an arbitrary fallback, and
-      // a known immutable live model needs no redundant unsupported mutation.
-      const carriedModel = captureSubmitModel({
-        displayedModel: model,
-        negotiatedSubmitTurn: submitTurnEnabled,
-        stagedModel,
-        live,
-        modelSetSupported: hasModelSet,
-        authorityModel: live && state?.model
-          ? { provider: state.model.provider, modelId: state.model.id }
-          : null,
-      });
+      // Synchronous preflight still precedes the first dispatch.
+      let wireImages: ReturnType<typeof toImageAttachments>;
+      let carriedModel: ReturnType<typeof captureSubmitModel>;
+      try {
+        autoEnablePush();
+        wireImages = toImageAttachments(images);
+        carriedModel = captureSubmitModel({
+          displayedModel: model,
+          negotiatedSubmitTurn: submitTurnEnabled,
+          stagedModel,
+          live,
+          authorityModel: live && state?.model
+            ? { provider: state.model.provider, modelId: state.model.id }
+            : null,
+        });
+      } catch (cause) {
+        setSendError(describeSendFailure({ ...(cause && typeof cause === "object" ? cause : {}), phase: "activation" }));
+        return false;
+      }
       const activationSettings = {
         model: carriedModel,
         thinkingLevel: stagedThinking,
@@ -857,17 +834,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           })
           .catch((cause: unknown) => {
             if (!isCurrent()) return;
-            if (isActivationFailure(cause) || isDefiniteFailure(cause)) {
+            if (isDefiniteFailure(cause)) {
               restoreDraft(message);
               setSendError(describeSendFailure(cause));
               return;
             }
-            // Uncertain-delivery settle: honest "unconfirmed" copy, NEVER
-            // "not sent" (the server may already be running this turn). The
-            // draft is NOT restored — re-sending it could duplicate the turn;
-            // reconciliation and the retained optimistic bubble keep the
-            // message visible in the conversation either way.
-            if (isUncertainFailure(cause)) setSendError(describeSendFailure(cause));
+            // Unknown delivery can already be committed; never invite a resend.
+            setSendError(describeSendFailure(cause));
           });
         return sending;
       };
@@ -882,7 +855,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // Session creation allocates identity only. The first turn carries the
       // staged model/thinking as one authority-owned submitTurn intent (or the
       // explicit finite legacy v2 activation-settings shim).
-      const creating = onCreateSession();
+      let creating: ReturnType<NonNullable<typeof onCreateSession>>;
+      try {
+        creating = onCreateSession();
+      } catch (cause) {
+        setSendError(describeSendFailure({ ...(cause && typeof cause === "object" ? cause : {}), phase: "activation" }));
+        return false;
+      }
+      let dispatched = false;
       firstPromptCreateRef.current = creating;
       void creating
         // Capture provisional staging, promote fail-closed onto the created
@@ -894,19 +874,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             throw promoted.error;
           }
           const createdActions = exactActionsFor(created.sessionId);
+          dispatched = true;
           void sendToExact(createdActions, created.sessionId);
           inputRef.current?.promoteDraft(created.sessionId, submittedValue, imageCount);
           onCreatedSessionDispatched?.({ ...created, firstMessage: message });
         })
         .catch((cause: unknown) => {
-          // Create is identity-only and does not dispatch the prompt. Any
-          // failure here (including retryable timeout) is proven non-delivery:
-          // keep the unsent draft/images/staging and surface the error. A
-          // post-create sync throw in this chain is the same UX; it does not
-          // invent a session URL or drop a resolved identity.
           if (isCurrent()) {
-            restoreDraft(message);
-            setSendError(describeSendFailure(cause));
+            if (!dispatched) restoreDraft(message);
+            setSendError(describeSendFailure(dispatched
+              ? cause
+              : { ...(cause && typeof cause === "object" ? cause : {}), phase: "activation" }));
           }
         })
         .finally(() => {
@@ -914,7 +892,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         });
       return false;
     },
-    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, hasModelSet, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t, autoEnablePush],
+    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t, autoEnablePush],
   );
 
   // Phase 3: the catalog refresh is deferred to COMMITTED/TERMINAL turn status
@@ -970,13 +948,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // (the message may already be queued server-side).
   const settleQueuedSend = useCallback((message: string, cause: unknown) => {
     if (!isCurrent()) return;
-    if (isActivationFailure(cause) || isDefiniteFailure(cause)) {
+    if (isDefiniteFailure(cause)) {
       restoreDraft(message);
       setSendError(describeSendFailure(cause));
       return;
     }
-    if (isUncertainFailure(cause)) setSendError(describeSendFailure(cause));
-  }, [isCurrent, restoreDraft, describeSendFailure, isActivationFailure, isDefiniteFailure, isUncertainFailure]);
+    setSendError(describeSendFailure(cause));
+  }, [isCurrent, restoreDraft, describeSendFailure, isDefiniteFailure]);
 
   const handleSteer = useCallback(
     (message: string, images?: AttachedImage[]) => {
@@ -1166,7 +1144,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         // composer still owns the selection, or the messages are gone.
         const { failed } = await restoreClearedQueue([...all].reverse(), sourceDraftKey);
         if (!isCurrent()) return;
-        if (failed) setSendError(t("desktop.sendFailed"));
+        if (failed) setSendError(t("desktop.queueRestoreFailed"));
       })
       .catch((cause: unknown) => {
         // clearQueue failed: the runtime queue is intact, so nothing is

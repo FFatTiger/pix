@@ -105,6 +105,15 @@ describe("SessionController side-chat lane", () => {
     h.dispose();
   });
 
+  it("proves a side-chat send failed before any bytes were written", async () => {
+    const h = createHarness();
+    const ws = await attach(h);
+    ws.dieOnSend = true;
+    const sent = h.controller("s1")!.sideChatSend("conversation-1", "hello");
+    await expect(sent).rejects.toMatchObject({ phase: "activation" });
+    h.dispose();
+  });
+
   it("resends the same commandId after a same-epoch reconnect and never resends across an epoch change", async () => {
     const h = createHarness();
     let ws = await attach(h);

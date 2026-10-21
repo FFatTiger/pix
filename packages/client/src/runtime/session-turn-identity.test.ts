@@ -111,6 +111,53 @@ describe("SessionController — Phase 5A identity optimistic commit", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
+  it("a committed user entry before admission settles the send and outranks a conflicting rejection", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const send = h.store.sendPrompt("delivered");
+    await flush();
+    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend(turnStatus("s1", submit.payload.operationId, 1, "user_committed", { userEntryId: "entry-42" }));
+    await flush();
+    await expect(send).resolves.toBeUndefined();
+    expect(h.store.getSnapshot().optimisticEntries[0]?.identity?.userEntryId).toBe("entry-42");
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: {
+      status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId,
+      error: { code: "conflict", message: "stale receipt", retryable: false },
+    } });
+    await flush();
+    expect(h.store.getSnapshot().optimisticEntries[0]?.identity?.userEntryId).toBe("entry-42");
+    expect(h.store.getSnapshot().turnDelivery).not.toBe("not_delivered");
+    ws.serverSend(turnStatus("s1", submit.payload.operationId, 2, "completed", { userEntryId: "entry-42", finalLeafId: "entry-43" }));
+    await flush();
+  });
+
+  it("a terminal status before the admission receipt also settles the send", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const send = h.store.sendPrompt("delivered");
+    await flush();
+    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend(turnStatus("s1", submit.payload.operationId, 1, "completed", { userEntryId: "entry-42", finalLeafId: "entry-43" }));
+    await flush();
+    await expect(send).resolves.toBeUndefined();
+    expect(h.store.getSnapshot().turnDelivery).not.toBe("not_delivered");
+  });
+
+  it("a failed status before admission settles as uncertain when no user entry was proved", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const send = h.store.sendPrompt("maybe delivered");
+    await flush();
+    const submit = lastFrame<{ type: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend(turnStatus("s1", submit.payload.operationId, 1, "failed", {
+      error: { code: "unavailable", message: "worker exited", retryable: false },
+    }));
+    await flush();
+    await expect(send).rejects.toMatchObject({ phase: "uncertain" });
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
+  });
+
   it("binds the bubble to the operation identity at submit and refines it from authority pushes", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);

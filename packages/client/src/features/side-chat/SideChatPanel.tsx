@@ -11,6 +11,7 @@ import { ChatInput, type ChatInputHandle } from "@/components/chat/ChatInput";
 import { ChatTranscriptRowView } from "@/components/transcript/TranscriptList";
 import { buildChatTranscriptRows } from "@/components/transcript/chat-projection";
 import { useHttpClient } from "@/app/http-context";
+import { isDefiniteSendFailure } from "@/features/composer/send-failure";
 import { useI18n } from "@/hooks/useI18n";
 import { buildModelNameMap } from "@/lib/model-display";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
@@ -108,7 +109,9 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
       if (scopeRef.current === operation.scope) onSuccess?.();
     } catch (cause) {
       if (scopeRef.current === operation.scope) {
-        setOperationError({ scope: operation.scope, message: describeSideChatError(cause, t) });
+        setOperationError({ scope: operation.scope, message: name === "send" && !isDefiniteSendFailure(cause)
+          ? t("desktop.sendUnconfirmed")
+          : describeSideChatError(cause, t) });
       }
     } finally {
       setPendingOperation((current) => current?.id === operation.id && current.scope === operation.scope ? null : current);
@@ -247,14 +250,17 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
           onSend={(message: string) => {
             const text = message.trim();
             if (state.status !== "idle" || pending !== null || text.length === 0) return false;
-            let sent = false;
+            let restore = false;
             const sendScope = scope;
             void run("send", async () => {
-              await runtime.sideChatSend(state.conversationId, text.slice(0, MAX_SIDE_CHAT_MESSAGE_CHARS));
-              sent = true;
+              try {
+                await runtime.sideChatSend(state.conversationId, text.slice(0, MAX_SIDE_CHAT_MESSAGE_CHARS));
+              } catch (cause) {
+                restore = isDefiniteSendFailure(cause);
+                throw cause;
+              }
             }).then(() => {
-              // A rejected send gives the text back instead of losing it.
-              if (!sent && scopeRef.current === sendScope) inputRef.current?.insertIfEmpty(text);
+              if (restore && scopeRef.current === sendScope) inputRef.current?.insertIfEmpty(text);
             });
             return true;
           }}

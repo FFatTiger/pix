@@ -394,8 +394,35 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
     expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("next draft while creating");
   });
 
+  it("does not restore a first-send draft when a post-dispatch callback throws", async () => {
+    function Harness() {
+      const runtime = useRuntimeConnection();
+      return <Composer cwd="/x" onCreateSession={async () => {
+        const result = await runtime.createSession({ cwd: "/x", projectRoot: "/x" });
+        return { sessionId: result.sessionId, cwd: "/x" };
+      }} onCreatedSessionDispatched={() => { throw new Error("post-dispatch callback"); }} />;
+    }
+    mount(<Harness />);
+    const ws = await driveReady();
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "already sent" } });
+    fireEvent.click(screen.getByLabelText("Send message"));
+    await flush();
+    const create = lastFrame<{ type: string; id: string }>(ws, "create")!;
+    await serverSend(ws, { type: "response", id: create.id, payload: {
+      ok: true, result: { sessionId: "new-post-dispatch", epoch: "e1", created: true,
+        cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-post-dispatch" }).snapshot },
+    } });
+    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    await serverSend(ws, { type: "snapshot", id: attach.id,
+      payload: snapshotPayload({ sessionId: "new-post-dispatch", capabilities: ["runtime.prompt", "runtime.abort"] }) });
+    expect(countCommandType(ws, "prompt")).toBe(1);
+    expect(textarea.value).toBe("");
+    expect(screen.getByRole("alert").textContent).toContain("Delivery is still being confirmed");
+  });
+
   it("keeps the transient draft mounted and restores text when create fails", async () => {
-    mount(<Composer cwd="/x" onCreateSession={() => Promise.reject({ code: "unavailable", message: "create failed", retryable: false, phase: "activation" })} />);
+    mount(<Composer cwd="/x" onCreateSession={() => Promise.reject(new Error("create failed"))} />);
     await driveReady();
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "keep this first message" } });
@@ -1036,7 +1063,7 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     expect(screen.queryByLabelText("Stop agent")).toBeNull();
   });
 
-  it("a DEFINITE rejection drops the optimistic bubble and restores the draft", async () => {
+  it("keeps an optimistic bubble and clears the draft for an unmarked command error", async () => {
     mount(<><TranscriptList sessionId="s1" /><Composer sessionId="s1" live /></>);
     const ws = await driveReady();
     await driveAttach(ws);
@@ -1045,11 +1072,54 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     expect(screen.getByText("will be rejected")).toBeTruthy();
     const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
     await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: false, error: { code: "invalid_input", message: "no", retryable: false } } });
-    // The turn never started: the optimistic bubble is removed from the store…
-    expect(capturedStore!.getSnapshot().liveEntries).toHaveLength(0);
-    // …and the text is restored into the composer (textarea + highlight mirror).
+    // A legacy command error has no delivery receipt: its retryable flag and
+    // invalid_input code do not prove the user entry was never committed.
+    expect(capturedStore!.getSnapshot().liveEntries).toHaveLength(1);
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
-    expect(textarea.value).toBe("will be rejected");
+    expect(textarea.value).toBe("");
+    expect(screen.getByRole("alert").textContent).toContain("Delivery is still being confirmed");
+  });
+
+  it("socket close after dispatch keeps the draft clear while recovery is pending", async () => {
+    mount(<><TranscriptList sessionId="s1" /><Composer sessionId="s1" live /></>);
+    const ws = await driveReady();
+    await driveAttach(ws);
+    typeAndSend("sent before disconnect");
+    await flush();
+    expect(lastFrame(ws, "command")).toBeTruthy();
+    await act(async () => {
+      ws.serverClose(1006);
+      await vi.advanceTimersByTimeAsync(35_000);
+      await flush();
+    });
+    expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("");
+    expect(screen.queryByRole("alert")?.textContent ?? "").not.toContain("The message was not sent");
+  });
+
+  it("a rejected/not_delivered admission removes the bubble and restores the draft", async () => {
+    mount(<><TranscriptList sessionId="s1" /><Composer sessionId="s1" live /></>);
+    const store = capturedStore!;
+    let ws!: FakeWebSocket;
+    await act(async () => {
+      store.connect();
+      ws = SOCKETS[SOCKETS.length - 1]!;
+      ws.serverOpen();
+      ws.serverSend(ack(["agent"], ["runtime.submit-turn.v1"]));
+      await flush();
+    });
+    await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort"], "s1", "e1", 1);
+    typeAndSend("proven unsent");
+    await flush();
+    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    expect(screen.getByText("proven unsent")).toBeTruthy();
+    await serverSend(ws, { type: "submit_turn_result", id: submit.id, payload: {
+      status: "rejected", delivery: "not_delivered", sessionId: "s1",
+      operationId: submit.payload.operationId,
+      error: { code: "session_busy", message: "rejected before dispatch", retryable: false },
+    } });
+    expect(capturedStore!.getSnapshot().liveEntries).toHaveLength(0);
+    expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("proven unsent");
+    expect(screen.getByRole("alert").textContent).toContain("Your draft has been kept");
   });
 
   it("an UNCERTAIN (retryable) rejection keeps the optimistic bubble (delivery ambiguous)", async () => {

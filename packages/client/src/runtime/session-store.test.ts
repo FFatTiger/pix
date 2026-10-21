@@ -418,7 +418,7 @@ describe("SessionStore — same-epoch resend vs epoch_changed reject", () => {
     ws.serverClose(1006);
     await flush();
     const followUp = h.store.followUp("never delivered");
-    const settled = expect(followUp).rejects.toMatchObject({ code: "unavailable", retryable: false });
+    const settled = expect(followUp).rejects.toMatchObject({ code: "unavailable", retryable: false, phase: "activation" });
     await vi.advanceTimersByTimeAsync(20_000);
     await settled;
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
@@ -1417,7 +1417,7 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
     };
     const p = h.store.steer("x");
     await flush();
-    await expect(p).rejects.toMatchObject({ code: "unavailable", message: "queued turn send failed", retryable: false });
+    await expect(p).rejects.toMatchObject({ code: "unavailable", message: "queued turn send failed", retryable: false, phase: "activation" });
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
     ws.send = send;
     const next = h.store.steer("next");
@@ -2511,7 +2511,7 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     expect(h.store.getSnapshot().streaming).toBe(false);
   });
 
-  it("definite rejection drops the bubble and clears the running overlay", async () => {
+  it("an unmarked command rejection keeps the bubble but clears the speculative running overlay", async () => {
     const h = createHarness();
     const ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hi");
@@ -2522,7 +2522,16 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     await expect(promptP).rejects.toMatchObject({ code: "invalid_input" });
     const view = h.store.getSnapshot();
     expect(view.streaming).toBe(false);
-    expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "hi")).toBe(false);
+    expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "hi")).toBe(true);
+  });
+
+  it("a pre-wire legacy prompt failure removes the bubble and is tagged activation", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    ws.dieOnSend = true;
+    const promptP = h.store.sendPrompt("unsent");
+    await expect(promptP).rejects.toMatchObject({ phase: "activation" });
+    expect(h.store.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "unsent")).toBe(false);
   });
 
   it("uncertain (retryable) dispatch keeps the bubble (may have been delivered) but ends the speculative overlay", async () => {

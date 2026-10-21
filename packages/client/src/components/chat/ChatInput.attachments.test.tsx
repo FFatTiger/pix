@@ -198,15 +198,33 @@ describe("ChatInput pending file attachments", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("writes the marker into the draft when the send callback throws", async () => {
+  it.each([
+    new Error("send failed"),
+    new TypeError("socket closed"),
+    { code: "unavailable", message: "socket closed", retryable: false },
+  ])("does not restore an uploaded file on an unproven send error: %s", async (cause) => {
     const uploadAttachment = uploadOk();
-    const onSend = vi.fn(() => { throw new Error("send failed"); });
+    const onSend = vi.fn(() => { throw cause; });
     const view = renderInput({ uploadAttachment, onSend });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "retry" } });
     fireEvent.click(screen.getByLabelText("Send message"));
 
-    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toContain("Delivery is still being confirmed");
+    await waitFor(() => expect(screen.queryByText("notes.txt")).toBeNull());
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores uploaded markers only when a callback proves pre-dispatch failure", async () => {
+    const uploadAttachment = uploadOk();
+    const onSend = vi.fn(() => { throw { phase: "activation", code: "invalid_input", retryable: false }; });
+    const view = renderInput({ uploadAttachment, onSend });
+    pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "retry" } });
+    fireEvent.click(screen.getByLabelText("Send message"));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("The message was not sent");
     await waitFor(() => expect(screen.queryByText("notes.txt")).toBeNull());
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("retry\n\n[Attached file saved at: /store/notes.txt]");
     expect(uploadAttachment).toHaveBeenCalledTimes(1);

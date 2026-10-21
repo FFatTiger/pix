@@ -36,6 +36,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useResizableHeight } from "@/hooks/useResizableHeight";
 import { getCurrentVisualViewportHeight } from "@/hooks/useVisualViewportHeight";
 import { useI18n } from "@/hooks/useI18n";
+import { isDefiniteSendFailure } from "@/features/composer/send-failure";
 import { ModelSelector, ThinkingLevelSelector } from "./composer-selectors";
 import { IconButton, ToolbarButton } from "@/components/ui/buttons";
 import { MenuItem, Popover, anchorRectOf, type AnchorRect } from "@/components/ui/menu";
@@ -1201,9 +1202,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       let accepted: boolean;
       try {
         accepted = onSend(message, images.length ? images : undefined, { rawValue });
-      } catch {
-        commitUploadedMentionsToDraft(mentions, markerLines, files);
-        setFileAttachmentError(t("desktop.sendFailed"));
+      } catch (cause) {
+        if (isDefiniteSendFailure(cause)) {
+          commitUploadedMentionsToDraft(mentions, markerLines, files);
+          setFileAttachmentError(t("desktop.sendFailed"));
+        } else {
+          settleAcceptedSubmission({ value, images, files });
+          setFileAttachmentError(t("desktop.sendUnconfirmed"));
+        }
         return;
       }
       if (accepted) {
@@ -1501,9 +1507,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           onFollowUp(message, images);
           delivered = true;
         }
-      } catch {
-        commitUploadedMentionsToDraft(mentions, markerLines, files);
-        setFileAttachmentError(t("desktop.sendFailed"));
+      } catch (cause) {
+        if (isDefiniteSendFailure(cause)) {
+          commitUploadedMentionsToDraft(mentions, markerLines, files);
+          setFileAttachmentError(t("desktop.sendFailed"));
+        } else {
+          settleAcceptedSubmission({ value, images: imagesSnapshot, files });
+          setFileAttachmentError(t("desktop.sendUnconfirmed"));
+        }
         return;
       }
       if (!delivered) {
