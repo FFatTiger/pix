@@ -538,11 +538,57 @@ describe("SessionStore — queued-turn uncertain reconciliation (steer / follow_
     ws.serverSend({ type: "response", id: first.id, payload: { ok: false, error: { code: "session_busy", message: "queue full", retryable: false } } });
     const outcome = await settled;
     expect(outcome.ok).toBe(false);
-    if (!outcome.ok) expect(outcome.cause).toMatchObject({ code: "session_busy" });
+    if (!outcome.ok) expect(outcome.cause).toMatchObject({ code: "session_busy", status: "rejected", delivery: "not_delivered" });
     await vi.advanceTimersByTimeAsync(5_000);
     await flush();
     expect(commandFrames(ws)).toHaveLength(1);
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("a nested worker rejection stays uncertain because the SDK may already have queued it", async () => {
+    const h = createHarness();
+    const ws = await openAttachedWithSteer(h);
+    const send = h.store.steer("not queued");
+    await flush();
+    const frame = commandFrames(ws).at(-1)!;
+    ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: {
+      commandId: frame.payload.command.commandId,
+      result: { ok: false, type: "steer", error: { code: "session_busy", message: "queue full", retryable: false } },
+    } } });
+    await expect(send).rejects.toMatchObject({ phase: "uncertain" });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("a post-enqueue nested invalid_input never restores a duplicate draft", async () => {
+    const h = createHarness();
+    const ws = await openAttachedWithSteer(h);
+    const send = h.store.steer("already queued");
+    await flush();
+    const frame = commandFrames(ws).at(-1)!;
+    // The SDK may have queued the entry before the adapter's state read throws.
+    ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: {
+      commandId: frame.payload.command.commandId,
+      result: { ok: false, type: "steer", error: { code: "invalid_input", message: "state not found", retryable: false } },
+    } } });
+    await expect(send).rejects.toMatchObject({ phase: "uncertain" });
+  });
+
+  it("a non-retryable transport error remains uncertain, even after a retry", async () => {
+    const h = createHarness();
+    const ws = await openAttachedWithSteer(h);
+    const send = h.store.steer("maybe queued");
+    await flush();
+    const first = commandFrames(ws).at(-1)!;
+    ws.serverSend({ type: "response", id: first.id, payload: { ok: false,
+      error: { code: "unavailable", message: "sessiond request failed", retryable: false } } });
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_100);
+    await flush();
+    const retry = commandFrames(ws).at(-1)!;
+    expect(retry.id).not.toBe(first.id);
+    ws.serverSend({ type: "response", id: retry.id, payload: { ok: false,
+      error: { code: "session_busy", message: "busy on retry", retryable: false } } });
+    await expect(send).rejects.toMatchObject({ phase: "uncertain" });
   });
 
   it("a same-epoch reconnect resync never double-sends the queued turn", async () => {

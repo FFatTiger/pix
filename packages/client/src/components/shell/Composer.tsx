@@ -780,6 +780,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           negotiatedSubmitTurn: submitTurnEnabled,
           stagedModel,
           live,
+          modelSetSupported: hasModelSet,
           authorityModel: live && state?.model
             ? { provider: state.model.provider, modelId: state.model.id }
             : null,
@@ -892,7 +893,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         });
       return false;
     },
-    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t, autoEnablePush],
+    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, hasModelSet, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t, autoEnablePush],
   );
 
   // Phase 3: the catalog refresh is deferred to COMMITTED/TERMINAL turn status
@@ -1146,12 +1147,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         if (!isCurrent()) return;
         if (failed) setSendError(t("desktop.queueRestoreFailed"));
       })
-      .catch((cause: unknown) => {
+      .catch(() => {
         // clearQueue failed: the runtime queue is intact, so nothing is
         // restored. Say so instead of leaving a queue the UI claimed to recall.
-        if (isCurrent()) setSendError(describeSendFailure(cause));
+        if (isCurrent()) setSendError(t("desktop.queueRecallFailed"));
       });
-  }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent, restoreClearedQueue, describeSendFailure, t, draftKey]);
+  }, [liveWorkspaceEnabled, hasQueue, queuedMessages, exact, isCurrent, restoreClearedQueue, t, draftKey]);
 
   // The queue switch is ONE explicit runtime command (switch_queued_delivery)
   // with a revision fence: the row's (list, index, exact text) as the capsule

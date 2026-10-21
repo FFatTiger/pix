@@ -11,8 +11,9 @@
  * Capability rules (fail closed, no arbitrary fallback):
  *  - a MISSING known model is never replaced by a catalog guess — nothing is
  *    carried (`null`);
- *  - a live runtime whose authoritative model already IS the displayed model
- *    needs no mutation, even when `runtime.model.set` is available;
+ *  - a live runtime without `runtime.model.set` whose known immutable live
+ *    model already IS the displayed model needs no redundant unsupported
+ *    mutation — nothing is carried (the runtime keeps exactly that model);
  *  - an explicit change on a runtime that cannot apply it is still carried:
  *    the runtime rejects the unsupported mutation and the send fails closed
  *    (draft restored, staged intent preserved) instead of silently running a
@@ -32,6 +33,8 @@ export interface SubmitModelCaptureInput {
   readonly stagedModel: StagedModelRef | null;
   /** True when the selected session is the attached live runtime. */
   readonly live: boolean;
+  /** Whether the live runtime advertises `runtime.model.set`. */
+  readonly modelSetSupported: boolean;
   /** The live runtime's known model (`state.model`), null while unknown. */
   readonly authorityModel: StagedModelRef | null;
 }
@@ -46,6 +49,7 @@ export function captureSubmitModel(input: SubmitModelCaptureInput): StagedModelR
   if (displayed === null) return null;
   if (
     input.live
+    && !input.modelSetSupported
     && input.authorityModel !== null
     && displayed.provider === input.authorityModel.provider
     && displayed.modelId === input.authorityModel.modelId

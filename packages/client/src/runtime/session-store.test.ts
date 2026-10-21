@@ -1536,14 +1536,14 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
   });
 
-  it("steer resolves honestly to unsupported_capability when the runtime gates it", async () => {
+  it("steer reports a nested unsupported_capability as uncertain", async () => {
     const h = createHarness();
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
     const p = h.store.steer("steer me");
     await flush();
     const cmd = commandFrame(ws);
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "steer", error: { code: "unsupported_capability", message: "runtime.steer not available", retryable: false } } } } });
-    await expect(p).resolves.toEqual({ commandId: cmd.payload.command.commandId, result: { ok: false, type: "steer", error: { code: "unsupported_capability", message: "runtime.steer not available", retryable: false } } });
+    await expect(p).rejects.toMatchObject({ code: "unsupported_capability", phase: "uncertain" });
     expect(h.store.hasRuntimeCapability("runtime.steer")).toBe(false);
   });
 

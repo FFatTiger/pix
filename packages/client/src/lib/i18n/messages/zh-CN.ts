@@ -706,6 +706,7 @@ export const zhCNLocale = {
     "desktop.queueKindSteerTitle": "引导：当前步骤结束后插入，不会打断正在执行的命令。点击切换为「排队」。",
     "desktop.queueKindFollowUpTitle": "排队：本轮任务全部完成后再发送。点击切换为「引导」。",
     "desktop.queueSwitchFailed": "切换消息类型失败，已恢复",
+    "desktop.queueRecallFailed": "撤回失败，队列未改变",
     "desktop.queueRestoreFailed": "已清空的队列消息未能全部恢复",
     "desktop.statusDisplayMode": "状态显示模式",
     "desktop.statusDisplayModeAuto": "自动",

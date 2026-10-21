@@ -706,6 +706,7 @@ export const enLocale = {
     "desktop.queueKindSteerTitle": "Steer: inserted after the current step finishes; never interrupts a running command. Click to switch to Queue.",
     "desktop.queueKindFollowUpTitle": "Queue: sent after this run fully completes. Click to switch to Steer.",
     "desktop.queueSwitchFailed": "Could not switch the message type; restored",
+    "desktop.queueRecallFailed": "Could not recall messages. The queue is unchanged.",
     "desktop.queueRestoreFailed": "Could not restore all cleared queue messages",
     "desktop.statusDisplayMode": "Status display mode",
     "desktop.statusDisplayModeAuto": "Auto",

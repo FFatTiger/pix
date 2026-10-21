@@ -3273,7 +3273,7 @@ describe("Composer — steer / follow-up settle like a send", () => {
       ws.serverSend({ type: "interrupt_result", id: clear.id, payload: { sessionId: "A", commandId: clear.payload.commandId, interruptType: "clear_queue", result: { ok: false, error: { code: "session_busy", message: "another interrupt is in flight", retryable: false } } } });
       await flush(12);
     });
-    expect(screen.getByRole("alert").textContent).toContain("The message was not sent");
+    expect(screen.getByRole("alert").textContent).toContain("Could not recall messages. The queue is unchanged.");
   });
 
   it("a Pixie notice that cannot be re-queued comes back without its marker line", async () => {

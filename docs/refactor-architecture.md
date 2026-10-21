@@ -108,7 +108,7 @@ Pi 防腐层（ACL）
 ### 发送模型意图与多客户端
 
 - 同一 session 的多个 TAB 共享 sessiond 的一个 Worker 和执行模型。每个 TAB 的未发送选择由本地、有界、按 session 分组的 staging owner 管理，不能写入权威快照。
-- 协商 `runtime.submit-turn.v1` 后，发送捕获当时输入框显示的已知模型，并通过同一次 `activationOverrides` 交给原子受理事务。显示模型来自历史或当前实时快照时同样适用；实时权威模型与显示模型相同就省略冗余设置，Adapter 对激活时仍相同的模型也不得调用 SDK `setModel`。显式不支持且确实不同的选择必须失败，不能静默换模型。
+- 协商 `runtime.submit-turn.v1` 后，发送捕获当时输入框显示的已知模型，并通过同一次 `activationOverrides` 交给原子受理事务。显示模型来自历史或当前实时快照时同样适用；仅当实时模型不可变（无 `runtime.model.set`）且已知与显示模型相同才可省略，以免外部模型更新在发送与受理之间插入；Adapter 在受理时再次确认同值并跳过 SDK `setModel`。显式不支持且确实不同的选择必须失败，不能静默换模型。
 - 接受受理与接回观察之间，模型显示可使用 exact SessionController 已确认的 admission snapshot；可见资格随原发送的 presentation provenance、history generation 和会话生命周期失效，不能另建已受理模型缓存，也不能按模型值猜测历史新旧。权威观察接管后沿用正常共享投影。staging 清理只能消费发送时捕获的记录 revision，迟到回执不能清掉新选择。
 - Adapter 在每个 runtime 内将普通模型/思考变更与 turn admission 互斥；进行中冲突返回 `session_busy`。互斥只覆盖设置及受理，不阻塞 interrupt/stop，也不阻塞另一会话。已有会话恢复模型复用 SDK 的 session-context 语义，不能将全局默认当作显式选择覆盖持久会话。
 - 验收同时覆盖确定性的迟到回执、会话切换与互斥测试，以及同一 Chrome profile 下的两个真实 TAB。实际 provider 请求的模型与发送前显示模型一致；同会话只有一个 Worker，不同会话可以并行。单 TAB 或只看 admission snapshot 不足以证明实际执行模型。
@@ -231,6 +231,7 @@ interface AgentRuntimePort {
 - read-only history → live attach 只允许同一 session 的 generation 0 历史作为临时 placeholder；跨 session、live rebase/branch generation 绝不复用旧页面。
 - prompt transport ack 只是 admission，不是运行终态；UI running marker 持续到权威事件接管，避免 ack→agent_start 闪断。
 - 发送交付判定默认是 uncertain：只有从未上线的 pending（`phase: activation`）或权威受理明确回答 `status: rejected, delivery: not_delivered` 才证明未送达，允许恢复草稿与显示「未发送」。已上线后的传输异常、stop、切会话、dispose 清理，以及未标记的 Error/ProtocolError、`retryable:false`，都不能反推未送达；同一 operationId 的权威 `user_committed`（带 userEntryId）先于 admission 回执到达时，已提交证据优先于之后的冲突拒绝。保留乐观气泡、不恢复草稿、显示「发送状态确认中」。发送门与那一次静默恢复共享**同一个** `SUBMIT_RECOVERY_BUDGET_MS`（30s）截止时间：唤醒后的探测 + 建连 + 握手 + 重新挂载经常长于十秒级的短门，分段各算一份预算会把真实恢复误判成「未发送」。
+- steer/follow_up 只有首次写出后的顶层 `ok:false` 且不可重试的 `session_busy`（前置拒绝）才可显式标 `rejected/not_delivered` 并恢复草稿；Worker 的嵌套 `result.ok:false` 即便是 `invalid_input` 也可能发生在 SDK 入队后的状态读取，不能证明未入队。超时、不可用、重连后的冲突或未知错误保持 uncertain。clear_queue 撤回失败独立提示「撤回失败，队列未改变」，不使用发送失败文案。
 - transport 层排队（wire queue）在恢复换代时的语义与已注册 attempt 一致：`reject_on_disconnect` 的一次性请求按 `unavailable` 结清，`logical_retry` 由 controller 在同 epoch 重发；禁止只从队列里删掉而不结算。
 - 重连/切会话后的 pending 收敛只有**一张 lane 表**（command、side-chat、queued turn、extension UI response/input、pending read、interrupt、turn）：每个 lane 声明自己的 slot 读取、同 id 重发、一次性结清，`resyncAfterAttach` 与 `startAttach` 的切会话清理遍历同一张表，判定规则不得复制到各 lane。lane 只能按自己 sessionId + 存活 epoch 决定重发，否则结清；turn lane 的结清必须走统一的 delivery-evidence 判定（`wireSeen` → uncertain / pre-wire → activation）。interrupt 是控制通道：epoch rollover 后旧 Worker 已不存在，它用自己的 `epoch_changed` 文案结清且不上报视图错误（唯一样式差异，在表里显式表达）。已 attached 过的会话恢复一律 `existing_only` 语义，绝不因 intent 被清空而退回 legacy 激活型 attach。
 - 共享 Protocol reducer 拒绝某个事件时（抛出）**不得**触发重新挂载：cursor 尚未前进，重放同一事件会再次抛出并形成重连循环。改为 fail-closed：保留 cursor、`setError({ code: "internal", retryable: false })` 并一次性上报诊断，由下一个真实的 snapshot/attach 边界重建权威。

@@ -475,6 +475,7 @@ interface QueuedTurnPending {
   readonly commandId: string;
   attempt: RuntimeAttemptHandle | null;
   wireSeen: boolean;
+  wireAttempts: number;
   /** Backoff timer for an uncertain-outcome reconciliation re-send. */
   reconcileTimer: unknown | null;
   /** ONE re-send budget (same bound as the prompt lane). */
@@ -1355,7 +1356,7 @@ export class SessionController implements RuntimeControllerPort {
     const sessionId = this.sessionId;
     const wsMessage: WsClientMessage = { type: "command", id: this.id(), payload: this.withEpoch({ sessionId, command }) };
     return new Promise((resolve, reject) => {
-      const pending: QueuedTurnPending = { commandId: command.commandId, attempt: null, wireSeen: false, reconcileTimer: null, resendCount: 0, resendDeadline: null, resendTimer: null, sessionId, command: wsMessage, type, resolve, reject };
+      const pending: QueuedTurnPending = { commandId: command.commandId, attempt: null, wireSeen: false, wireAttempts: 0, reconcileTimer: null, resendCount: 0, resendDeadline: null, resendTimer: null, sessionId, command: wsMessage, type, resolve, reject };
       this.pendingQueuedTurn = pending;
       this.notify();
       if (this.attached) this.sendQueuedTurnAttempt(pending);
@@ -4481,11 +4482,12 @@ export class SessionController implements RuntimeControllerPort {
       buildMessage: (id) => ({ ...pending.command, id }),
       expectation: { kind: "command", sessionId: pending.sessionId, commandId: pending.commandId, resultType: pending.type },
       disconnectPolicy: "logical_retry",
-      onSent: () => { pending.wireSeen = true; },
+      onSent: () => { pending.wireSeen = true; pending.wireAttempts += 1; },
       onFrame: (frame) => {
         if (this.pendingQueuedTurn !== pending || frame.type !== "response") return;
-        if (frame.payload.ok) {
-          const result = frame.payload.result;
+        const result = frame.payload.ok ? frame.payload.result as CorrelatedRuntimeCommandResult : null;
+        const error = result && !result.result.ok ? result.result.error : frame.payload.ok ? null : frame.payload.error;
+        if (error === null) {
           this.pendingQueuedTurn = null;
           pending.attempt = null;
           pending.resendDeadline = null;
@@ -4497,12 +4499,8 @@ export class SessionController implements RuntimeControllerPort {
           pending.resolve(result);
           return;
         }
-        const error = frame.payload.error;
-        // UNCERTAIN outcome (the Host/sessiond RPC failed after possible
-        // dispatch): the steer/follow_up may already be queued server-side, so
-        // this is never a proven non-delivery. Reconcile by re-sending the
-        // SAME commandId — sessiond's idempotent command admission replays the
-        // cached result when it already landed, never a second queue entry.
+        // Transport/RPC failures may arrive after enqueue; retry with the
+        // same commandId and keep delivery uncertain if reconciliation fails.
         if (QUEUED_TURN_UNCERTAIN_CODES.has(error.code)) {
           if (this.scheduleQueuedTurnReconcile(pending)) {
             this.notify();
@@ -4512,8 +4510,11 @@ export class SessionController implements RuntimeControllerPort {
           this.settleQueuedTurn(pending, error);
           return;
         }
-        // A command rejection need not prove the message was never queued:
-        // the Worker can commit it before a later response failure.
+        // A nested Worker failure can happen after the SDK has queued the
+        // message (for example while reading its state afterward). Only a
+        // first-attempt top-level session_busy is a proven pre-admission reject.
+        const provenUnsent = result === null && !error.retryable && pending.wireAttempts === 1
+          && error.code === "session_busy";
         this.pendingQueuedTurn = null;
         pending.attempt = null;
         pending.resendDeadline = null;
@@ -4522,7 +4523,7 @@ export class SessionController implements RuntimeControllerPort {
           pending.resendTimer = null;
         }
         this.notify();
-        pending.reject(error);
+        pending.reject(provenUnsent ? { ...error, status: "rejected", delivery: "not_delivered" } : this.uncertainTagged(error));
         this.setError(error);
       },
       onSendFailure: (cause) => {
