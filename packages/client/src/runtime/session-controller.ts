@@ -1960,10 +1960,8 @@ export class SessionController implements RuntimeControllerPort {
         // settle a legacy send.
         if (frame.type !== "response") return;
         const payload = frame.payload;
-        if (!payload.ok && payload.error.code === "not_found") {
-          // Nothing else can correlate this response to our prompt.
-          return;
-        }
+        // A failure carries no commandId, so it cannot be mis-correlated here:
+        // the transport already matched this envelope to our attempt.
         if (payload.ok && typeof (payload.result as { commandId?: unknown }).commandId === "string"
           && (payload.result as { commandId: string }).commandId !== commandId) return;
         if (payload.ok) {

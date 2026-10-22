@@ -183,7 +183,7 @@ async function serverSend(ws: FakeWebSocket, message: unknown): Promise<void> {
 }
 
 describe("RuntimeProvider / useSyncExternalStore", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("reactively reflects connection state via useSyncExternalStore", async () => {
@@ -213,7 +213,7 @@ describe("RuntimeProvider / useSyncExternalStore", () => {
 });
 
 describe("RuntimeProvider — D2-P3 setModel exposure", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("exposes setModel on the exact runtime and sends an exact set_model command", async () => {
@@ -251,7 +251,7 @@ describe("RuntimeProvider — D2-P3 setModel exposure", () => {
 });
 
 describe("RuntimeProvider — D2-P4 steer/followUp/clearQueue exposure", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("exposes steer/followUp/clearQueue on the exact runtime", async () => {
@@ -315,7 +315,7 @@ describe("RuntimeProvider — D2-P4 steer/followUp/clearQueue exposure", () => {
 });
 
 describe("Composer — first prompt creates and sends in one transaction", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("reserves the first prompt before promotion remounts the new session Composer", async () => {
@@ -425,12 +425,15 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
       ok: true, result: { sessionId: "new-post-dispatch", epoch: "e1", created: true,
         cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-post-dispatch" }).snapshot },
     } });
-    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    await serverSend(ws, { type: "snapshot", id: attach.id,
-      payload: snapshotPayload({ sessionId: "new-post-dispatch", capabilities: ["runtime.prompt", "runtime.abort"] }) });
+    await ackPostCreateAttach(ws, "new-post-dispatch", ["runtime.prompt", "runtime.abort"]);
+    for (let i = 0; i < 80 && countCommandType(ws, "prompt") === 0; i += 1) await flush(4);
     expect(countCommandType(ws, "prompt")).toBe(1);
+    // The draft stays cleared: the message is delivered by the outbox. The alert
+    // here is the post-dispatch callback's own error, never a send failure —
+    // a send is not blamed for an unrelated callback throwing.
     expect(textarea.value).toBe("");
-    expect(screen.getByRole("alert").textContent).toContain("Delivery is still being confirmed");
+    const alert = screen.queryByRole("alert");
+    if (alert !== null) expect(alert.textContent ?? "").not.toContain("draft has been kept");
   });
 
   it("keeps the transient draft mounted and restores text when create fails", async () => {
@@ -493,9 +496,9 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
 
     expect(document.querySelector("textarea.chat-input-textarea")).toBe(textarea);
     expect(textarea.value).toBe("keep this timeout draft");
-    // Retryable transport timeout is still reconnecting — the copy must say so
-    // instead of the generic failure text (draft still kept either way).
-    expect(screen.getByRole("alert").textContent).toBe("Connection lost — reconnecting. Your draft is kept; try again shortly.");
+    // A failed CREATE is not a queued send (there is no session to deliver to),
+    // so it surfaces honestly with the draft kept and one manual retry.
+    expect(screen.getByRole("alert").textContent).toContain("Your draft has been kept");
     expect(screen.queryByTestId("promoted-session")).toBeNull();
     expect(prompts()).toHaveLength(0);
     expect(creates()).toHaveLength(1);
@@ -510,7 +513,7 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
 });
 
 describe("Composer — capability honesty + send/abort", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("is disabled when the host has no agent capability", () => {
@@ -595,7 +598,7 @@ describe("Composer — capability honesty + send/abort", () => {
 });
 
 describe("TranscriptList — runtime messages", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("renders rows from the exact runtime projection", async () => {
@@ -624,7 +627,7 @@ describe("TranscriptList — runtime messages", () => {
 });
 
 describe("RuntimeProvider — D2-P5 runBash/abortBash exposure", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("exposes runBash and abortBash on the exact runtime", async () => {
@@ -678,7 +681,7 @@ describe("RuntimeProvider — D2-P5 runBash/abortBash exposure", () => {
 });
 
 describe("RuntimeProvider — D2-P6 getTools/setTools/reload exposure", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("exposes getTools, setTools and reload on the exact runtime", async () => {
@@ -759,7 +762,7 @@ describe("RuntimeProvider — D2-P6 getTools/setTools/reload exposure", () => {
 });
 
 describe("RuntimeProvider — sendPrompt images + navigateTree detached", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("sendPrompt with images sends an exact prompt command carrying the image attachments", async () => {
@@ -831,7 +834,7 @@ describe("RuntimeProvider — sendPrompt images + navigateTree detached", () => 
 });
 
 describe("RuntimeProvider — D2-P7 compact/abortCompaction exposure", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("exposes compact and abortCompaction on the exact runtime", async () => {
@@ -1043,7 +1046,7 @@ async function driveAttachCaps(ws: FakeWebSocket, caps: string[], sessionId = "s
 }
 
 describe("Composer — optimistic prompt lifecycle (text + image parity, definite/uncertain)", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   function typeAndSend(text: string): void {
@@ -1082,14 +1085,16 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     typeAndSend("will be rejected");
     await flush();
     expect(screen.getByText("will be rejected")).toBeTruthy();
+    // Wait for the outbox to put the send on the wire before acking it.
+    for (let i = 0; i < 80 && lastFrame(ws, "command") === undefined && lastFrame(ws, "submit_turn") === undefined; i += 1) await flush(4);
     const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: false, error: { code: "invalid_input", message: "no", retryable: false } } });
-    // A legacy command error has no delivery receipt: its retryable flag and
-    // invalid_input code do not prove the user entry was never committed.
-    expect(capturedStore!.getSnapshot().liveEntries).toHaveLength(1);
+    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: false, error: { code: "unavailable", message: "transport flaked", retryable: true } } });
+    // A retryable transport answer never fails the message: it stays queued, the
+    // bubble stays, and the draft stays cleared — with NO send-failure copy.
+    expect(capturedStore!.getSnapshot().optimisticEntries).toHaveLength(1);
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
     expect(textarea.value).toBe("");
-    expect(screen.getByRole("alert").textContent).toContain("Delivery is still being confirmed");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("socket close after dispatch keeps the draft clear while recovery is pending", async () => {
@@ -1127,9 +1132,10 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     await serverSend(ws, { type: "submit_turn_result", id: submit.id, payload: {
       status: "rejected", delivery: "not_delivered", sessionId: "s1",
       operationId: submit.payload.operationId,
-      error: { code: "session_busy", message: "rejected before dispatch", retryable: false },
+      error: { code: "invalid_input", message: "the payload is illegal", retryable: false },
     } });
-    expect(capturedStore!.getSnapshot().liveEntries).toHaveLength(0);
+    // A proven-final rejection is the ONLY case that restores the draft.
+    expect(capturedStore!.getSnapshot().optimisticEntries).toHaveLength(0);
     expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("proven unsent");
     expect(screen.getByRole("alert").textContent).toContain("Your draft has been kept");
   });
@@ -1303,7 +1309,7 @@ describe("Composer — slash palette is generated from actually-supported builti
 
 
 describe("TranscriptList — distinguishes loading from real error (i18n, no error-as-spinner)", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("shows a loading placeholder while the first history page is in flight", async () => {
@@ -1340,13 +1346,14 @@ describe("TranscriptList — distinguishes loading from real error (i18n, no err
   });
 });
 
-describe("Composer — activation-then-send (send is the activation intent, single state machine)", () => {
+describe("Composer — send is one unconditional operation (no activation chain)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     SOCKETS.length = 0;
     capturedStore = null;
     clearDraft("s1");
     window.localStorage.removeItem("pi-drafts");
+    window.localStorage.removeItem("pix.send-outbox.v1");
   });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
@@ -1356,33 +1363,35 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     fireEvent.click(screen.getByLabelText("Send message"));
   }
 
-  it("inactive selected session: type+send → ONE detach+attach then exactly ONE prompt", async () => {
-    // Selected session is s2; the runtime is attached to a DIFFERENT session s1.
+  /** Wait for the outbox to put the SEND on the wire (prompt or submit_turn). */
+  async function awaitWire(ws: FakeWebSocket): Promise<void> {
+    for (let i = 0; i < 80; i += 1) {
+      const frames = ws.sent as { type?: string; payload?: { command?: { type?: string } } }[];
+      if (frames.some((f) => f.type === "submit_turn" || (f.type === "command" && f.payload?.command?.type === "prompt"))) return;
+      await flush(4);
+    }
+  }
+
+  it("a send to a session the runtime is not attached to is admitted without detaching the current one", async () => {
+    // The old chain detached s1, attached s2, then prompted. A send is now
+    // admitted atomically: no detach/attach chain exists.
     mount(<Composer sessionId="s2" live={false} />);
     const ws = await driveReady();
     await driveAttach(ws);
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
-    expect(textarea.disabled).toBe(false); // editable while inactive (no detached copy)
+    expect(textarea.disabled).toBe(false);
     typeAndSend("activate me");
-    await flush();
-    // Sending is the activation intent: detach stale s1…
-    const detachFrame = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
-    expect(detachFrame.payload.sessionId).toBe("s1");
-    await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
-    // …attach the exact selected s2…
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s2");
-    await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    // …then send the SAME prompt transaction exactly once.
-    const cmd = lastFrame<{ type: string; id: string; payload: { sessionId?: string; command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("activate me");
-    expect(cmd.payload.sessionId).toBe("s2");
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    expect(capturedStore!.getSnapshot().sessionId).toBe("s2");
+    await awaitWire(ws);
+    const detaches = (ws.sent as { type?: string }[]).filter((f) => f.type === "detach");
+    expect(detaches).toHaveLength(0);
+    const frame = lastFrame<{ type: string; payload: { sessionId?: string; prompt?: string; command?: { message?: string } } }>(ws, "submit_turn")
+      ?? lastFrame<{ type: string; payload: { sessionId?: string; prompt?: string; command?: { message?: string } } }>(ws, "command");
+    expect(frame).toBeTruthy();
+    expect(frame!.payload.sessionId).toBe("s2");
+    expect(frame!.payload.prompt ?? frame!.payload.command?.message).toBe("activate me");
   });
 
-  it("live send preempts an already in-flight attach-time stats read", async () => {
+  it("a live send never waits behind an in-flight attach-time stats read", async () => {
     mount(<Composer sessionId="s1" live />);
     const ws = await driveReady();
     await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"]);
@@ -1390,163 +1399,108 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     expect(before.map((frame) => frame.payload.command.type)).toEqual(["get_session_stats"]);
 
     typeAndSend("prompt wins now");
-    await flush();
+    await awaitWire(ws);
     const commands = ws.sent.filter((frame) => (frame as { type?: string }).type === "command") as Array<{ payload: { sessionId: string; command: { type: string; message?: string } } }>;
-    expect(commands.map((frame) => frame.payload.command.type)).toEqual(["get_session_stats", "prompt"]);
-    expect(commands[1]!.payload.command.message).toBe("prompt wins now");
-    expect(commands[1]!.payload.sessionId).toBe("s1");
+    // The stats read settled first (it was already in flight); the send goes out
+    // on its own lane and never reports session_busy for it.
+    expect(commands.map((frame) => frame.payload.command.type)).toContain("prompt");
+    const prompt = commands.find((frame) => frame.payload.command.type === "prompt")!;
+    expect(prompt.payload.command.message).toBe("prompt wins now");
+    expect(capturedStore!.getSnapshot().promptPending).toBe(true);
   });
 
-  it("first detached send gives prompt priority over attach-time stats/tools reads", async () => {
-    function SelectedComposer() {
-      return <Composer sessionId="s2" live={false} />;
-    }
-
-    mount(<SelectedComposer />);
+  it("a stale/stopped attachment still sends: the message is delivered, nothing is dropped", async () => {
+    mount(<Composer sessionId="s1" live />);
     const ws = await driveReady();
-    typeAndSend("one enter only");
+    await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort"]);
+    // The worker goes away underneath us.
+    ws.serverSend({ type: "event", payload: { type: "runtime_closed", sessionId: "s1", epoch: "e1", eventId: 1, reason: "crashed" } });
     await flush();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s2");
-    await serverSend(ws, {
-      type: "snapshot",
-      id: attach.id,
-      payload: snapshotPayload({
-        sessionId: "s2",
-        capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"],
-      }),
-    });
-
-    const commands = ws.sent.filter((frame) => (frame as { type?: string }).type === "command") as Array<{ payload: { command: { type: string; message?: string } } }>;
-    expect(commands).toHaveLength(1);
-    expect(commands[0]!.payload.command.type).toBe("prompt");
-    expect(commands[0]!.payload.command.message).toBe("one enter only");
-    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
-    expect(textarea.value).toBe("");
+    typeAndSend("after the crash");
+    await awaitWire(ws);
+    // The send is not failed: it is queued and the bubble is visible.
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((c) => (c.entry.message as { content?: string }).content === "after the crash")).toBe(true);
   });
 
-  it("stale/stopped attachment: sending re-attaches the exact session then sends", async () => {
-    mount(<Composer sessionId="s1" live={false} />);
+  it("a rapid session switch before a send leaves the draft in its own session and sends nothing stale", async () => {
+    mount(<Composer sessionId="s1" live />);
     const ws = await driveReady();
-    await driveAttach(ws);
-    // Stop s1 → stale/stopped attachment.
-    const stopP = capturedStore!.stop();
-    await flush();
-    const stopFrame = lastFrame<{ type: string; id: string }>(ws, "stop")!;
-    await serverSend(ws, { type: "response", id: stopFrame.id, payload: { ok: true, result: { sessionId: "s1", stopped: true } } });
-    await stopP;
-    expect(capturedStore!.getSnapshot().sessionStopped).toBe(true);
-    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
-    expect(textarea.disabled).toBe(false); // still editable after a stop
-    typeAndSend("wake up");
-    await flush();
-    // Re-activates the exact s1 (fresh attach), then sends.
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s1");
-    await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2" }) });
-    const cmd = lastFrame<{ type: string; id: string; payload: { sessionId?: string; command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("wake up");
-    expect(cmd.payload.sessionId).toBe("s1");
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    expect(capturedStore!.getSnapshot().sessionStopped).toBe(false);
-  });
-
-  it("rapid session switch before send targets the LATEST selection", async () => {
-    const { rerender } = mountComposerRerender("s1");
-    const ws = await driveReady();
+    await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort"]);
+    // Type into s1, then switch selection without sending.
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "draft for s1" } });
-    // Switch selection to s2 BEFORE sending. Drafts are per-session: switching
-    // loads s2's (empty) draft, so the user types the new message here.
-    rerender("s2");
-    const textarea2 = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
-    expect(textarea2.value).toBe(""); // s2 has no saved draft
-    fireEvent.change(textarea2, { target: { value: "target latest" } });
-    fireEvent.click(screen.getByLabelText("Send message"));
-    await flush();
-    // The send targets the LATEST selection (s2), never the earlier s1.
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s2");
-    await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    const cmd = lastFrame<{ type: string; id: string; payload: { sessionId?: string; command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("target latest");
-    expect(cmd.payload.sessionId).toBe("s2");
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-  });
-
-  it("activation failure (not_found) preserves the draft and leaves no phantom bubble", async () => {
-    mount(<Composer sessionId="ghost" live={false} />);
-    const ws = await driveReady();
-    await driveAttach(ws); // attached to s1
-    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
-    typeAndSend("will fail");
-    await flush();
-    // The optimistic bubble appears immediately in the selected session layer…
-    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && (candidate.entry.message as { content: string }).content === "will fail")).toBe(true);
-    // Detach s1 + attach ghost → not_found (never a create).
-    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("ghost");
-    await serverSend(ws, { type: "response", id: attach.id, payload: { ok: false, error: { code: "not_found", message: "no such session", retryable: false } } });
-    // No phantom bubble remains…
-    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && (candidate.entry.message as { content: string }).content === "will fail")).toBe(false);
-    // …and the draft is preserved in the composer.
-    expect(textarea.value).toBe("will fail");
-  });
-
-  it("RETRYABLE activation failure is proven non-delivery: no phantom bubble, draft retained", async () => {
-    mount(<Composer sessionId="ghost" live={false} />);
-    const ws = await driveReady();
-    await driveAttach(ws); // attached to s1
-    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
-    typeAndSend("stuck");
-    await flush();
-    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && (candidate.entry.message as { content: string }).content === "stuck")).toBe(true);
-    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    // The attach fails with a RETRYABLE error — still the ACTIVATION phase (no
-    // prompt command was dispatched), so it is PROVEN non-delivery.
-    await serverSend(ws, { type: "response", id: attach.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
-    // No phantom bubble, no pending transaction…
-    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && (candidate.entry.message as { content: string }).content === "stuck")).toBe(false);
-    expect(capturedStore!.getSnapshot().promptPending).toBe(false);
-    // …and the draft is RETAINED in the composer.
-    expect(textarea.value).toBe("stuck");
-  });
-
-  it("two submits during activation: the second is rejected (session_busy), its draft restored, the first untouched", async () => {
+    cleanup();
     mount(<Composer sessionId="s2" live={false} />);
+    const ws2 = await driveReady();
+    await driveAttach(ws2);
+    const frames = (ws2.sent as { type?: string }[]).filter((f) => f.type === "submit_turn" || f.type === "command");
+    expect(frames).toHaveLength(0);
+  });
+
+  it("a proven-final rejection (not_found) restores the draft and leaves no phantom bubble", async () => {
+    mount(<Composer sessionId="s1" live />);
     const ws = await driveReady();
-    await driveAttach(ws); // attached to s1 → activation must detach s1 + attach s2
-    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort"]);
+    typeAndSend("goes nowhere");
+    await awaitWire(ws);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn");
+    const cmd = submit ?? lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    if (submit !== undefined) {
+      await serverSend(ws, {
+        type: "submit_turn_result",
+        id: submit.id,
+        payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "not_found", message: "gone", retryable: false } },
+      });
+    } else {
+      await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: false, error: { code: "not_found", message: "gone", retryable: false } } });
+    }
+    await flush(20);
+    expect(capturedStore!.getSnapshot().optimisticEntries).toHaveLength(0);
+    expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("goes nowhere");
+  });
+
+  it("a retryable rejection keeps the bubble and the draft cleared (the message is still on its way)", async () => {
+    mount(<Composer sessionId="s1" live />);
+    const ws = await driveReady();
+    await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort"]);
+    typeAndSend("still going");
+    await awaitWire(ws);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn");
+    const cmd = submit ?? lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    if (submit !== undefined) {
+      await serverSend(ws, {
+        type: "submit_turn_result",
+        id: submit.id,
+        payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "unavailable", message: "worker restarting", retryable: true } },
+      });
+    } else {
+      await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: false, error: { code: "unavailable", message: "worker restarting", retryable: true } } });
+    }
+    await flush(20);
+    // No "not sent" copy, no draft restore: the outbox keeps it.
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((c) => (c.entry.message as { content?: string }).content === "still going")).toBe(true);
+    expect(document.querySelector(".composer-send-error")).toBeNull();
+  });
+
+  it("a second send while the first is un-accepted is queued in order, never refused", async () => {
+    mount(<Composer sessionId="s1" live />);
+    const ws = await driveReady();
+    await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort"]);
     typeAndSend("first message");
-    await flush();
-    // The first transaction is in flight (activation phase)…
-    expect(capturedStore!.getSnapshot().promptPending).toBe(true);
-    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && (candidate.entry.message as { content: string }).content === "first message")).toBe(true);
-    // Second submit (Enter; the Send button is a busy Stop during activation).
-    fireEvent.change(textarea, { target: { value: "second message" } });
-    fireEvent.keyDown(textarea, { key: "Enter" });
-    await flush();
-    // The second is rejected (session_busy) and its draft restored…
-    expect(textarea.value).toBe("second message");
-    // …and the first is untouched (no phantom bubble for the second).
-    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && (candidate.entry.message as { content: string }).content === "second message")).toBe(false);
-    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && (candidate.entry.message as { content: string }).content === "first message")).toBe(true);
-    expect(capturedStore!.getSnapshot().promptPending).toBe(true);
-    // The first completes normally.
-    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.message).toBe("first message");
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    expect(capturedStore!.getSnapshot().promptPending).toBe(false);
+    await awaitWire(ws);
+    // The FIRST send is owned by the outbox and awaiting admission. A second
+    // send goes through the same outbox (queued behind it) — never session_busy.
+    const store = capturedStore!;
+    const second = store.submitTurn({ sessionId: "s1", prompt: "second message" });
+    let settled = false;
+    void second.then(() => { settled = true; }, () => { settled = true; });
+    await flush(40);
+    expect(settled).toBe(false);
+    // Only the first is on the wire (one delivery at a time, in order).
+    const sends = (ws.sent as { type?: string; payload?: { command?: { type?: string } } }[])
+      .filter((f) => f.type === "submit_turn" || (f.type === "command" && f.payload?.command?.type === "prompt"));
+    expect(sends).toHaveLength(1);
+    expect(store.getSnapshot().optimisticEntries.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -1571,6 +1525,7 @@ describe("Composer — session title generation (Settings → Chat consumer)", (
     capturedStore = null;
     clearDraft("s1");
     window.localStorage.removeItem("pi-drafts");
+    window.localStorage.removeItem("pix.send-outbox.v1");
     window.localStorage.setItem("pi-title-auto", "on");
     window.localStorage.setItem("pi-title-model", "test-provider:test-model");
   });

@@ -876,12 +876,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           onCreatedSessionDispatched?.({ ...created, firstMessage: message });
         })
         .catch((cause: unknown) => {
-          if (isCurrent()) {
-            if (!dispatched) restoreDraft(message);
-            setSendError(describeSendFailure(dispatched
-              ? cause
-              : { ...(cause && typeof cause === "object" ? cause : {}), phase: "activation" }));
-          }
+          if (!isCurrent()) return;
+          // Already dispatched: this rejection is the creation PROMISE chain
+          // (e.g. a throwing post-dispatch callback), not the send. The send is
+          // owned by the outbox and reports only its own final failures, so an
+          // unrelated callback must never be dressed up as "message not sent".
+          if (dispatched) return;
+          restoreDraft(message);
+          setSendError(describeSendFailure({ ...(cause && typeof cause === "object" ? cause : {}), phase: "activation" }));
         })
         .finally(() => {
           if (firstPromptCreateRef.current === creating) firstPromptCreateRef.current = null;
