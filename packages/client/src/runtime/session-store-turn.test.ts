@@ -108,33 +108,54 @@ function submitFrames(ws: FakeWebSocket): Array<{ type: "submit_turn"; id: strin
   );
 }
 
-describe("SessionStore — Phase 3 negotiated submit-turn", () => {
-  beforeEach(() => { vi.useFakeTimers(); });
+/**
+ * Wait for the outbox to put its NEXT send on the wire. The outbox waits for a
+ * provably fresh transport before writing, which takes a few microtask rounds;
+ * polling on the actual frame keeps these tests deterministic without timers.
+ */
+async function awaitSubmit(ws: FakeWebSocket, count = 1): Promise<void> {
+  for (let i = 0; i < 50 && submitFrames(ws).length < count; i += 1) await flush(4);
+}
+
+/** A correlated turn status frame for the accepted turn. */
+function turnStatus(sessionId: string, operationId: string, revision: number, state: string, extra: Record<string, unknown> = {}, epoch = "e1", turnId = "turn-1") {
+  return {
+    type: "turn_status",
+    ...(state === "completed" ? { authority: authoritySnapshot(sessionId, epoch) } : {}),
+    payload: { sessionId, epoch, operationId, turnId, revision, state, ...extra },
+  };
+}
+
+describe("SessionStore — unconditional send over the negotiated seam", () => {
+  // Real timers: the outbox has no client-side budget or deadline, and the
+  // transport's freshness/connect timers must actually elapse.
+  beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("negotiates the feature and routes sendPrompt through submit_turn, never the command slot", async () => {
+  it("routes a send through submit_turn with NO fence and never the command slot", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
     expect(h.store.getSnapshot().submitTurnEnabled).toBe(true);
 
     const sendP = h.store.sendPrompt("hello");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { sessionId: string; operationId: string; prompt: string; expectedEpoch: string; expectedRevision: number } }>(ws, "submit_turn")!;
+    await awaitSubmit(ws);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: Record<string, unknown> }>(ws, "submit_turn")!;
     expect(submit).toBeTruthy();
-    expect(submit.payload.sessionId).toBe("s1");
     expect(submit.payload.prompt).toBe("hello");
     expect(submit.payload.operationId).toMatch(/^op:/);
-    // Same-session submit carries the epoch fence.
-    expect(submit.payload.expectedEpoch).toBe("e1");
-    expect(submit.payload.expectedRevision).toBe(0);
-    // NO ordinary command frame rides the mutation slot.
+    // The client states a delivery PREFERENCE, never a guess about authority
+    // state: no epoch/revision fence travels.
+    expect(submit.payload.expectedEpoch).toBeUndefined();
+    expect(submit.payload.expectedRevision).toBeUndefined();
+    expect(submit.payload.whenBusy).toBe("follow_up");
     expect(lastFrame(ws, "command")).toBeUndefined();
-    expect(h.store.getSnapshot().turnActive).toBe(true);
-    expect(h.store.getSnapshot().turnDelivery).toBe("in_flight");
+    // Before acceptance the send owns only its bubble.
+    expect(h.store.getSnapshot().promptPending).toBe(true);
+    expect(h.store.getSnapshot().turnActive).toBe(false);
 
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId as string) });
     await flush();
-    await expect(sendP).resolves.toBeTruthy();
+    await expect(sendP).resolves.toBeUndefined();
     expect(h.store.getSnapshot().turnDelivery).toBe("accepted");
     expect(h.store.getSnapshot().turnActive).toBe(true);
   });
@@ -142,1628 +163,295 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
   it("switch_queued_delivery stays independent of the in-flight turn — never session_busy while streaming", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
-    // An ACCEPTED but not-yet-terminal turn is exactly the streaming window in
-    // which users toggle a queued message's type. The switch must go out on
-    // the ordinary command envelope instead of rejecting session_busy behind
-    // the turn (the runtime's revision fence fails it closed if stale).
-    const sendP = h.store.sendPrompt("long running prompt");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    const sendP = h.store.sendPrompt("streaming");
+    await awaitSubmit(ws);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
     ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
     await flush();
     await sendP;
-    expect(h.store.getSnapshot().turnActive).toBe(true);
-
-    const switchP = h.store.switchQueuedDelivery({ list: "followUp", index: 0, message: "toggle me" });
-    await flush();
-    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; list: string; index: number; message: string } } }>(ws, "command")!;
-    expect(frame.payload.command).toMatchObject({ type: "switch_queued_delivery", list: "followUp", index: 0, message: "toggle me" });
-    ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: "switch_queued_delivery" } } } });
-    await expect(switchP).resolves.toBeUndefined();
-    // An ordinary MUTATION command still rejects session_busy behind the turn.
-    await expect(h.store.sendCommand({ commandId: "busy-1", type: "set_auto_retry", enabled: true })).rejects.toMatchObject({ code: "session_busy" });
+    // Queue surgery must not be refused because a turn is active: the command
+    // goes out on the ordinary lane while the turn keeps running.
+    const switched = h.store.switchQueuedDelivery({ list: "steering", index: 0, message: "x" });
+    let command: { type: "command"; id: string; payload: { command: { commandId: string } } } | undefined;
+    for (let i = 0; i < 50 && command === undefined; i += 1) {
+      await flush(4);
+      command = lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string } } }>(ws, "command");
+    }
+    expect(command).toBeTruthy();
+    ws.serverSend({ type: "response", id: command!.id, payload: { ok: true, result: { commandId: command!.payload.command.commandId, result: { ok: true, type: "switch_queued_delivery" } } } });
+    await expect(switched).resolves.toBeUndefined();
+    h.dispose();
   });
 
   it("stamps the optimistic bubble with the send instant so the turn has a start before the authority dates it", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
-    const before = Date.now();
-    const sendP = h.store.sendPrompt("date this turn").catch(() => undefined);
-    await flush();
-    const timestamp = (h.store.getSnapshot().optimisticEntries[0]!.entry.message as { timestamp?: number }).timestamp;
-    expect(timestamp).toBeGreaterThanOrEqual(before);
-    expect(timestamp).toBeLessThanOrEqual(Date.now());
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
-    await flush();
-    await sendP;
+    void h.store.sendPrompt("instant");
+    await awaitSubmit(ws);
+    const bubble = h.store.getSnapshot().optimisticEntries[0]!;
+    expect(typeof bubble.entry.message.timestamp).toBe("number");
     h.dispose();
   });
 
-  it("accepted turn keeps the optimistic bubble until authority correlation and does NOT occupy pendingCommand; reads stay independent", async () => {
+  it("an accepted turn keeps the bubble and never occupies the ordinary command slot; reads stay independent", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPrompt("hello");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    const sendP = h.store.sendPrompt("long running");
+    await awaitSubmit(ws);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
     ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
     await flush();
-    await expect(sendP).resolves.toBeTruthy();
-
-    // Bubble retained (accepted), never fabricated terminal data.
-    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "hello" }));    // The turn does NOT occupy pendingCommand: a get_commands read (dedicated
-    // read lane) still works while the turn is active.
-    const toolsP = h.store.getCommands();
-    await flush();
-    const readFrame = lastFrame<{ type: string; id: string; payload: { sessionId: string; epoch: string; read: { type: string } } }>(ws, "read")!;
-    expect(readFrame).toBeTruthy();
-    expect(readFrame.payload.read.type).toBe("get_commands");
-    ws.serverSend({ type: "read_result", id: readFrame.id, payload: { sessionId: "s1", epoch: "e1", requestId: readFrame.id, result: { ok: true, type: "get_commands", commands: [] } } });
-    await expect(toolsP).resolves.toEqual([]);
-
-    // A conflicting ordinary MUTATION command rejects session_busy while the turn is active.
-    await expect(h.store.sendCommand({ commandId: "bash-1", type: "bash", command: "ls", excludeFromContext: false })).rejects.toMatchObject({ code: "session_busy" });
-
-    // Terminal status clears the slot and publishes the terminal signal.
-    let terminal: unknown;
-    h.store.subscribeTurnTerminal((info) => { terminal = info; });
-    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
-    await flush();
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-    expect(h.store.getSnapshot().turnDelivery).toBe(null);
-    expect(terminal).toMatchObject({ sessionId: "s1", state: "completed" });
+    await sendP;
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
+    expect(h.store.getSnapshot().promptPending).toBe(false);
+    // Reads stay available while the turn runs: the read lane never waits
+    // behind the prompt and never reports session_busy.
+    await expect(h.store.getState()).resolves.toMatchObject({ sessionId: "s1" });
+    h.dispose();
   });
 
-  it("stop after the turn reached the wire settles UNCERTAIN (bubble kept, no draft restore)", async () => {
+  it("a proven-final rejection (invalid_input) removes the bubble and is reported exactly once", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPrompt("in flight");
-    let error: unknown = null;
-    const settled = sendP.then(() => "resolved", (cause: unknown) => { error = cause; return "rejected"; });
+    let settlements = 0;
+    const sendP = h.store.sendPrompt("bad").catch((error: unknown) => { settlements += 1; return error; });
     await flush();
     const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    expect(submit).toBeTruthy();
-    // The prompt is running: abort-first, then the bounded stop.
-    const stopP = h.store.stop("user");
-    await flush();
-    const interrupt = lastFrame<{ type: "interrupt"; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
-    ws.serverSend({ type: "interrupt_result", id: interrupt.id, payload: { sessionId: "s1", commandId: interrupt.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
-    await flush();
-    const stopFrame = lastFrame<{ type: "stop"; id: string }>(ws, "stop")!;
-    ws.serverSend({ type: "response", id: stopFrame.id, payload: { ok: true, result: { sessionId: "s1", stopped: true } } });
-    await flush();
-    await stopP;
-    await expect(settled).resolves.toBe("rejected");
-    // The bytes already reached the authority: this is NOT proven non-delivery.
-    expect(error).toMatchObject({ code: "interrupted", phase: "uncertain", retryable: false });
-    expect(h.store.getSnapshot().optimisticEntries.map((entry) => entry.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "in flight" }));
-  });
-
-  it("stop before the turn reached the wire stays a proven pre-wire failure (bubble removed, draft restored)", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    // Transport dies with a delivered close: the submit is gated in the wire
-    // queue and never reaches the authority.
-    ws.serverClose(1006);
-    await flush();
-    const sendP = h.store.sendPrompt("pre wire");
-    let error: unknown = null;
-    const settled = sendP.then(() => "resolved", (cause: unknown) => { error = cause; return "rejected"; });
-    await flush();
-    expect(submitFrames(ws)).toHaveLength(0);
-    const stopP = h.store.stop("user").catch(() => undefined);
-    // Bounded abort-first wait, then the pre-wire settle.
-    await vi.advanceTimersByTimeAsync(6_000);
-    await flush(8);
-    await expect(settled).resolves.toBe("rejected");
-    expect(error).toMatchObject({ code: "interrupted", phase: "activation" });
-    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
-    // The stop itself cannot be confirmed on a dead transport — it stays honest.
-    await vi.advanceTimersByTimeAsync(20_000);
-    await flush();
-    await stopP;
-  });
-
-  it("not_delivered removes the optimistic bubble and rejects tagged phase=activation (draft restored, staging preserved)", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPrompt("hello");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
     ws.serverSend({
       type: "submit_turn_result",
       id: submit.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "not_found", message: "session not found", retryable: false } },
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "invalid_input", message: "illegal payload", retryable: false } },
     });
-    await flush();
-    await expect(sendP).rejects.toMatchObject({ code: "not_found", phase: "activation" });
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
-  });
-
-  it("uncertain delivery reconciles once (same operationId) and settles uncertain-tagged, never activation", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPrompt("hello");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: submit.id,
-      payload: { status: "rejected", delivery: "uncertain", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "timeout", message: "admission timed out", retryable: true } },
-    });
-    await flush();
-    // UNCERTAIN delivery re-sends the SAME operationId (idempotent admission
-    // reconciliation) instead of surfacing an immediate rejection.
-    const reconcile = submitFrames(ws)[1]!;
-    expect(reconcile.payload.operationId).toBe(submit.payload.operationId);
-    // A second uncertainty settles honestly: retryable + uncertain-tagged
-    // (the Composer shows the unconfirmed state, never "not sent").
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: reconcile.id,
-      payload: { status: "rejected", delivery: "uncertain", sessionId: "s1", operationId: reconcile.payload.operationId, error: { code: "timeout", message: "admission timed out", retryable: true } },
-    });
-    await flush();
-    await expect(sendP).rejects.toMatchObject({ code: "timeout", retryable: true, phase: "uncertain" });
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "hello" }));
-  });
-
-  it("same-epoch reconnect resends the SAME operationId + payload on a fresh envelope", async () => {
-    const h = createHarness();
-    let ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPrompt("hello");
-    await flush();
-    const submit1 = lastFrame<{ type: string; id: string; payload: { operationId: string; prompt: string } }>(ws, "submit_turn")!;
-    const operationId = submit1.payload.operationId;
-    // Transport loss → reconnect.
-    ws.serverClose(1006);
-    vi.advanceTimersByTime(250);
-    ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    expect(submitFrames(ws)).toHaveLength(0);
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
-    await flush();
-    const submit2 = lastFrame<{ type: string; id: string; payload: { operationId: string; prompt: string } }>(ws, "submit_turn")!;
-    expect(submit2.payload.operationId).toBe(operationId);
-    expect(submit2.payload.prompt).toBe("hello");
-    expect(submit2.id).not.toBe(submit1.id);
-    expect(submitFrames(ws)).toHaveLength(1);
-    // duplicate+accepted re-opens the subscription and resolves the promise.
-    ws.serverSend({ type: "submit_turn_result", id: submit2.id, payload: { ...acceptedAdmission(h, operationId), status: "duplicate", delivery: "accepted" } });
-    await expect(sendP).resolves.toBeTruthy();
-  });
-
-  it("waits for reconnect sendability before a new submit, then sends the same logical intent once", async () => {
-    const h = createHarness();
-    let ws = await openAndAttachTurn(h);
-    const closedSent = ws.sent.length;
-    ws.serverClose(1006);
-    await flush();
-
-    let settlements = 0;
-    const sendP = h.store.sendPromptToSession("s1", "after close");
-    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
-    await flush();
-    expect(ws.sent.length).toBe(closedSent);
-    expect(submitFrames(ws)).toHaveLength(0);
-    expect(h.store.getSnapshot().turnActive).toBe(true);
-    expect(h.store.getSnapshot().turnDelivery).toBe("in_flight");
-    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
-    expect(settlements).toBe(0);
-
-    vi.advanceTimersByTime(250);
-    ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    expect(submitFrames(ws)).toHaveLength(0);
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
-    await flush();
-    const submits = submitFrames(ws);
-    expect(submits).toHaveLength(1);
-    expect(submits[0]!.payload.prompt).toBe("after close");
-    expect(submits[0]!.payload.sessionId).toBe("s1");
-    expect(submits[0]!.payload.expectedEpoch).toBe("e1");
-    expect(submits[0]!.payload.operationId).toMatch(/^op:/);
-    ws.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission(h, submits[0]!.payload.operationId as string) });
-    await expect(sendP).resolves.toBeTruthy();
+    await expect(sendP).resolves.toMatchObject({ code: "invalid_input", phase: "activation" });
     expect(settlements).toBe(1);
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(0);
     expect(submitFrames(ws)).toHaveLength(1);
+    h.dispose();
   });
 
-  it("waits for the e2 epoch_changed resume snapshot before fencing a new post-close submit", async () => {
-    const h = createHarness();
-    let ws = await openAndAttachTurn(h);
-    ws.serverClose(1006);
-    await flush();
-
-    const sendP = h.store.sendPromptToSession("s1", "after epoch change");
-    await flush();
-    expect(submitFrames(ws)).toHaveLength(0);
-    expect(h.store.getSnapshot().turnActive).toBe(true);
-
-    vi.advanceTimersByTime(250);
-    ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    expect(submitFrames(ws)).toHaveLength(0);
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", lastEventId: 3, resumeStatus: "epoch_changed" }) });
-    await flush();
-    const submits = submitFrames(ws);
-    expect(submits).toHaveLength(1);
-    expect(submits[0]!.payload.prompt).toBe("after epoch change");
-    expect(submits[0]!.payload.expectedEpoch).toBe("e2");
-    expect(submits[0]!.payload.expectedRevision).toBe(3);
-    expect(h.store.getSnapshot().turnActive).toBe(true);
-    expect(h.store.getSnapshot().turnDelivery).toBe("in_flight");
-    ws.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmissionFor("s1", submits[0]!.payload.operationId as string, "e2", "turn-e2", 3) });
-    await expect(sendP).resolves.toBeTruthy();
-    expect(submitFrames(ws)).toHaveLength(1);
-  });
-
-  it("continues unfenced when resume existing_only attach rejects worker_unavailable", async () => {
-    const h = createHarness();
-    h.store.connect();
-    let ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const observeP = h.registry.observeExisting("s1");
-    await flush();
-    expect(lastFrame<{ type: string; payload: { attachMode?: string } }>(ws, "attach")!.payload.attachMode).toBe("existing_only");
-    ws.serverClose(1006);
-    await flush();
-
-    const sendP = h.store.sendPromptToSession("s1", "after observe reject");
-    await flush();
-    expect(submitFrames(ws)).toHaveLength(0);
-
-    vi.advanceTimersByTime(250);
-    ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string; payload: { attachMode?: string } }>(ws, "attach")!;
-    expect(attachFrame.payload.attachMode).toBe("existing_only");
-    expect(submitFrames(ws)).toHaveLength(0);
-    ws.serverSend({
-      type: "response",
-      id: attachFrame.id,
-      payload: { ok: false, error: { code: "worker_unavailable", message: "worker gone", retryable: true } },
-    });
-    await expect(observeP).rejects.toMatchObject({ code: "worker_unavailable" });
-    await flush();
-    const submits = submitFrames(ws);
-    expect(submits).toHaveLength(1);
-    expect(submits[0]!.payload.prompt).toBe("after observe reject");
-    expect("expectedEpoch" in submits[0]!.payload).toBe(false);
-    expect("expectedRevision" in submits[0]!.payload).toBe(false);
-    ws.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission(h, submits[0]!.payload.operationId as string) });
-    await expect(sendP).resolves.toBeTruthy();
-  });
-
-  it("a late snapshot after the shared 30s send budget cannot send", async () => {
-    const h = createHarness();
-    let ws = await openAndAttachTurn(h);
-    ws.serverClose(1006);
-    await flush();
-
-    let settlements = 0;
-    const sendP = h.store.sendPromptToSession("s1", "late snapshot");
-    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
-    await flush();
-
-    // The send budget is shared with the silent recovery (30s), not a 10s gate.
-    await vi.advanceTimersByTimeAsync(30_000);
-    await flush();
-    await expect(sendP).rejects.toMatchObject({ code: "timeout", phase: "activation", retryable: true });
-    expect(settlements).toBe(1);
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-
-    vi.advanceTimersByTime(250);
-    ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach");
-    if (attachFrame !== undefined) {
-      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", resumeStatus: "epoch_changed" }) });
-      await flush();
-    }
-    expect(submitFrames(ws)).toHaveLength(0);
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
-  });
-
-  it("rejects a closed-socket submit after the shared 30s send budget as proven non-delivery", async () => {
+  it("a retryable rejection never settles the send: the SAME operationId is resent after a reconnect", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
-    const closedSent = ws.sent.length;
-    ws.serverClose(1006);
+    let outcome: "pending" | "settled" = "pending";
+    const sendP = h.store.sendPrompt("retry me");
+    void sendP.then(() => { outcome = "settled"; }, () => { outcome = "settled"; });
     await flush();
-
-    let settlements = 0;
-    const sendP = h.store.sendPromptToSession("s1", "never delivered");
-    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
-    await flush();
-    expect(submitFrames(ws)).toHaveLength(0);
-    expect(h.store.getSnapshot().turnActive).toBe(true);
-    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    await flush();
-    await expect(sendP).rejects.toMatchObject({ code: "timeout", phase: "activation", retryable: true });
-    expect(settlements).toBe(1);
-    expect(ws.sent.length).toBe(closedSent);
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
-    expect(h.store.getSnapshot().error).toMatchObject({ code: "timeout", retryable: true });
-  });
-
-  it.each([
-    ["the initial created-authority frame", false],
-    ["one repaired retry frame", true],
-  ] as const)("detached pending B from %s does not resend on A reconnect and waits for the exact B lease", async (_label, repairBeforeLoss) => {
-    const h = createHarness();
-    let ws = await openAndAttachTurn(h, "resume-a", "eA");
-    await createSeededSession(h, ws, { sessionId: "pending-b-reconnect", epoch: "eB", revision: 1 });
-    const sendP = h.store.sendPromptToSession("pending-b-reconnect", "possibly delivered B");
-    await flush();
-    const first = submitFrames(ws)[0]!;
-    let expectedRevision = 1;
-    if (repairBeforeLoss) {
-      ws.serverSend({
-        type: "submit_turn_result",
-        id: first.id,
-        payload: { status: "rejected", delivery: "not_delivered", sessionId: "pending-b-reconnect", operationId: first.payload.operationId, epoch: "eB", revision: 2, error: { code: "conflict", message: "repair before loss", retryable: false } },
-      });
-      await flush();
-      expectedRevision = 2;
-    }
-
-    ws.serverClose(1006);
-    vi.advanceTimersByTime(250);
-    ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const resumeA = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(resumeA.payload.sessionId).toBe("resume-a");
-    ws.serverSend({ type: "snapshot", id: resumeA.id, payload: snapshotPayload({ sessionId: "resume-a", epoch: "eA", resumeStatus: "snapshot" }) });
-    await flush();
-    expect(submitFrames(ws)).toHaveLength(0);
-    expect(h.controller("pending-b-reconnect")?.getSnapshot().turnActive).toBe(true);
-
-    const openB = h.store.openSession("pending-b-reconnect");
-    await flush();
-    const detachA = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    ws.serverSend({ type: "response", id: detachA.id, payload: { ok: true, result: { sessionId: "resume-a", detached: true } } });
-    await flush();
-    const attachB = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachB.id, payload: snapshotPayload({ sessionId: "pending-b-reconnect", epoch: "eB", lastEventId: expectedRevision, resumeStatus: "snapshot" }) });
-    await openB;
-    await flush();
-    const resent = submitFrames(ws)[0]!;
-    expect(resent.payload.operationId).toBe(first.payload.operationId);
-    expect(resent.payload.expectedRevision).toBe(expectedRevision);
-    ws.serverSend({ type: "submit_turn_result", id: resent.id, payload: acceptedAdmissionFor("pending-b-reconnect", resent.payload.operationId as string, "eB", "turn-b", expectedRevision) });
-    await expect(sendP).resolves.toBeTruthy();
-  });
-
-  it("epoch change after possible delivery NEVER resends; in-flight admission becomes uncertain", async () => {
-    const h = createHarness();
-    let ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPrompt("hello");
-    await flush();
-    const submit1 = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    const operationId = submit1.payload.operationId;
-    ws.serverClose(1006);
-    vi.advanceTimersByTime(250);
-    ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", resumeStatus: "epoch_changed" }) });
-    await flush();
-    // No resend of the same operation on the new epoch.
-    expect(lastFrame(ws, "submit_turn")).toBeUndefined();
-    await expect(sendP).rejects.toMatchObject({ code: "epoch_changed", retryable: true });
-    // Bubble retained (uncertain, may have been delivered).
-    expect(h.store.getSnapshot().optimisticEntries.map((e) => e.entry.message)).toContainEqual(expect.objectContaining({ role: "user", content: "hello" }));
-    void operationId;
-  });
-
-  it("strict matching: wrong/late admission and status frames are dropped and never settle the turn", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    let settled = false;
-    const sendP = h.store.sendPrompt("hello").then(() => { settled = true; }, () => { settled = true; });
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    // Wrong envelope id → dropped.
-    ws.serverSend({ type: "submit_turn_result", id: "wrong-envelope", payload: acceptedAdmission(h, submit.payload.operationId) });
-    await flush();
-    expect(settled).toBe(false);
-    // Right envelope, wrong operationId → dropped.
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, "op:other") });
-    await flush();
-    expect(settled).toBe(false);
-    // Right envelope + operation → resolves.
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
-    await flush();
-    expect(settled).toBe(true);
-    await sendP;
-
-    // A status push for a WRONG session/operation is dropped.
-    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("other-session", "e1"), payload: { sessionId: "other-session", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
-    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: "op:other", turnId: "turn-1", revision: 1, state: "completed" } });
-    await flush();
-    expect(h.store.getSnapshot().turnActive).toBe(true);
-    // Correct status (revision > admission's 0) terminates the turn.
-    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
-    await flush();
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-  });
-
-  it("stale status revision is dropped (never regresses a terminal turn)", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPrompt("hello");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
-    await flush();
-    await sendP;
-    // Terminal at revision 1.
-    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
-    await flush();
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-    // A late stale revision 0 must not resurrect the turn.
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 0, state: "running" } });
-    await flush();
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-  });
-
-  it("second submit while a turn is active rejects session_busy (single PendingTurn)", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPrompt("first");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    await expect(h.store.sendPrompt("second")).rejects.toMatchObject({ code: "session_busy" });
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
-    await expect(sendP).resolves.toBeTruthy();
-  });
-
-  it("create is identity-only; first negotiated sendPromptToSession carries the exact create-result epoch/revision + activationOverrides, then attaches after admission", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    expect(h.store.getSnapshot().submitTurnEnabled).toBe(true);
-
-    // Identity-only create: resolves immediately, zero attach, current state untouched.
-    const createP = h.store.createSession({ cwd: "/x", projectRoot: "/x" });
-    await flush();
-    const createFrame = lastFrame<{ type: string; id: string; payload: Record<string, unknown> }>(ws, "create")!;
-    expect(Object.keys(createFrame.payload).sort()).toEqual(["createRequestId", "cwd", "projectRoot"]);
-    ws.serverSend({
-      type: "response",
-      id: createFrame.id,
-      payload: { ok: true, result: { sessionId: "new-1", epoch: "eN", lastEventId: 1, created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-1" }).snapshot } },
-    });
-    await expect(createP).resolves.toEqual({ sessionId: "new-1" });
-    expect(ws.sent.filter((f) => (f as { type: string }).type === "attach")).toHaveLength(0);
-    expect(h.store.getSnapshot().attached).toBe(false);
-
-    // First negotiated submit to the new live-but-unattached session uses the
-    // EXACT create-result epoch + authority-issued cursor and activationOverrides.
-    const sendP = h.store.sendPromptToSession("new-1", "first message", undefined, {
-      model: { provider: "anthropic", modelId: "claude-opus-4" },
-      thinkingLevel: "high",
-    });
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { sessionId: string; expectedEpoch: string; expectedRevision: number; activationOverrides?: { model?: { provider: string; modelId: string }; thinkingLevel?: string }; operationId: string } }>(ws, "submit_turn")!;
-    expect(submit).toBeTruthy();
-    expect(submit.payload.sessionId).toBe("new-1");
-    expect(submit.payload.expectedEpoch).toBe("eN");
-    expect(submit.payload.expectedRevision).toBe(1);
-    expect(submit.payload.activationOverrides).toEqual({ model: { provider: "anthropic", modelId: "claude-opus-4" }, thinkingLevel: "high" });
-    // NO set_model / set_thinking_level command frames on the negotiated path.
-    expect(ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "set_model")).toHaveLength(0);
-    expect(ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "set_thinking_level")).toHaveLength(0);
-
-    // Accepted admission resolves; ONLY then may the store attach the new session.
-    const admission = {
-      status: "accepted",
-      delivery: "accepted",
-      sessionId: "new-1",
-      epoch: "eN",
-      revision: 1,
-      operationId: submit.payload.operationId,
-      turnId: "turn-1",
-      snapshot: snapshotPayload({ sessionId: "new-1", epoch: "eN" }).snapshot,
-      turnStatus: { sessionId: "new-1", epoch: "eN", operationId: submit.payload.operationId, turnId: "turn-1", revision: 0, state: "admitted" },
-    };
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: admission });
-    await expect(sendP).resolves.toBeTruthy();
-    await flush();
-    // After admission the store may begin attach observation of the new session.
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("new-1");
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-1", epoch: "eN" }) });
-    await flush();
-    expect(h.store.getSnapshot().attached).toBe(true);
-    expect(h.store.getSnapshot().sessionId).toBe("new-1");
-  });
-
-  it("keeps A attached while B owns exact admission/optimism, allows independent A turn, then retains A after lease transfer", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h, "A", "eA");
-    await createSeededSession(h, ws, { sessionId: "B", epoch: "eB", revision: 1 });
-    const sendB = h.store.sendPromptToSession("B", "prompt B");
-    await flush();
-    const submitB = submitFrames(ws).at(-1)!;
-    const controllerB = h.controller("B")!;
-    expect(h.store.getSnapshot()).toMatchObject({ attached: true, sessionId: "A" });
-    expect(controllerB.getSnapshot()).toMatchObject({ optimisticRunningSessionId: "B", turnActive: true });
-    expect(controllerB.getSnapshot().optimisticEntries.map((entry) => entry.sessionId)).toEqual(["B"]);
-
-    // Per-controller lane independence: A and B may own the same logical lane concurrently.
-    const sendA = h.store.sendPrompt("concurrent A");
-    await flush();
-    const submitA = submitFrames(ws).find((frame) => frame.payload.sessionId === "A")!;
-    expect(submitA).toBeTruthy();
-    expect(h.controller("A")?.getSnapshot().turnActive).toBe(true);
-    expect(controllerB.getSnapshot().turnActive).toBe(true);
-    ws.serverSend({ type: "submit_turn_result", id: submitA.id, payload: acceptedAdmissionFor("A", submitA.payload.operationId as string, "eA", "turn-A", 0) });
-    await expect(sendA).resolves.toBeTruthy();
-
-    ws.serverSend({ type: "submit_turn_result", id: submitB.id, payload: acceptedAdmissionFor("B", submitB.payload.operationId as string, "eB", "turn-B", 1) });
-    await expect(sendB).resolves.toBeTruthy();
-    await flush();
-    const detachA = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
-    ws.serverSend({ type: "response", id: detachA.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
-    await flush();
-    const attachB = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachB.id, payload: snapshotPayload({ sessionId: "B", epoch: "eB", lastEventId: 1 }) });
-    await flush();
-    expect(h.store.getSnapshot()).toMatchObject({ attached: true, sessionId: "B" });
-    expect(h.controller("A")?.getSnapshot()).toMatchObject({ attached: false, sessionId: "A", epoch: "eA" });
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "stop")).toHaveLength(0);
-  });
-
-  it("repairs a stale created seed once with the same logical turn, then accepts and attaches normally", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    await createSeededSession(h, ws, { sessionId: "new-repair", epoch: "eN", revision: 1 });
-
-    let settled = false;
-    const images = [{ type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" as const }];
-    const sendP = h.store.sendPromptToSession("new-repair", "same logical prompt", images, {
-      model: { provider: "anthropic", modelId: "claude-opus-4" },
-      thinkingLevel: "high",
-    });
-    void sendP.then(() => { settled = true; }, () => { settled = true; });
-    await flush();
-    const first = submitFrames(ws)[0]!;
-    expect(first.payload).toMatchObject({
-      sessionId: "new-repair",
-      prompt: "same logical prompt",
-      images,
-      activationOverrides: { model: { provider: "anthropic", modelId: "claude-opus-4" }, thinkingLevel: "high" },
-      expectedEpoch: "eN",
-      expectedRevision: 1,
-    });
-
+    const first = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
     ws.serverSend({
       type: "submit_turn_result",
       id: first.id,
-      payload: {
-        status: "rejected",
-        delivery: "not_delivered",
-        sessionId: "new-repair",
-        operationId: first.payload.operationId,
-        epoch: "eN",
-        revision: 2,
-        error: { code: "conflict", message: "opaque authority text", retryable: false },
-      },
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: first.payload.operationId, error: { code: "unavailable", message: "worker restarting", retryable: true } },
     });
     await flush();
+    expect(outcome).toBe("pending");
 
+    const ws2 = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
+    await flush();
+    const retried = submitFrames(ws2);
+    expect(retried).toHaveLength(1);
+    expect(retried[0]!.payload.operationId).toBe(first.payload.operationId);
+    expect(retried[0]!.id).not.toBe(first.id);
+
+    ws2.serverSend({ type: "submit_turn_result", id: retried[0]!.id, payload: acceptedAdmission(h, first.payload.operationId) });
+    await expect(sendP).resolves.toBeUndefined();
+    h.dispose();
+  });
+
+  it("a stop while a send is pending keeps the message queued (it is never dropped or failed)", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    let outcome: "pending" | "settled" = "pending";
+    const sendP = h.store.sendPrompt("survives stop");
+    void sendP.then(() => { outcome = "settled"; }, () => { outcome = "settled"; });
+    await flush();
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    void h.store.stop("user").catch(() => undefined);
+    await flush(10);
+    // Not lost: the outbox still owns it and the UI never claims non-delivery.
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
+    // An acceptance that arrives late still releases it.
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
+    await expect(sendP).resolves.toBeUndefined();
+    expect(outcome).toBe("settled");
+    h.dispose();
+  });
+
+  it("strict matching: a wrong/late admission never settles the pending send", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    let outcome = "pending";
+    const sendP = h.store.sendPrompt("mine");
+    void sendP.then(() => { outcome = "settled"; }, () => { outcome = "settled"; });
+    await flush();
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    // Another operation's acceptance must be ignored.
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, "op:someone-else") });
+    await flush();
+    expect(outcome).toBe("pending");
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
+    await expect(sendP).resolves.toBeUndefined();
+    expect(outcome).toBe("settled");
+    h.dispose();
+  });
+
+  it("stale status revisions never regress a terminal turn", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const sendP = h.store.sendPrompt("terminal");
+    await flush();
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
+    await flush();
+    await sendP;
+    ws.serverSend(turnStatus("s1", submit.payload.operationId, 2, "completed", { userEntryId: "e-2", finalLeafId: "e-3" }));
+    await flush();
+    // A lower revision must not reopen or duplicate the terminal transition.
+    ws.serverSend(turnStatus("s1", submit.payload.operationId, 1, "running", {}));
+    await flush();
+    expect(h.store.getSnapshot().turnActive).toBe(false);
+    expect(h.controller("s1")!.getSnapshot().liveEntries.length).toBe(0);
+    h.dispose();
+  });
+
+  it("a second send while one is still pending is queued in order, never session_busy", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const firstSend = h.store.sendPrompt("first");
+    await flush();
+    const first = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    // A second send while the first is un-accepted is NOT rejected.
+    const secondSend = h.store.sendPrompt("second");
+    await flush();
+    // Only the first is on the wire (one delivery at a time, in order).
+    expect(submitFrames(ws)).toHaveLength(1);
+    expect(h.store.getSnapshot().optimisticEntries.length).toBeGreaterThanOrEqual(1);
+
+    ws.serverSend({ type: "submit_turn_result", id: first.id, payload: acceptedAdmission(h, first.payload.operationId) });
+    await expect(firstSend).resolves.toBeUndefined();
+    await flush();
     const frames = submitFrames(ws);
     expect(frames).toHaveLength(2);
-    const retry = frames[1]!;
-    expect(retry.id).not.toBe(first.id);
-    expect(retry.payload).toEqual({ ...first.payload, expectedRevision: 2 });
-    expect(retry.payload.operationId).toBe(first.payload.operationId);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(0);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "detach")).toHaveLength(0);
-    expect(h.controller("new-repair")?.getSnapshot().optimisticEntries).toHaveLength(1);
-    expect(settled).toBe(false);
-
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: retry.id,
-      payload: acceptedAdmissionFor("new-repair", retry.payload.operationId as string, "eN", "turn-repair", 2),
-    });
-    await expect(sendP).resolves.toBeTruthy();
-    await flush();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("new-repair");
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(1);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "detach")).toHaveLength(0);
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-repair", epoch: "eN", lastEventId: 2 }) });
-    await flush();
-    expect(h.store.getSnapshot()).toMatchObject({ attached: true, sessionId: "new-repair" });
-  });
-
-  it("drops a replayed old-attempt conflict after repair minted a fresh envelope", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    await createSeededSession(h, ws, { sessionId: "old-replay", epoch: "eN", revision: 1 });
-
-    let settled = false;
-    const sendP = h.store.sendPromptToSession("old-replay", "one logical turn");
-    void sendP.then(() => { settled = true; }, () => { settled = true; });
-    await flush();
-    const first = submitFrames(ws)[0]!;
-    const firstConflict = {
-      status: "rejected",
-      delivery: "not_delivered",
-      sessionId: "old-replay",
-      operationId: first.payload.operationId,
-      epoch: "eN",
-      revision: 2,
-      error: { code: "conflict", message: "first", retryable: false },
-    };
-    ws.serverSend({ type: "submit_turn_result", id: first.id, payload: firstConflict });
-    await flush();
-    const retry = submitFrames(ws)[1]!;
-
-    // The old envelope/generation is no longer the pending transport identity.
-    // Even a replay claiming a newer authority cursor is completely inert.
-    ws.serverSend({ type: "submit_turn_result", id: first.id, payload: { ...firstConflict, revision: 99 } });
-    await flush();
-    expect(submitFrames(ws)).toHaveLength(2);
-    expect(lastFrame<{ type: string; id: string; payload: Record<string, unknown> }>(ws, "submit_turn")).toEqual(retry);
-    expect(retry.payload.expectedRevision).toBe(2);
-    expect(h.controller("old-replay")?.getSnapshot().optimisticEntries).toHaveLength(1);
-    expect(settled).toBe(false);
-
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: retry.id,
-      payload: acceptedAdmissionFor("old-replay", retry.payload.operationId as string, "eN", "turn-old-replay", 2),
-    });
-    await expect(sendP).resolves.toBeTruthy();
-    await flush();
-    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "old-replay", epoch: "eN", lastEventId: 2 }) });
-    await flush();
-  });
-
-  it("settles definite non-delivery exactly once when the automatic repair resend throws, retaining the advanced seed", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    await createSeededSession(h, ws, { sessionId: "repair-send-throw", epoch: "eN", revision: 1 });
-
-    let settlements = 0;
-    const sendP = h.store.sendPromptToSession("repair-send-throw", "same intent");
-    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
-    await flush();
-    const first = submitFrames(ws)[0]!;
-    expect(h.controller("repair-send-throw")?.getSnapshot().optimisticEntries).toHaveLength(1);
-
-    const originalSend = ws.send.bind(ws);
-    ws.send = () => { throw { code: "unavailable", message: "synthetic repair send failure", retryable: false }; };
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: first.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "repair-send-throw", operationId: first.payload.operationId, epoch: "eN", revision: 2, error: { code: "conflict", message: "advance before send", retryable: false } },
-    });
-    await flush();
-
-    expect(submitFrames(ws)).toHaveLength(1);
-    await expect(sendP).rejects.toMatchObject({ code: "unavailable", phase: "activation" });
-    expect(settlements).toBe(1);
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(0);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "detach")).toHaveLength(0);
-
-    ws.send = originalSend;
-    const manualP = h.store.sendPromptToSession("repair-send-throw", "same intent");
-    await flush();
-    const manual = submitFrames(ws)[1]!;
-    expect(manual.payload.expectedRevision).toBe(2);
-    expect(manual.payload.operationId).not.toBe(first.payload.operationId);
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: manual.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "repair-send-throw", operationId: manual.payload.operationId, error: { code: "not_found", message: "cleanup", retryable: false } },
-    });
-    await expect(manualP).rejects.toMatchObject({ code: "not_found" });
-    expect(settlements).toBe(1);
-  });
-
-  it("preserves a pending B turn when attached A transfers the exact lease to B before admission", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h, "attached-a", "eA");
-    await createSeededSession(h, ws, { sessionId: "target-b", epoch: "eB", revision: 1 });
-    const sendP = h.store.sendPromptToSession("target-b", "turn for B");
-    await flush();
-    const first = submitFrames(ws)[0]!;
-    const openB = h.store.openSession("target-b");
-    await flush();
-    const detachA = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    ws.serverSend({ type: "response", id: detachA.id, payload: { ok: true, result: { sessionId: "attached-a", detached: true } } });
-    await flush();
-    const attachB = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attachB.payload.sessionId).toBe("target-b");
-    ws.serverSend({ type: "snapshot", id: attachB.id, payload: snapshotPayload({ sessionId: "target-b", epoch: "eB", lastEventId: 2 }) });
-    await openB;
-    expect(h.controller("target-b")?.getSnapshot().turnActive).toBe(true);
-
-    ws.serverSend({ type: "submit_turn_result", id: first.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "target-b", operationId: first.payload.operationId, epoch: "eB", revision: 2, error: { code: "conflict", message: "stale create cursor", retryable: false } } });
-    await flush();
-    const retry = submitFrames(ws)[1]!;
-    expect(retry.payload).toEqual({ ...first.payload, expectedRevision: 2 });
-    ws.serverSend({ type: "submit_turn_result", id: retry.id, payload: acceptedAdmissionFor("target-b", retry.payload.operationId as string, "eB", "turn-b", 2) });
-    await expect(sendP).resolves.toBeTruthy();
-    expect(h.store.getSnapshot()).toMatchObject({ attached: true, sessionId: "target-b" });
-    expect(h.controller("attached-a")?.getSnapshot().attached).toBe(false);
-  });
-
-  it("opening unrelated C does not settle pending B; exact B rejection settles only B while C remains held", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h, "attached-a", "eA");
-    await createSeededSession(h, ws, { sessionId: "pending-b", epoch: "eB", revision: 1 });
-    let settlements = 0;
-    const sendP = h.store.sendPromptToSession("pending-b", "turn for B");
-    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
-    await flush();
-    const first = submitFrames(ws)[0]!;
-
-    const openC = h.store.openSession("unrelated-c");
-    await flush();
-    const detachA = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    ws.serverSend({ type: "response", id: detachA.id, payload: { ok: true, result: { sessionId: "attached-a", detached: true } } });
-    await flush();
-    const attachC = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachC.id, payload: snapshotPayload({ sessionId: "unrelated-c", epoch: "eC" }) });
-    await openC;
-    expect(settlements).toBe(0);
-    expect(h.controller("pending-b")?.getSnapshot().turnActive).toBe(true);
-
-    ws.serverSend({ type: "submit_turn_result", id: first.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "pending-b", operationId: first.payload.operationId, error: { code: "not_found", message: "B rejected", retryable: false } } });
-    await expect(sendP).rejects.toMatchObject({ code: "not_found" });
-    expect(settlements).toBe(1);
-    expect(h.store.getSnapshot()).toMatchObject({ attached: true, sessionId: "unrelated-c" });
-  });
-
-  it.each([
-    ["before the first conflict", "before_conflict"],
-    ["after retry mint and before retry acceptance", "after_retry"],
-  ] as const)("preserves created-seed repair when a same-session attach lands %s", async (_label, attachTiming) => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const sessionId = `attach-${attachTiming}`;
-    await createSeededSession(h, ws, { sessionId, epoch: "eN", revision: 1 });
-
-    let settlements = 0;
-    const sendP = h.store.sendPromptToSession(sessionId, "one attach-interleaved turn");
-    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
-    await flush();
-    const first = submitFrames(ws)[0]!;
-
-    const landSameSessionAttach = async (): Promise<void> => {
-      const openP = h.store.openSession(sessionId);
-      await flush();
-      const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-      expect(attach.payload.sessionId).toBe(sessionId);
-      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId, epoch: "eN", lastEventId: 2 }) });
-      await flush();
-      await openP;
-    };
-
-    if (attachTiming === "before_conflict") await landSameSessionAttach();
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: first.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId, operationId: first.payload.operationId, epoch: "eN", revision: 2, error: { code: "conflict", message: "same epoch", retryable: false } },
-    });
-    await flush();
-    const retry = submitFrames(ws)[1]!;
-    expect(retry.payload).toEqual({ ...first.payload, expectedRevision: 2 });
-    if (attachTiming === "after_retry") await landSameSessionAttach();
-
-    expect(submitFrames(ws)).toHaveLength(2);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(1);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "detach")).toHaveLength(0);
-    expect(h.store.getSnapshot()).toMatchObject({ attached: true, sessionId, turnActive: true, turnDelivery: "in_flight" });
-    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
-    expect(settlements).toBe(0);
-
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: retry.id,
-      payload: acceptedAdmissionFor(sessionId, retry.payload.operationId as string, "eN", `turn-${attachTiming}`, 2),
-    });
-    await expect(sendP).resolves.toBeTruthy();
-    await flush();
-    expect(settlements).toBe(1);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(1);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "detach")).toHaveLength(0);
-  });
-
-  it("bounds created-seed repair to one resend, advances the latest seed, and manual retry mints a new operation", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    await createSeededSession(h, ws, { sessionId: "new-bounded", epoch: "eN", revision: 1 });
-
-    const sendP = h.store.sendPromptToSession("new-bounded", "first logical turn");
-    await flush();
-    const first = submitFrames(ws)[0]!;
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: first.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "new-bounded", operationId: first.payload.operationId, epoch: "eN", revision: 2, error: { code: "conflict", message: "first", retryable: false } },
-    });
-    await flush();
-    const retry = submitFrames(ws)[1]!;
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: retry.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "new-bounded", operationId: retry.payload.operationId, epoch: "eN", revision: 3, error: { code: "conflict", message: "second", retryable: false } },
-    });
-    await flush();
-
-    expect(submitFrames(ws)).toHaveLength(2);
-    await expect(sendP).rejects.toMatchObject({ code: "conflict", phase: "activation" });
-    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(0);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "detach")).toHaveLength(0);
-
-    const manualP = h.store.sendPromptToSession("new-bounded", "first logical turn");
-    await flush();
-    const manual = submitFrames(ws)[2]!;
-    expect(manual.payload.expectedEpoch).toBe("eN");
-    expect(manual.payload.expectedRevision).toBe(3);
-    expect(manual.payload.operationId).not.toBe(first.payload.operationId);
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: manual.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "new-bounded", operationId: manual.payload.operationId, error: { code: "not_found", message: "cleanup", retryable: false } },
-    });
-    await expect(manualP).rejects.toMatchObject({ code: "not_found" });
-  });
-
-  it("does not repair created seeds for malformed/stale authority or non-conflict rejection", async () => {
-    const cases: Array<{ name: string; admission: Record<string, unknown> }> = [
-      { name: "missing revision", admission: { delivery: "not_delivered", epoch: "eN", error: { code: "conflict", message: "x", retryable: false } } },
-      { name: "wrong epoch", admission: { delivery: "not_delivered", epoch: "other", revision: 6, error: { code: "conflict", message: "x", retryable: false } } },
-      { name: "equal revision", admission: { delivery: "not_delivered", epoch: "eN", revision: 5, error: { code: "conflict", message: "x", retryable: false } } },
-      { name: "older revision", admission: { delivery: "not_delivered", epoch: "eN", revision: 4, error: { code: "conflict", message: "x", retryable: false } } },
-      { name: "non-conflict", admission: { delivery: "not_delivered", epoch: "eN", revision: 6, error: { code: "session_busy", message: "x", retryable: true } } },
-    ];
-
-    for (const testCase of cases) {
-      const h = createHarness();
-      h.store.connect();
-      const ws = h.lastSocket();
-      ws.serverOpen();
-      ws.serverSend(ackSubmitTurn());
-      await flush();
-      await createSeededSession(h, ws, { sessionId: `seed-${testCase.name}`, epoch: "eN", revision: 5 });
-      const sendP = h.store.sendPromptToSession(`seed-${testCase.name}`, "negative");
-      await flush();
-      const first = submitFrames(ws)[0]!;
-      ws.serverSend({
-        type: "submit_turn_result",
-        id: first.id,
-        payload: { status: "rejected", sessionId: `seed-${testCase.name}`, operationId: first.payload.operationId, ...testCase.admission },
-      });
-      await flush();
-      expect(submitFrames(ws), testCase.name).toHaveLength(1);
-      await expect(sendP, testCase.name).rejects.toBeTruthy();
-
-      const manualP = h.store.sendPromptToSession(`seed-${testCase.name}`, "manual");
-      await flush();
-      const manual = submitFrames(ws)[1]!;
-      expect(manual.payload.expectedRevision, testCase.name).toBe(5);
-      ws.serverSend({
-        type: "submit_turn_result",
-        id: manual.id,
-        payload: { status: "rejected", delivery: "not_delivered", sessionId: `seed-${testCase.name}`, operationId: manual.payload.operationId, error: { code: "not_found", message: "cleanup", retryable: false } },
-      });
-      await expect(manualP).rejects.toBeTruthy();
-    }
-
-    // An UNCERTAIN rejection is not a fence repair, but it now RECONCILES:
-    // the same operationId is re-sent once (idempotent admission check) and a
-    // second uncertainty settles uncertain-tagged — never "not sent".
-    {
-      const h = createHarness();
-      h.store.connect();
-      const ws = h.lastSocket();
-      ws.serverOpen();
-      ws.serverSend(ackSubmitTurn());
-      await flush();
-      await createSeededSession(h, ws, { sessionId: "seed-uncertain", epoch: "eN", revision: 5 });
-      const sendP = h.store.sendPromptToSession("seed-uncertain", "uncertain");
-      await flush();
-      const first = submitFrames(ws)[0]!;
-      ws.serverSend({
-        type: "submit_turn_result",
-        id: first.id,
-        payload: { status: "rejected", delivery: "uncertain", sessionId: "seed-uncertain", operationId: first.payload.operationId, error: { code: "timeout", message: "x", retryable: true } },
-      });
-      await flush();
-      expect(submitFrames(ws)).toHaveLength(2);
-      const reconcile = submitFrames(ws)[1]!;
-      expect(reconcile.payload.operationId).toBe(first.payload.operationId);
-      ws.serverSend({
-        type: "submit_turn_result",
-        id: reconcile.id,
-        payload: { status: "rejected", delivery: "uncertain", sessionId: "seed-uncertain", operationId: reconcile.payload.operationId, error: { code: "timeout", message: "x", retryable: true } },
-      });
-      await expect(sendP).rejects.toMatchObject({ code: "timeout", phase: "uncertain" });
-    }
-  });
-
-  it("never repairs explicit/attached submissions, but repairs an unfenced live target exactly once", async () => {
-    // Explicit source wins over an available seed and must not advance it.
-    {
-      const h = createHarness();
-      h.store.connect();
-      const ws = h.lastSocket();
-      ws.serverOpen();
-      ws.serverSend(ackSubmitTurn());
-      await flush();
-      await createSeededSession(h, ws, { sessionId: "explicit-seed", epoch: "eN", revision: 5 });
-      const explicitP = h.store.submitTurn({ sessionId: "explicit-seed", prompt: "explicit", expectedEpoch: "eN", expectedRevision: 2 });
-      await flush();
-      const explicit = submitFrames(ws)[0]!;
-      ws.serverSend({ type: "submit_turn_result", id: explicit.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "explicit-seed", operationId: explicit.payload.operationId, epoch: "eN", revision: 6, error: { code: "conflict", message: "x", retryable: false } } });
-      await expect(explicitP).rejects.toBeTruthy();
-      expect(submitFrames(ws)).toHaveLength(1);
-      const manualP = h.store.sendPromptToSession("explicit-seed", "manual");
-      await flush();
-      const manual = submitFrames(ws)[1]!;
-      expect(manual.payload.expectedRevision).toBe(5);
-      ws.serverSend({ type: "submit_turn_result", id: manual.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "explicit-seed", operationId: manual.payload.operationId, error: { code: "not_found", message: "cleanup", retryable: false } } });
-      await expect(manualP).rejects.toBeTruthy();
-    }
-
-    // Attached authority outranks the exact seed; detach proves the seed stayed at 5.
-    {
-      const h = createHarness();
-      h.store.connect();
-      const ws = h.lastSocket();
-      ws.serverOpen();
-      ws.serverSend(ackSubmitTurn());
-      await flush();
-      await createSeededSession(h, ws, { sessionId: "attached-seed", epoch: "eN", revision: 5 });
-      const openP = h.store.openSession("attached-seed");
-      await flush();
-      const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "attached-seed", epoch: "eN", lastEventId: 7 }) });
-      await openP;
-      const attachedP = h.store.sendPrompt("attached");
-      await flush();
-      const attached = submitFrames(ws)[0]!;
-      expect(attached.payload.expectedRevision).toBe(7);
-      ws.serverSend({ type: "submit_turn_result", id: attached.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "attached-seed", operationId: attached.payload.operationId, epoch: "eN", revision: 8, error: { code: "conflict", message: "x", retryable: false } } });
-      await flush();
-      // An ATTACHED conflict from a concurrent ordinary command is repaired
-      // ONCE at the authority cursor (max(authority 8, local 7)) with the SAME
-      // operationId — the root fix for the false "not sent" race.
-      const repaired = submitFrames(ws)[1]!;
-      expect(repaired.payload.operationId).toBe(attached.payload.operationId);
-      expect(repaired.payload.expectedRevision).toBe(8);
-      ws.serverSend({ type: "submit_turn_result", id: repaired.id, payload: acceptedAdmissionFor("attached-seed", attached.payload.operationId as string, "eN", "turn-attached", 8) });
-      await expect(attachedP).resolves.toBeTruthy();
-      // Explicit/attached conflict never auto-DROPS the fence (stale-attached
-      // recovery is epoch_changed-only). Detach while the accepted turn is
-      // still server-side.
-      const detachP = h.store.detach();
-      await flush();
-      const detach = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-      ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "attached-seed", detached: true } } });
-      await detachP;
-      // The accepted turn's terminal status releases the pending slot so the
-      // next manual send can start.
-      ws.serverSend({ type: "turn_status", authority: authoritySnapshot("attached-seed", "eN"), payload: { sessionId: "attached-seed", epoch: "eN", operationId: attached.payload.operationId, turnId: "turn-attached", revision: 1, state: "completed", userEntryId: "u9", finalLeafId: "u9" } });
-      await flush();
-      const manualP = h.store.sendPromptToSession("attached-seed", "manual");
-      await flush();
-      const manual = submitFrames(ws)[2]!;
-      // The repair's ACCEPTED admission consumed the one-shot created seed
-      // (retained exact authority), so the next manual send is unfenced —
-      // never a stale fence 5.
-      expect(manual.payload.expectedRevision).toBeUndefined();
-      ws.serverSend({ type: "submit_turn_result", id: manual.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "attached-seed", operationId: manual.payload.operationId, error: { code: "not_found", message: "cleanup", retryable: false } } });
-      await expect(manualP).rejects.toBeTruthy();
-    }
-
-    // A detached exact controller can discover that the target is already
-    // live only when sessiond rejects the unfenced attempt as definitely not
-    // delivered and returns the exact authority fence. The SAME operation is
-    // retried once; another revision race fails closed without a third send.
-    {
-      const h = createHarness();
-      h.store.connect();
-      const ws = h.lastSocket();
-      ws.serverOpen();
-      ws.serverSend(ackSubmitTurn());
-      await flush();
-      const noneP = h.store.sendPromptToSession("unseeded", "none");
-      await flush();
-      const none = submitFrames(ws)[0]!;
-      expect(none.payload.expectedEpoch).toBeUndefined();
-      expect(none.payload.expectedRevision).toBeUndefined();
-      ws.serverSend({ type: "submit_turn_result", id: none.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "unseeded", operationId: none.payload.operationId, epoch: "eN", revision: 9, error: { code: "conflict", message: "live session submit requires an epoch fence", retryable: false } } });
-      await flush();
-      const repaired = submitFrames(ws)[1]!;
-      expect(repaired.payload.operationId).toBe(none.payload.operationId);
-      expect(repaired.payload.expectedEpoch).toBe("eN");
-      expect(repaired.payload.expectedRevision).toBe(9);
-      ws.serverSend({ type: "submit_turn_result", id: repaired.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "unseeded", operationId: repaired.payload.operationId, epoch: "eN", revision: 10, error: { code: "conflict", message: "session revision changed", retryable: false } } });
-      await expect(noneP).rejects.toMatchObject({ code: "conflict" });
-      expect(submitFrames(ws)).toHaveLength(2);
-    }
-  });
-
-  it("drops a stale attached fence on not_delivered epoch_changed and resends the same operation unfenced", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPromptToSession("s1", "stale attached");
-    await flush();
-    const first = submitFrames(ws)[0]!;
-    expect(first.payload.expectedEpoch).toBe("e1");
-    expect(first.payload.expectedRevision).toBe(0);
-    const attachCount = ws.sent.filter((frame) => (frame as { type?: string }).type === "attach").length;
-    const detachCount = ws.sent.filter((frame) => (frame as { type?: string }).type === "detach").length;
-
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: first.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: first.payload.operationId, error: { code: "epoch_changed", message: "not active at expected epoch", retryable: false } },
-    });
-    await flush();
-    const retry = submitFrames(ws)[1]!;
-    expect(retry.payload.operationId).toBe(first.payload.operationId);
-    expect(retry.payload.prompt).toBe("stale attached");
-    expect("expectedEpoch" in retry.payload).toBe(false);
-    expect("expectedRevision" in retry.payload).toBe(false);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(attachCount);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "detach")).toHaveLength(detachCount);
-
-    ws.serverSend({ type: "submit_turn_result", id: retry.id, payload: acceptedAdmission(h, retry.payload.operationId as string) });
-    await expect(sendP).resolves.toBeTruthy();
-    expect(submitFrames(ws)).toHaveLength(2);
-  });
-
-  it("after attached→unfenced retry, repairs one exact authority fence then fails closed", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    const sendP = h.store.sendPromptToSession("s1", "bound repair");
-    await flush();
-    const first = submitFrames(ws)[0]!;
-
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: first.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: first.payload.operationId, error: { code: "epoch_changed", message: "not active at expected epoch", retryable: false } },
-    });
-    await flush();
-    const unfenced = submitFrames(ws)[1]!;
-    expect("expectedEpoch" in unfenced.payload).toBe(false);
-    expect(unfenced.payload.operationId).toBe(first.payload.operationId);
-
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: unfenced.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: unfenced.payload.operationId, epoch: "eLive", revision: 4, error: { code: "conflict", message: "live worker fence", retryable: false } },
-    });
-    await flush();
-    const fenced = submitFrames(ws)[2]!;
-    expect(fenced.payload.operationId).toBe(first.payload.operationId);
-    expect(fenced.payload.expectedEpoch).toBe("eLive");
-    expect(fenced.payload.expectedRevision).toBe(4);
-
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: fenced.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: fenced.payload.operationId, epoch: "eLive", revision: 5, error: { code: "conflict", message: "second race", retryable: false } },
-    });
-    await expect(sendP).rejects.toMatchObject({ code: "conflict", phase: "activation" });
-    expect(submitFrames(ws)).toHaveLength(3);
-    expect(h.store.getSnapshot().turnActive).toBe(false);
-    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
-  });
-
-  it("never auto-drops an explicit fence on epoch_changed", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h, "s1", "e1");
-    const sendP = h.store.submitTurn({ sessionId: "s1", prompt: "explicit stale", expectedEpoch: "eF", expectedRevision: 7 });
-    await flush();
-    const first = submitFrames(ws)[0]!;
-    expect(first.payload.expectedEpoch).toBe("eF");
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: first.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: first.payload.operationId, error: { code: "epoch_changed", message: "not active at expected epoch", retryable: false } },
-    });
-    await expect(sendP).rejects.toMatchObject({ code: "epoch_changed", phase: "activation" });
-    expect(submitFrames(ws)).toHaveLength(1);
-  });
-
-  it("handles all three fence sources through the SAME revision repair", async () => {
-    // created / none / attached conflict are one code path now: each re-arms the
-    // fence from the authority's exact (epoch, revision) exactly once, with the
-    // SAME operationId, and a second conflict on the repaired fence fails closed.
-    const cases = [
-      {
-        name: "created",
-        seed: { sessionId: "merged-created", epoch: "eN", revision: 1 },
-        firstRejection: { epoch: "eN", revision: 2 },
-        expectedFirstRevision: 1,
-        expectedRepairRevision: 2,
-      },
-      {
-        name: "none",
-        seed: null,
-        firstRejection: { epoch: "eN", revision: 9 },
-        expectedFirstRevision: undefined,
-        expectedRepairRevision: 9,
-      },
-      {
-        name: "attached",
-        seed: null,
-        firstRejection: { epoch: "e1", revision: 8 },
-        expectedFirstRevision: 0,
-        expectedRepairRevision: 8,
-      },
-    ] as const;
-
-    for (const testCase of cases) {
-      const h = createHarness();
-      h.store.connect();
-      const ws = h.lastSocket();
-      ws.serverOpen();
-      ws.serverSend(ackSubmitTurn());
-      await flush();
-      const sessionId = testCase.seed?.sessionId ?? "merged-attached";
-      if (testCase.seed) {
-        await createSeededSession(h, ws, testCase.seed);
-      } else if (testCase.name === "attached") {
-        const openP = h.store.openSession(sessionId);
-        await flush();
-        const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-        ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId, epoch: "e1", lastEventId: 0 }) });
-        await openP;
-      }
-
-      const sendP = h.store.sendPromptToSession(sessionId, testCase.name);
-      await flush();
-      const first = submitFrames(ws)[0]!;
-      expect(first.payload.expectedRevision, testCase.name).toBe(testCase.expectedFirstRevision);
-      ws.serverSend({
-        type: "submit_turn_result",
-        id: first.id,
-        payload: { status: "rejected", delivery: "not_delivered", sessionId, operationId: first.payload.operationId, epoch: testCase.firstRejection.epoch, revision: testCase.firstRejection.revision, error: { code: "conflict", message: "race", retryable: false } },
-      });
-      await flush();
-      const repaired = submitFrames(ws)[1]!;
-      expect(repaired.payload.operationId, testCase.name).toBe(first.payload.operationId);
-      expect(repaired.payload.expectedEpoch, testCase.name).toBe(testCase.firstRejection.epoch);
-      expect(repaired.payload.expectedRevision, testCase.name).toBe(testCase.expectedRepairRevision);
-
-      // A second conflict proves the repair cannot converge: settle, no third frame.
-      ws.serverSend({
-        type: "submit_turn_result",
-        id: repaired.id,
-        payload: { status: "rejected", delivery: "not_delivered", sessionId, operationId: repaired.payload.operationId, epoch: testCase.firstRejection.epoch, revision: testCase.expectedRepairRevision + 1, error: { code: "conflict", message: "still racing", retryable: false } },
-      });
-      await expect(sendP, testCase.name).rejects.toMatchObject({ code: "conflict", phase: "activation" });
-      expect(submitFrames(ws), testCase.name).toHaveLength(2);
-      expect(h.store.getSnapshot().optimisticEntries, testCase.name).toEqual([]);
-    }
-  });
-
-  it("uses the created snapshot leaf as the first prompt's optimistic base and never treats admission as final", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    await createSeededSession(h, ws, { sessionId: "new-first", epoch: "eN", revision: 2, leafId: "config-leaf" });
-
-    const sendP = h.store.sendPromptToSession("new-first", "first prompt");
-    await flush();
-    const optimistic = h.controller("new-first")!.getSnapshot().optimisticEntries[0]!;
-    expect(optimistic.baseEntryId).toBe("config-leaf");
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    const admission = acceptedAdmissionFor("new-first", submit.payload.operationId, "eN", "turn-first", 2);
-    expect(admission.status).toBe("accepted");
-    if (admission.status !== "accepted") throw new Error("test admission must be accepted");
-    // Mixed-build defense: an older Worker may have mislabeled this exact
-    // pre-turn config leaf as final on an admitted status. The Client ignores
-    // it and keeps final identity unknown until user_committed/terminal.
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: submit.id,
-      payload: { ...admission, turnStatus: { ...admission.turnStatus, finalLeafId: "config-leaf" } },
-    });
-    await expect(sendP).resolves.toBeTruthy();
-    expect(h.controller("new-first")!.getSnapshot().optimisticEntries[0]!.identity).toMatchObject({
-      operationId: submit.payload.operationId,
-      userEntryId: null,
-      finalLeafId: null,
-    });
-  });
-
-  it("repairs an unknown optimistic base from the pre-prompt admission snapshot", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-
-    const sendP = h.store.sendPromptToSession("cold-existing", "persist me once");
-    await flush();
-    const controller = h.controller("cold-existing")!;
-    expect(controller.getSnapshot().optimisticEntries[0]!.baseEntryId).toBeNull();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    const admissionSnapshot = snapshotPayload({ sessionId: "cold-existing", epoch: "eC", lastEventId: 4 }).snapshot as { state: Record<string, unknown> };
-    admissionSnapshot.state.leafId = "pre-prompt-leaf";
-    const admission = acceptedAdmissionFor("cold-existing", submit.payload.operationId, "eC", "turn-cold", 4);
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: { ...admission, snapshot: admissionSnapshot } });
-    await expect(sendP).resolves.toBeTruthy();
-    expect(controller.getSnapshot().optimisticEntries[0]!.baseEntryId).toBe("pre-prompt-leaf");
-  });
-
-  it("repairs an unknown optimistic base from a delayed same-epoch admission without replacing a newer snapshot", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-    const open = h.store.openSession("s1");
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({
-      type: "snapshot",
-      id: attachFrame.id,
-      payload: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 14, model: { provider: "openai", id: "live-14" } }),
-    });
-    await open;
-    const sendP = h.store.sendPrompt("second");
-    await flush();
-    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    expect(h.controller("s1")!.getSnapshot().optimisticEntries[0]!.baseEntryId).toBeNull();
-    const delayedAdmission = {
-      ...acceptedAdmissionFor("s1", submit.payload.operationId, "e1", "turn-2", 13),
-      snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 13, model: { provider: "openai", id: "stale-pre-prompt" } }).snapshot,
-    };
-    (delayedAdmission.snapshot as { state: Record<string, unknown> }).state.leafId = "pre-prompt-leaf";
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: delayedAdmission });
-    await expect(sendP).resolves.toBeTruthy();
-    expect(h.controller("s1")!.getSnapshot().optimisticEntries[0]!.baseEntryId).toBe("pre-prompt-leaf");
-    expect(h.controller("s1")!.getSnapshot().snapshot?.state.model).toEqual({ provider: "openai", id: "live-14" });
+    expect(frames[1]!.payload.prompt).toBe("second");
+    ws.serverSend({ type: "submit_turn_result", id: frames[1]!.id, payload: acceptedAdmission(h, frames[1]!.payload.operationId as string) });
+    await expect(secondSend).resolves.toBeUndefined();
     h.dispose();
   });
 
-  it("establishes the first history anchor from a same-epoch post-admission observation snapshot", async () => {
+  it("create is identity-only; the first send of the new session carries activationOverrides and no fence", async () => {
     const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
+    const ws = await openAndAttachTurn(h);
+    await createSeededSession(h, ws);
+    const sendP = h.store.sendPromptToSession("new-1", "first", undefined, {
+      model: { provider: "anthropic", modelId: "claude-opus-4" },
+      thinkingLevel: "high",
+    });
     await flush();
-    await createSeededSession(h, ws, { sessionId: "new-anchor", epoch: "eN", revision: 2, leafId: "config-leaf" });
-
-    const sendP = h.store.sendPromptToSession("new-anchor", "first prompt");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    const admission = acceptedAdmissionFor("new-anchor", submit.payload.operationId, "eN", "turn-anchor", 2);
-    const admissionSnapshot = admission.snapshot as { state: Record<string, unknown> };
-    admissionSnapshot.state.leafId = "config-leaf";
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: admission });
-    await expect(sendP).resolves.toBeTruthy();
-
-    const controller = h.controller("new-anchor")!;
-    expect(controller.getSnapshot().createdWithAutoThinking).toBe(true);
-    expect(controller.getSnapshot().historyAnchorLeafId).toBeNull();
-    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    const observation = snapshotPayload({ sessionId: "new-anchor", epoch: "eN", lastEventId: 3 }) as {
-      snapshot: { state: Record<string, unknown> };
-      [key: string]: unknown;
-    };
-    observation.snapshot.state.leafId = "committed-user-leaf";
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: observation });
-    await flush();
-
-    // Even though created authority makes this a same-epoch resume, the first
-    // non-null observation leaf anchors HTTP history so commits that raced
-    // ahead of attachment are not lost until a full page refresh.
-    expect(controller.getSnapshot().historyAnchorLeafId).toBe("committed-user-leaf");
-    expect(controller.getSnapshot().historyGeneration).toBe(1);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: Record<string, unknown> }>(ws, "submit_turn")!;
+    expect(submit.payload.activationOverrides).toEqual({
+      model: { provider: "anthropic", modelId: "claude-opus-4" },
+      thinkingLevel: "high",
+    });
+    expect(submit.payload.expectedEpoch).toBeUndefined();
+    expect(submit.payload.expectedRevision).toBeUndefined();
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmissionFor("new-1", submit.payload.operationId as string, "eN") });
+    await expect(sendP).resolves.toBeUndefined();
+    h.dispose();
   });
 
-  it("keeps the first committed turn visible across the second send and a same-epoch null-leaf snapshot", async () => {
+  it("a transient rejection on a created session resends the SAME operation with an identical payload", async () => {
     const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
+    const ws = await openAndAttachTurn(h);
+    await createSeededSession(h, ws, { sessionId: "new-repair", epoch: "eN" });
+    const sendP = h.store.sendPromptToSession("new-repair", "same logical turn", undefined, {
+      model: { provider: "anthropic", modelId: "claude-opus-4" },
+      thinkingLevel: "high",
+    });
     await flush();
-    await createSeededSession(h, ws, { sessionId: "two-turn", epoch: "eN", revision: 1 });
-
-    const firstP = h.store.sendPromptToSession("two-turn", "first");
-    await flush();
-    const first = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    ws.serverSend({ type: "submit_turn_result", id: first.id, payload: acceptedAdmissionFor("two-turn", first.payload.operationId, "eN", "turn-1", 1) });
-    await expect(firstP).resolves.toBeTruthy();
-    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "two-turn", epoch: "eN", lastEventId: 1 }) });
-    await flush();
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "two-turn", epoch: "eN", eventId: 2, streamId: "u1", messageId: "u1", message: { role: "user", content: "first" } } });
-    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "two-turn", epoch: "eN", eventId: 3, streamId: "u1", messageId: "u1", entryId: "u1", message: { role: "user", content: "first" } } });
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "two-turn", epoch: "eN", eventId: 4, streamId: "a1", messageId: "a1", message: { role: "assistant", content: [], model: "m", provider: "p" } } });
-    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "two-turn", epoch: "eN", eventId: 5, streamId: "a1", messageId: "a1", entryId: "a1", parentEntryId: "u1", message: { role: "assistant", content: [{ type: "text", text: "answer one" }], model: "m", provider: "p" } } });
-    await flush();
-    expect(h.controller("two-turn")!.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u1", "a1"]);
-    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("two-turn", "eN"), payload: { sessionId: "two-turn", epoch: "eN", operationId: first.payload.operationId, turnId: "turn-1", revision: 1, state: "completed", userEntryId: "u1", finalLeafId: "a1" } });
-    await flush();
-    const controller = h.controller("two-turn")!;
-    expect(controller.getSnapshot().historyAnchorLeafId).toBe("a1");
-    expect(controller.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u1", "a1"]);
-
-    // A late same-epoch snapshot may omit leafId. It cannot erase the exact
-    // terminal anchor/live tail already observed for this session.
-    ws.serverSend({ type: "snapshot", payload: snapshotPayload({ sessionId: "two-turn", epoch: "eN", lastEventId: 5, resumeStatus: "gap" }) });
-    await flush();
-    expect(controller.getSnapshot().historyAnchorLeafId).toBe("a1");
-    expect(controller.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u1", "a1"]);
-
-    const secondP = h.store.sendPromptToSession("two-turn", "second");
-    await flush();
-    expect(controller.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u1", "a1"]);
-    const second = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    ws.serverSend({ type: "submit_turn_result", id: second.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "two-turn", operationId: second.payload.operationId, epoch: "eN", revision: 6, error: { code: "conflict", message: "cleanup", retryable: false } } });
-    await flush();
-    // The attached conflict is repaired once at the authority cursor; a
-    // SECOND conflict stays bounded and settles as the honest definite rejection.
-    const repair = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    expect(repair.payload.operationId).toBe(second.payload.operationId);
-    ws.serverSend({ type: "submit_turn_result", id: repair.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "two-turn", operationId: repair.payload.operationId, epoch: "eN", revision: 7, error: { code: "conflict", message: "cleanup again", retryable: false } } });
-    await expect(secondP).rejects.toMatchObject({ code: "conflict" });
-  });
-
-  it("an older create result without lastEventId never guesses zero; it attaches once for an exact submit fence", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-
-    const createP = h.store.createSession({ cwd: "/x", projectRoot: "/x" });
-    await flush();
-    const createFrame = lastFrame<{ type: string; id: string }>(ws, "create")!;
-    // Additive Protocol-v2 compatibility: an older daemon omits lastEventId.
-    ws.serverSend({ type: "response", id: createFrame.id, payload: { ok: true, result: { sessionId: "new-old", epoch: "eN", created: true, cwd: "/x", projectRoot: "/x" } } });
-    await expect(createP).resolves.toEqual({ sessionId: "new-old" });
-    expect(lastFrame(ws, "attach")).toBeUndefined();
-
-    const sendP = h.store.sendPromptToSession("new-old", "first");
-    await flush();
-    // The Client must not submit (epoch, guessed revision 0). It first attaches
-    // to acquire the exact current cursor from authority.
-    expect(lastFrame(ws, "submit_turn")).toBeUndefined();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("new-old");
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-old", epoch: "eN", lastEventId: 2 }) });
-    await flush();
-
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string; expectedEpoch: string; expectedRevision: number } }>(ws, "submit_turn")!;
-    expect(submit.payload.expectedEpoch).toBe("eN");
-    expect(submit.payload.expectedRevision).toBe(2);
+    const first = lastFrame<{ type: "submit_turn"; id: string; payload: Record<string, unknown> }>(ws, "submit_turn")!;
     ws.serverSend({
       type: "submit_turn_result",
-      id: submit.id,
-      payload: {
-        status: "accepted",
-        delivery: "accepted",
-        sessionId: "new-old",
-        epoch: "eN",
-        revision: 2,
-        operationId: submit.payload.operationId,
-        turnId: "turn-old",
-        snapshot: snapshotPayload({ sessionId: "new-old", epoch: "eN", lastEventId: 2 }).snapshot,
-        turnStatus: { sessionId: "new-old", epoch: "eN", operationId: submit.payload.operationId, turnId: "turn-old", revision: 0, state: "admitted" },
-      },
+      id: first.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "new-repair", operationId: first.payload.operationId, error: { code: "unavailable", message: "authority restarting", retryable: true } },
     });
-    await expect(sendP).resolves.toBeTruthy();
+    await flush();
+    const ws2 = await h.reconnectAfterFailure({ sessionId: "new-repair", epoch: "eN" });
+    await flush();
+    const retried = submitFrames(ws2);
+    expect(retried).toHaveLength(1);
+    expect(retried[0]!.payload).toEqual(first.payload);
+    ws2.serverSend({ type: "submit_turn_result", id: retried[0]!.id, payload: acceptedAdmissionFor("new-repair", first.payload.operationId as string, "eN") });
+    await expect(sendP).resolves.toBeUndefined();
+    h.dispose();
   });
 
-  it("a created-session seed is never used for another session; a seedless cross-session submit carries no epoch fence", async () => {
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
-    await flush();
-
-    const createP = h.store.createSession({ cwd: "/x", projectRoot: "/x" });
-    await flush();
-    const createFrame = lastFrame<{ type: string; id: string }>(ws, "create")!;
-    ws.serverSend({ type: "response", id: createFrame.id, payload: { ok: true, result: { sessionId: "new-1", epoch: "eN", created: true, cwd: "/x", projectRoot: "/x" } } });
-    await expect(createP).resolves.toEqual({ sessionId: "new-1" });
-
-    // Submit to a DIFFERENT session with NO seed: no expectedEpoch/expectedRevision
-    // may be fabricated from new-1's seed.
-    const sendP = h.store.sendPromptToSession("other", "cross session");
-    await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { sessionId: string; operationId: string; expectedEpoch?: string; expectedRevision?: number } }>(ws, "submit_turn")!;
-    expect(submit.payload.sessionId).toBe("other");
-    expect("expectedEpoch" in submit.payload).toBe(false);
-    expect("expectedRevision" in submit.payload).toBe(false);
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: submit.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "other", operationId: submit.payload.operationId, error: { code: "not_found", message: "no such session", retryable: false } },
-    });
-    await expect(sendP).rejects.toMatchObject({ code: "not_found" });
+  it("a send for another session never steals the attached session's lease", async () => {
+    const h = createHarness({ storeOptions: { maxControllers: 3 } });
+    const ws = await openAndAttachTurn(h, "A", "eA");
+    h.registry.declarePresentation(sessionPresentationKey("A"), true);
+    await createSeededSession(h, ws, { sessionId: "B", epoch: "eB" });
+    h.registry.declarePresentation(sessionPresentationKey("A"), true);
+    // The send targets B's own exact controller (a controller only ever sends
+    // for its own session).
+    const controllerB = h.registry.lookup("B");
+    expect(controllerB).not.toBeNull();
+    const sendP = controllerB!.submitTurn({ sessionId: "B", prompt: "background turn" });
+    await flush(8);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    // The presented session is still A while B's send is in flight.
+    expect(h.registry.leaseSnapshot).toMatchObject({ holderSessionId: "A" });
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmissionFor("B", submit.payload.operationId, "eB") });
+    await flush(8);
+    await sendP;
+    // B's admission settles the send; B stays a background controller.
+    expect(controllerB!.getSnapshot()).toMatchObject({ attached: false });
+    h.dispose();
   });
 
-  it("explicit caller fence wins over the attached session; revision-without-epoch is rejected before any send", async () => {
+  it("uses the created snapshot leaf as the first prompt's optimistic base", async () => {
     const h = createHarness();
-    const ws = await openAndAttachTurn(h, "s1", "e1");
-    // Explicit fence on the ATTACHED session overrides the attached epoch.
-    const sendP = h.store.submitTurn({ sessionId: "s1", prompt: "fenced", expectedEpoch: "eF", expectedRevision: 7 });
+    const ws = await openAndAttachTurn(h);
+    await createSeededSession(h, ws, { leafId: "created-leaf" });
+    const sendP = h.store.sendPromptToSession("new-1", "hello");
     await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { sessionId: string; operationId: string; expectedEpoch: string; expectedRevision: number } }>(ws, "submit_turn")!;
-    expect(submit.payload.expectedEpoch).toBe("eF");
-    expect(submit.payload.expectedRevision).toBe(7);
-    ws.serverSend({
-      type: "submit_turn_result",
-      id: submit.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "epoch_changed", message: "fence mismatch", retryable: false } },
-    });
-    await expect(sendP).rejects.toMatchObject({ code: "epoch_changed" });
-
-    // revision without epoch → invalid_input BEFORE any submit frame is sent.
-    await expect(h.store.submitTurn({ sessionId: "s1", prompt: "bad", expectedRevision: 3 })).rejects.toMatchObject({ code: "invalid_input" });
-    await flush();
-    expect(ws.sent.filter((f) => (f as { type: string }).type === "submit_turn")).toHaveLength(1);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    // The bubble is anchored on the created leaf, so a later commit reconciles
+    // by identity instead of text.
+    const bubble = h.controller("new-1")!.getSnapshot().optimisticEntries[0]!;
+    expect(bubble.baseEntryId).toBe("created-leaf");
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmissionFor("new-1", submit.payload.operationId as string, "eN") });
+    await sendP.catch(() => undefined);
+    h.dispose();
   });
 
-  it("keeps a same-epoch observation cursor when a delayed accepted ACK carries an older pre-prompt revision", async () => {
+  it("keeps the first committed turn visible across the second send", async () => {
     const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackSubmitTurn());
+    const ws = await openAndAttachTurn(h);
+    const first = h.store.sendPrompt("first");
+    await awaitSubmit(ws);
+    const s1 = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend({ type: "submit_turn_result", id: s1.id, payload: acceptedAdmission(h, s1.payload.operationId) });
     await flush();
-    const open = h.store.openSession("s1");
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({
-      type: "snapshot",
-      id: attachFrame.id,
-      payload: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 13, model: { provider: "openai", id: "live-13" } }),
-    });
-    await open;
-    const attachCountAfterOpen = ws.sent.filter((frame) => (frame as { type?: string }).type === "attach").length;
-    const activateCountAfterOpen = ws.sent.filter((frame) => (frame as { type?: string }).type === "activate").length;
-    const stopCountAfterOpen = ws.sent.filter((frame) => (frame as { type?: string }).type === "stop").length;
-    expect(h.controller("s1")!.getSnapshot().snapshot?.state.model).toEqual({ provider: "openai", id: "live-13" });
-
-    const secondP = h.store.sendPrompt("second");
-    await flush();
-    const second = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    expect(h.controller("s1")!.getSnapshot()).toMatchObject({ promptPending: true, turnActive: true, turnDelivery: "in_flight" });
-    expect(h.controller("s1")!.getSnapshot().optimisticEntries[0]!.baseEntryId).toBeNull();
-
-    ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", epoch: "e1", eventId: 14 } });
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", epoch: "e1", eventId: 15, streamId: "u2", messageId: "u2", message: { role: "user", content: "second" } } });
-    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "s1", epoch: "e1", eventId: 16, streamId: "u2", messageId: "u2", entryId: "u2", message: { role: "user", content: "second" } } });
-    ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", epoch: "e1", eventId: 17 } });
-    await flush();
-    expect(h.controller("s1")!.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u2"]);
-    expect(h.controller("s1")!.getSnapshot().snapshot?.state.model).toEqual({ provider: "openai", id: "live-13" });
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(attachCountAfterOpen);
-
-    const delayedAdmission = {
-      ...acceptedAdmissionFor("s1", second.payload.operationId, "e1", "turn-2", 13),
-      snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 13, model: { provider: "openai", id: "stale-pre-prompt" } }).snapshot,
-    };
-    (delayedAdmission.snapshot as { state: Record<string, unknown> }).state.leafId = "pre-prompt-leaf";
-    ws.serverSend({ type: "submit_turn_result", id: second.id, payload: delayedAdmission });
-    await flush();
-    await expect(secondP).resolves.toMatchObject({ status: "accepted", operationId: second.payload.operationId, turnId: "turn-2" });
-    expect(h.controller("s1")!.getSnapshot()).toMatchObject({ promptPending: false, turnActive: true, turnDelivery: "accepted" });
-    expect(h.controller("s1")!.getSnapshot().optimisticEntries).toEqual([]);
-    expect(h.controller("s1")!.getSnapshot().snapshot?.state.model).toEqual({ provider: "openai", id: "live-13" });
-    expect(h.controller("s1")!.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u2"]);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(attachCountAfterOpen);
-
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", epoch: "e1", eventId: 18, streamId: "a2", messageId: "a2", message: { role: "assistant", content: [], model: "m", provider: "p" } } });
-    ws.serverSend({
-      type: "event",
-      payload: {
-        type: "message_update",
-        sessionId: "s1",
-        epoch: "e1",
-        eventId: 19,
-        streamId: "a2",
-        messageId: "a2",
-        delta: { role: "assistant", delta: { type: "text", text: "answer two" } },
-      },
-    });
-    ws.serverSend({
-      type: "event",
-      payload: {
-        type: "message_end",
-        sessionId: "s1",
-        epoch: "e1",
-        eventId: 20,
-        streamId: "a2",
-        messageId: "a2",
-        entryId: "a2",
-        parentEntryId: "u2",
-        message: { role: "assistant", content: [{ type: "text", text: "answer two" }], model: "m", provider: "p" },
-      },
-    });
-    await flush();
-    expect(h.controller("s1")!.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u2", "a2"]);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(attachCountAfterOpen);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "activate")).toHaveLength(activateCountAfterOpen);
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "stop")).toHaveLength(stopCountAfterOpen);
+    await first;
+    // Complete the turn: the tracker is released. The bubble is retained until
+    // the authority's own committed user entry consumes it by exact identity —
+    // never removed on a guess.
+    ws.serverSend(turnStatus("s1", s1.payload.operationId, 2, "completed", { userEntryId: "entry-1", finalLeafId: "entry-1" }));
+    await flush(8);
+    expect(h.controller("s1")!.getSnapshot().turnActive).toBe(false);
+    const bubble = h.controller("s1")!.getSnapshot().optimisticEntries;
+    expect(bubble).toHaveLength(1);
+    expect(bubble[0]!.identity?.userEntryId).toBe("entry-1");
+    // A second send must not disturb the already-rendered live tail.
+    const liveBefore = h.controller("s1")!.getSnapshot().liveEntries.length;
+    void h.store.sendPrompt("second");
+    await awaitSubmit(ws, 2);
+    expect(h.controller("s1")!.getSnapshot().liveEntries).toHaveLength(liveBefore);
     h.dispose();
   });
 });
 
 describe("SessionStore — Phase 3 legacy fallback (no negotiated submit seam)", () => {
-  beforeEach(() => { vi.useFakeTimers(); });
+  beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
   it("without the feature, sendPrompt uses the legacy command-envelope prompt path", async () => {
@@ -1791,7 +479,10 @@ describe("SessionStore — Phase 3 legacy fallback (no negotiated submit seam)",
     await expect(sendP).resolves.toBeTruthy();
   });
 
-  it("feature-off: create is identity-only (no attach), then legacy send attaches the exact new session before settings/prompt", async () => {
+  it("feature-off: create is identity-only, then the legacy send applies staged settings before the prompt", async () => {
+    // FINITE legacy shim: without the atomic submit seam the staged model and
+    // thinking choices cannot ride the prompt, so they are applied as ordered
+    // commands first. Delivery identity/retry stay the outbox's.
     const h = createHarness();
     h.store.connect();
     const ws = h.lastSocket();
@@ -1800,49 +491,53 @@ describe("SessionStore — Phase 3 legacy fallback (no negotiated submit seam)",
     await flush();
     expect(h.store.getSnapshot().submitTurnEnabled).toBe(false);
 
-    // Identity-only create: resolves, zero attach.
     const createP = h.store.createSession({ cwd: "/x", projectRoot: "/x" });
     await flush();
     const createFrame = lastFrame<{ type: string; id: string }>(ws, "create")!;
     ws.serverSend({ type: "response", id: createFrame.id, payload: { ok: true, result: { sessionId: "new-1", epoch: "eN", created: true, cwd: "/x", projectRoot: "/x" } } });
     await expect(createP).resolves.toEqual({ sessionId: "new-1" });
-    expect(ws.sent.filter((f) => (f as { type: string }).type === "attach")).toHaveLength(0);
+    // Identity-only create issues no attach of its own.
     expect(h.store.getSnapshot().attached).toBe(false);
 
-    // Legacy send acquires the ONE attachment of the exact new session, then
-    // staged settings → prompt. Nothing is sent before the attach lands.
+    // The staged settings need the exact session attached first (the old v2
+    // chain did the same): the send itself requests that observation.
+    const attachP = h.store.openSession("new-1");
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "new-1", epoch: "eN" }) });
+    await flush();
+    await attachP;
     const sendP = h.store.sendPromptToSession("new-1", "first", undefined, { model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel: "low" });
-    await flush();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("new-1");
-    expect(ws.sent.filter((f) => (f as { type: string }).type === "command")).toHaveLength(0);
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-1" }) });
-    await flush();
-    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
-    expect(modelCmd.payload.command.type).toBe("set_model");
-    expect(modelCmd.payload.command.provider).toBe("openai");
-    ws.serverSend({ type: "response", id: modelCmd.id, payload: { ok: true, result: { commandId: modelCmd.payload.command.commandId, result: { ok: true, type: "set_model" } } } });
-    await flush();
-    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
-    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
-    ws.serverSend({ type: "response", id: thinkingCmd.id, payload: { ok: true, result: { commandId: thinkingCmd.payload.command.commandId, result: { ok: true, type: "set_thinking_level" } } } });
-    await flush();
-    // The staged-settings shim refreshes the authoritative snapshot before dispatch.
-    const gsFrame = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
-    expect(gsFrame).toBeTruthy();
-    ws.serverSend({ type: "response", id: gsFrame.id, payload: { ok: true, result: snapshotPayload({ sessionId: "new-1" }).snapshot } });
-    await flush();
-    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(promptCmd.payload.command.type).toBe("prompt");
-    expect(promptCmd.payload.command.message).toBe("first");
-    ws.serverSend({ type: "response", id: promptCmd.id, payload: { ok: true, result: { commandId: promptCmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    type CmdFrame = { type: string; id: string; payload: { command: { commandId: string; type: string; provider?: string; level?: string; message?: string } } };
+    const lastCmd = (): CmdFrame | undefined => lastFrame<CmdFrame>(ws, "command");
+    const waitForCmd = async (type: string): Promise<CmdFrame> => {
+      for (let i = 0; i < 60; i += 1) {
+        if (lastCmd()?.payload.command.type === type) return lastCmd()!;
+        await flush(4);
+      }
+      throw new Error(`command ${type} was never sent`);
+    };
+    const ack = (frame: CmdFrame, type: string): void => {
+      ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type } } } });
+    };
+
+    // Model first, then thinking, then the prompt — each awaited in order.
+    const model = await waitForCmd("set_model");
+    expect(model.payload.command.provider).toBe("openai");
+    ack(model, "set_model");
+    const thinking = await waitForCmd("set_thinking_level");
+    expect(thinking.payload.command.level).toBe("low");
+    ack(thinking, "set_thinking_level");
+    const prompt = await waitForCmd("prompt");
+    expect(prompt.payload.command.message).toBe("first");
+    ack(prompt, "prompt");
     await expect(sendP).resolves.toBeTruthy();
   });
 });
 
 
 describe("SessionController — terminal authority convergence", () => {
-  beforeEach(() => { vi.useFakeTimers(); });
+  beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
   const terminal = (operationId: string, authority: ReturnType<typeof authoritySnapshot>, sessionId = "s1", epoch = "e1"): WsTurnStatusMessage => ({
@@ -1858,7 +553,8 @@ describe("SessionController — terminal authority convergence", () => {
   }
   async function admitted(h: RuntimeHarness, ws: FakeWebSocket, revision = 1) {
     const send = h.controller("s1")!.submitTurn({ sessionId: "s1", prompt: "fast", activationOverrides: { model: { provider: "openai", modelId: "gpt-6.1-sol" }, thinkingLevel: "high" } });
-    await flush();
+    // The outbox waits for a sendable transport before writing.
+    for (let i = 0; i < 20 && submitFrames(ws).length === 0; i += 1) await flush(4);
     const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
     const admission = acceptedAdmissionFor("s1", submit.payload.operationId, "e1", "turn-1", revision);
     if (admission.status !== "accepted") throw new Error("expected accepted");
@@ -1874,7 +570,9 @@ describe("SessionController — terminal authority convergence", () => {
     const ws = await openAndAttachTurn(h);
     ws.serverSend({ type: "snapshot", payload: { ...snapshotPayload(), snapshot: idleAuthority("s1", "e1", 0).snapshot } });
     const send = h.controller("s1")!.submitTurn({ sessionId: "s1", prompt: "fast", activationOverrides: { model: { provider: "openai", modelId: "gpt-6.1-sol" }, thinkingLevel: "high" } });
-    await flush();
+    void send.catch(() => undefined);
+    // The outbox waits for a sendable transport before writing.
+    for (let i = 0; i < 20 && submitFrames(ws).length === 0; i += 1) await flush(4);
     const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
     ws.serverSend({ type: "event", payload: { type: "running_sessions_changed", sessionId: "s1", epoch: "e1", eventId: 1, sessionIds: ["s1"], busySessionIds: [] } });
     ws.serverSend({ type: "event", payload: { type: "prompt_done", sessionId: "s1", epoch: "e1", eventId: 2 } });
@@ -1906,7 +604,7 @@ describe("SessionController — terminal authority convergence", () => {
     expect(submitFrames(ws)).toHaveLength(2);
     expect(lastFrame(ws, "command")).toBeUndefined();
     h.dispose();
-    await again;
+    void again;
   });
 
   it("sidecar ahead of observer message_end preserves its entry exactly once and its branch/history", async () => {

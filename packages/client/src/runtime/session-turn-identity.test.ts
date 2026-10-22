@@ -107,55 +107,78 @@ function turnStatus(sessionId: string, operationId: string, revision: number, st
   return { type: "turn_status", ...(state === "completed" ? { authority: authoritySnapshot(sessionId, epoch) } : {}), payload: { sessionId, epoch, operationId, turnId, revision, state, ...extra } };
 }
 
+function submitFrames(ws: FakeWebSocket): Array<{ type: "submit_turn"; id: string; payload: Record<string, unknown> }> {
+  return ws.sent.filter((frame): frame is { type: "submit_turn"; id: string; payload: Record<string, unknown> } =>
+    (frame as { type?: string }).type === "submit_turn"
+  );
+}
+
 describe("SessionController — Phase 5A identity optimistic commit", () => {
-  beforeEach(() => { vi.useFakeTimers(); });
+  // Real timers: the outbox has no client-side budget and transport readiness
+  // waits on real socket timers.
+  beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("a committed user entry before admission settles the send and outranks a conflicting rejection", async () => {
+  it("a lost admission receipt recovers through reconnect + duplicate: delivered once, never re-run", async () => {
+    // A receipt and the turn status travel on the SAME socket, so a lost receipt
+    // means the socket dropped. The outbox resends the SAME operationId and the
+    // authority's durable dedupe answers duplicate — that admission is the ONE
+    // settlement path (no second status-keyed path).
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
     const send = h.store.sendPrompt("delivered");
     await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    ws.serverSend(turnStatus("s1", submit.payload.operationId, 1, "user_committed", { userEntryId: "entry-42" }));
-    await flush();
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    // The receipt never arrives; the socket drops (the helper closes it).
+
+    const ws2 = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
+    // The resend is driven by the connection event; give the drain its turn.
+    for (let i = 0; i < 10 && !submitFrames(ws2).length; i += 1) await flush(4);
+    const resent = submitFrames(ws2);
+    expect(resent).toHaveLength(1);
+    expect(resent[0]!.payload.operationId).toBe(submit.payload.operationId);
+
+    // The authority dedupes on its durable receipt and reports the SAME turn.
+    ws2.serverSend({
+      type: "submit_turn_result",
+      id: resent[0]!.id,
+      payload: {
+        status: "duplicate",
+        delivery: "accepted",
+        sessionId: "s1",
+        epoch: "e1",
+        revision: 1,
+        operationId: submit.payload.operationId,
+        turnId: "turn-1",
+        turnStatus: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 0, state: "running", userEntryId: "entry-42" },
+      },
+    });
     await expect(send).resolves.toBeUndefined();
-    expect(h.store.getSnapshot().optimisticEntries[0]?.identity?.userEntryId).toBe("entry-42");
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: {
-      status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId,
-      error: { code: "conflict", message: "stale receipt", retryable: false },
-    } });
-    await flush();
-    expect(h.store.getSnapshot().optimisticEntries[0]?.identity?.userEntryId).toBe("entry-42");
-    expect(h.store.getSnapshot().turnDelivery).not.toBe("not_delivered");
-    ws.serverSend(turnStatus("s1", submit.payload.operationId, 2, "completed", { userEntryId: "entry-42", finalLeafId: "entry-43" }));
-    await flush();
+    // Adopted exactly once, with the authority's identity.
+    expect(h.store.getSnapshot().optimisticEntries[0]?.identity).toMatchObject({
+      operationId: submit.payload.operationId,
+      turnId: "turn-1",
+      userEntryId: "entry-42",
+    });
+    // No further frames for this operation.
+    expect(submitFrames(ws2)).toHaveLength(1);
+    h.dispose();
   });
 
-  it("a terminal status before the admission receipt also settles the send", async () => {
+  it("a terminal status for the ACCEPTED turn releases the bubble and the tracker", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
     const send = h.store.sendPrompt("delivered");
     await flush();
-    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: admissionFor(submit.payload.operationId) });
+    await expect(send).resolves.toBeUndefined();
+    expect(h.store.getSnapshot().turnActive).toBe(true);
     ws.serverSend(turnStatus("s1", submit.payload.operationId, 1, "completed", { userEntryId: "entry-42", finalLeafId: "entry-43" }));
     await flush();
-    await expect(send).resolves.toBeUndefined();
-    expect(h.store.getSnapshot().turnDelivery).not.toBe("not_delivered");
-  });
-
-  it("a failed status before admission settles as uncertain when no user entry was proved", async () => {
-    const h = createHarness();
-    const ws = await openAndAttachTurn(h);
-    const send = h.store.sendPrompt("maybe delivered");
-    await flush();
-    const submit = lastFrame<{ type: string; payload: { operationId: string } }>(ws, "submit_turn")!;
-    ws.serverSend(turnStatus("s1", submit.payload.operationId, 1, "failed", {
-      error: { code: "unavailable", message: "worker exited", retryable: false },
-    }));
-    await flush();
-    await expect(send).rejects.toMatchObject({ phase: "uncertain" });
-    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
+    expect(h.store.getSnapshot().turnActive).toBe(false);
+    expect(h.store.getSnapshot().turnDelivery).toBeNull();
+    h.dispose();
   });
 
   it("binds the bubble to the operation identity at submit and refines it from authority pushes", async () => {
@@ -271,9 +294,11 @@ describe("SessionController — Phase 5A identity optimistic commit", () => {
     await sendP;
     const bubble = h.store.getSnapshot().optimisticEntries;
     expect(bubble.length).toBe(1);
-    expect(bubble[0]!.identity).toBeUndefined();
+    // The outbox gives even the legacy command envelope an operation identity,
+    // so the bubble is never identity-less and the quarantined text fallback is
+    // not needed for it.
+    expect(bubble[0]!.identity?.operationId).toBeTruthy();
 
-    // Same text commit removes it via the QUARANTINED legacy text fallback.
     sendUserCommit(ws, "s1", "entry-5", 1, "legacy text");
     await flush();
     expect(h.store.getSnapshot().optimisticEntries.length).toBe(0);

@@ -1099,8 +1099,15 @@ export class RuntimeConnection implements RuntimeSocketHandler {
         // the controller after resync. Connection loss itself releases
         // server-side attach state (the Host closes the subscription on browser
         // close), so a dropped detach leaks nothing.
+        //
+        // The lane's OWNER must still learn the socket is gone: `logical_retry`
+        // means "do not settle with an error", not "stay silent". Without this
+        // notification a lane that gates its retry on the disconnect callback
+        // (the send outbox) would wait forever for an attempt that no longer
+        // exists.
         if (!this.removeExactAttempt(record)) continue;
         if (record.disconnectPolicy === "reject_on_disconnect") record.onDisconnect(connectionLostError());
+        else { try { record.onDisconnect(connectionLostError()); } catch { /* owner callback is not transport state */ } }
         continue;
       }
       const message = record.message;
@@ -1162,7 +1169,9 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   private removeGenerationAttempts(generation: number, error: ProtocolError): void {
     for (const record of [...this.attempts.values()]) {
       if (record.generation !== generation || !this.removeExactAttempt(record)) continue;
-      if (record.disconnectPolicy === "reject_on_disconnect") record.onDisconnect(error);
+      // One-shot lanes settle with the honest error; logical-retry lanes must
+      // at least learn their attempt is gone so they can retry on a new socket.
+      try { record.onDisconnect(error); } catch { /* owner callback is not transport state */ }
     }
     if (this.pendingCreate !== null) this.pendingCreate.attempt = null;
   }

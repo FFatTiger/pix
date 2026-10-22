@@ -1902,6 +1902,45 @@ export class SessionController implements RuntimeControllerPort {
       : this.beginPromptTransaction(entry.sessionId, entry.prompt, entry.operationId);
     if (tx === null) { finish(); return; }
     tx.phase = "dispatching";
+    void this.applyLegacySendSettings(entry).then(
+      () => { this.dispatchLegacyPrompt(entry, finish); },
+      () => {
+        // A staged setting could not be applied: the prompt never launched, so
+        // this is a proven pre-wire failure (draft restored, send not lost).
+        this.outbox.discard(entry.operationId);
+        this.removeOptimisticForOperation(entry.operationId);
+        this.settlePromptTransaction(tx, { removeBubble: true });
+        const settlement = this.outboxSettlements.get(entry.operationId);
+        this.outboxSettlements.delete(entry.operationId);
+        settlement?.reject(this.activationFailure({ code: "unavailable", message: "could not apply the staged model settings", retryable: false }));
+        finish();
+        this.notify();
+      },
+    );
+  }
+
+  /**
+   * FINITE legacy shim: without the atomic submit seam the staged model /
+   * thinking choices cannot ride the prompt, so they are applied as ordered
+   * commands first (model, then thinking) — exactly the old v2 chain.
+   */
+  private async applyLegacySendSettings(entry: OutboxEntry): Promise<void> {
+    const model = entry.activationOverrides?.model;
+    const thinking = entry.activationOverrides?.thinkingLevel;
+    if (model === undefined && thinking === undefined) return;
+    // The staged settings ride the ordinary command lane, which needs the exact
+    // session observed first (the old v2 chain did the same).
+    if (!this.attached) {
+      await this.openSession(entry.sessionId).catch((cause: unknown) => {
+        throw cause instanceof Error ? cause : new Error("legacy send could not attach the target session");
+      });
+    }
+    if (model !== undefined) await this.setModel(model.provider, model.modelId);
+    if (thinking !== undefined) await this.setThinkingLevel(thinking);
+  }
+
+  private dispatchLegacyPrompt(entry: OutboxEntry, finish: () => void): void {
+    const tx = this.promptTransaction?.operationId === entry.operationId ? this.promptTransaction : null;
     const commandId = this.id();
     const command: RuntimeCommand = {
       commandId,
@@ -1931,14 +1970,14 @@ export class SessionController implements RuntimeControllerPort {
           const settlement = this.outboxSettlements.get(entry.operationId);
           this.outboxSettlements.delete(entry.operationId);
           settlement?.resolve(payload.result);
-          this.settlePromptTransaction(tx, { removeBubble: false, clearRunning: false });
+          if (tx !== null) this.settlePromptTransaction(tx, { removeBubble: false, clearRunning: false });
           finish();
           return;
         }
         if (isFinalSendRejection(payload.error)) {
           this.outbox.discard(entry.operationId);
           this.removeOptimisticForOperation(entry.operationId);
-          this.settlePromptTransaction(tx, { removeBubble: true });
+          if (tx !== null) this.settlePromptTransaction(tx, { removeBubble: true });
           const settlement = this.outboxSettlements.get(entry.operationId);
           this.outboxSettlements.delete(entry.operationId);
           settlement?.reject(this.activationFailure(payload.error));
