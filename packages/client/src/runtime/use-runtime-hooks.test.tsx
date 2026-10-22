@@ -309,6 +309,8 @@ describe("exact React hooks (4A.3.2a)", () => {
       pending.catch((e: unknown) => { void e; });
       await flush();
     });
+    // The outbox waits for a sendable transport before writing.
+    for (let i = 0; i < 60 && lastFrame(ws, "submit_turn") === undefined; i += 1) await flush(4);
     const exact = samples.at(-1)!;
     expect(exact.liveEntries.some((e) => (e.message as { content?: string }).content === "hi")).toBe(false);
     expect(exact.optimisticEntries.some((c) => (c.entry.message as { content?: string }).content === "hi")).toBe(true);
