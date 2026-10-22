@@ -11,6 +11,7 @@
  * (response) or `{ id, data }` (input). Method/responseKind are dropped here.
  */
 import type { RuntimeCommand as ProtocolRuntimeCommand, RuntimeReadOutcome as ProtocolRuntimeReadOutcome, RuntimeReadRequest as ProtocolRuntimeReadRequest } from "@fffattiger/pix-protocol";
+import { QUEUED_SEND_COMMAND_ID_PREFIX } from "@fffattiger/pix-protocol";
 import type {
   RuntimeCommand as CoreRuntimeCommand,
   RuntimeCommandResult as CoreRuntimeCommandResult,
@@ -29,6 +30,15 @@ import { runtimeErrorToProtocolError } from "./protocol-error.js";
 
 function mapImages(images: readonly { type: "image"; data: string; mimeType: string }[]): CoreImageAttachment[] {
   return images.map((image): CoreImageAttachment => ({ type: "image", data: image.data, mimeType: image.mimeType }));
+}
+
+/**
+ * Only a queued SEND keeps its command id across the boundary: it is the send's
+ * durable receipt identity (`pix-send:<operationId>`). Ordinary transport ids
+ * stay on the wire.
+ */
+function isQueuedSend(commandId: string | undefined): commandId is string {
+  return commandId?.startsWith(QUEUED_SEND_COMMAND_ID_PREFIX) === true;
 }
 
 /** Strip the wire envelope and rebuild the canonical Core command. */
@@ -73,14 +83,14 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
         type: "steer",
         message: command.message,
         ...(command.images === undefined ? {} : { images: mapImages(command.images) }),
-        ...(command.commandId === undefined ? {} : { commandId: command.commandId }),
+        ...(isQueuedSend(command.commandId) ? { commandId: command.commandId } : {}),
       };
     case "follow_up":
       return {
         type: "follow_up",
         message: command.message,
         ...(command.images === undefined ? {} : { images: mapImages(command.images) }),
-        ...(command.commandId === undefined ? {} : { commandId: command.commandId }),
+        ...(isQueuedSend(command.commandId) ? { commandId: command.commandId } : {}),
       };
     case "switch_queued_delivery":
       return {

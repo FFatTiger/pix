@@ -27,6 +27,17 @@ describe("command-mapper (protocol → core, commandId stripped)", () => {
     assert.deepEqual(coreFor({ type: "prompt", message: "hi" }), { type: "prompt", message: "hi" });
   });
 
+  it("a queued SEND keeps its pix-send: command id as the durable receipt identity", () => {
+    assert.deepEqual(
+      mapProtocolCommandToCore({ type: "steer", message: "s", commandId: "pix-send:op-1" }),
+      { type: "steer", message: "s", commandId: "pix-send:op-1" },
+    );
+    assert.deepEqual(
+      mapProtocolCommandToCore({ type: "follow_up", message: "f", commandId: "pix-send:op-2" }),
+      { type: "follow_up", message: "f", commandId: "pix-send:op-2" },
+    );
+  });
+
   it("maps every ack-style command field-for-field without a commandId leak", () => {
     const cases: Array<[DistributiveOmit<ProtocolRuntimeCommand, "commandId">, CoreRuntimeCommand]> = [
       [{ type: "abort" }, { type: "abort" }],

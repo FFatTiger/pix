@@ -11,7 +11,8 @@ test("Pi 1.0 queued input receipts distinguish handled from queued and reject in
     // Protocol v2 ACK bridge. Remove this case when Protocol v3 is the minimum.
     const legacy = { ok: true, type };
     assert.deepEqual(RuntimeCommandResultSchema.parse(legacy), legacy);
-    assert.equal(RuntimeCommandResultSchema.safeParse({ ok: true, type, disposition: "started" }).success, false);
+    // A queued SEND (pix-send: id) that finds the session idle runs as a new turn.
+    assert.equal(RuntimeCommandResultSchema.safeParse({ ok: true, type, disposition: "started" }).success, true);
     assert.equal(RuntimeCommandResultSchema.safeParse({ ok: true, type, disposition: "invented" }).success, false);
   }
 });

@@ -173,7 +173,7 @@ test("resolveNpmInvocation uses the npm sibling of the node binary", (t) => {
   assert.equal(inv.shell, false);
 });
 
-test("resolveNpmInvocation falls back to npm.cmd on Windows and npm elsewhere", () => {
+test("resolveNpmInvocation falls back to npm.cmd on Windows and npm elsewhere", (t) => {
   const win = resolveNpmInvocation({
     platform: "win32",
     execPath: join("C:\\", "nodejs", "node.exe"),
@@ -181,7 +181,10 @@ test("resolveNpmInvocation falls back to npm.cmd on Windows and npm elsewhere", 
   });
   assert.equal(win.command, "npm.cmd");
   assert.equal(win.shell, true);
-  const posix = resolveNpmInvocation({ platform: "linux", execPath: "/usr/bin/node", env: {} });
+  // A node binary with NO npm sibling (a real /usr/bin may well have one).
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  const posix = resolveNpmInvocation({ platform: "linux", execPath: join(root, "node"), env: {} });
   assert.equal(posix.command, "npm");
   assert.equal(posix.shell, false);
 });

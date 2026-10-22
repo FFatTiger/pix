@@ -2660,6 +2660,38 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     expect(view.optimisticEntries.some((c) => (c.entry.message as { content: string }).content === "hi")).toBe(true);
   });
 
+  it("a retryable answer on a healthy socket resends the SAME operation after a backoff — no reconnect, no tight loop", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const sockets = h.sockets.length;
+    const promptP = h.store.sendPrompt("hi");
+    await flush();
+    await awaitSendFrame(ws);
+    const first = submitFrame(ws);
+    const reject = (frame: typeof first) => ws.serverSend({ type: "submit_turn_result", id: frame.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: frame.payload.operationId, error: { code: "worker_unavailable", message: "worker starting", retryable: true } } });
+    const submits = () => (ws.sent as { type?: string }[]).filter((f) => f.type === "submit_turn").length;
+    reject(first);
+    await flush(20);
+    expect(submits()).toBe(1);
+    expect(h.sockets.length).toBe(sockets);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await awaitSendFrame(ws);
+    expect(submits()).toBe(2);
+    // The second answer doubles the wait.
+    reject(submitFrame(ws));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush(20);
+    expect(submits()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush(20);
+    expect(submits()).toBe(3);
+    const third = submitFrame(ws);
+    expect(third.payload.operationId).toBe(first.payload.operationId);
+    expect(h.sockets.length).toBe(sockets);
+    respondSubmit(ws, third.id, third.payload.operationId);
+    await expect(promptP).resolves.toBeUndefined();
+  });
+
   it("image sends share the SAME optimistic path as text (bubble + overlay + images on the wire)", async () => {
     const h = createHarness();
     const ws = await openAndAttach(h);
