@@ -1853,16 +1853,6 @@ export class SessionController implements RuntimeControllerPort {
     this.scheduleOutboxDrain();
   }
 
-  /**
-   * Re-drain after a sendable transport appeared. `whenSendable` may resolve
-   * without any connection-state change (the socket was already usable when the
-   * wait began), so the drain cannot rely on the subscription alone.
-   */
-  private onOutboxWireReady(): void {
-    if (this.delivering !== null) return;
-    this.scheduleOutboxDrain();
-  }
-
   /** Remove the speculative bubble owned by one operation (identity-only). */
   private removeOptimisticForOperation(operationId: string): void {
     this.optimisticUserEntries = this.optimisticUserEntries.filter(

@@ -236,34 +236,38 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
   });
 
   it("a submit through a stale (half-open) connection waits through the forced reconnect and re-sends the SAME operationId exactly once per socket", async () => {
-    const h = createHarness({ liveness: { heartbeatIntervalMs: 1_000_000, pongTimeoutMs: 5_000, freshnessMs: 60_000 } });
+    // Real timers: the outbox has no client-side deadline, and the transport's
+    // own freshness/probe timers must actually elapse.
+    vi.useRealTimers();
+    const h = createHarness({ liveness: { heartbeatIntervalMs: 1_000_000, pongTimeoutMs: 60, freshnessMs: 30 } });
     const ws1 = await openAndAttach(h);
     // Idle past the freshness window: the socket LOOKS attached but may be dead.
-    vi.advanceTimersByTime(61_000);
+    await new Promise((resolve) => setTimeout(resolve, 60));
     const sendP = h.store.sendPrompt("idle send");
     await flush();
     // The pre-wire gate probed before writing the turn...
     expect(pingFrames(ws1)).toHaveLength(1);
     expect(submitFrames(ws1)).toHaveLength(0);
     // ...the probe deadline proves death and forces the reconnect.
-    vi.advanceTimersByTime(5_000);
+    await new Promise((resolve) => setTimeout(resolve, 120));
     expect(h.sockets).toHaveLength(2);
     const ws2 = h.sockets[1]!;
     expect(submitFrames(ws1)).toHaveLength(0); // nothing raced into the dead socket
     // Recovery: handshake + ack (liveness negotiated again) + resume attach.
     ws2.serverOpen();
     ws2.serverSend(ackWithLiveness());
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach")!;
-    expect(attachFrame).toBeTruthy();
-    ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
-    await flush(8);
+    await flush(10);
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach");
+    if (attachFrame !== undefined) {
+      ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
+      await flush(10);
+    }
     // The SAME operationId is re-sent exactly once on the fresh socket.
     const submits2 = submitFrames(ws2);
     expect(submits2).toHaveLength(1);
     expect(submits2[0]!.payload.prompt).toBe("idle send");
     ws2.serverSend({ type: "submit_turn_result", id: submits2[0]!.id, payload: acceptedAdmission("s1", submits2[0]!.payload.operationId) });
-    await expect(sendP).resolves.toBeTruthy();
+    await expect(sendP).resolves.toBeUndefined();
     await flush();
     expect(submitFrames(ws2)).toHaveLength(1);
     h.dispose();
@@ -324,11 +328,10 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
     h.dispose();
   });
 
-  it("a send that waits through a 15s reconnect still lands (one 30s budget, no false 'not sent')", async () => {
-    // Wake-from-hidden is often 5s probe + 10s connect + 10s handshake + attach,
-    // which is well past the old 10s send gate. The gate and the silent recovery
-    // share ONE 30s budget: the send waits it out and lands, without an error
-    // and without restoring the draft.
+  it("a send that waits through a slow reconnect still lands (no client-side deadline, no false 'not sent')", async () => {
+    // Wake-from-hidden is often probe + connect + handshake + attach. The send
+    // simply waits it out: no budget, no error, no draft restore.
+    vi.useRealTimers();
     const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 5_000, freshnessMs: 60_000 } });
     const ws1 = await openAndAttach(h);
     // Proven-dead transport with a delivered close: the ordinary reconnect path.
@@ -336,46 +339,62 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
     const sendP = h.store.sendPrompt("slow recovery");
     let outcome: "pending" | "resolved" | "rejected" = "pending";
     void sendP.then(() => { outcome = "resolved"; }, () => { outcome = "rejected"; });
-    await flush();
-    // 15s of black-holed connect attempts: the old 10s gate already gave up here.
-    vi.advanceTimersByTime(15_000);
     await flush(8);
     expect(outcome).toBe("pending");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(outcome).toBe("pending");
+    const ws2 = h.lastSocket();
+    ws2.serverOpen();
+    ws2.serverSend(ackWithLiveness());
+    await flush(10);
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach");
+    if (attachFrame !== undefined) {
+      ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
+      await flush(10);
+    }
+    const submits = submitFrames(ws2);
+    expect(submits).toHaveLength(1);
+    expect(submits[0]!.payload.prompt).toBe("slow recovery");
+    ws2.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission("s1", submits[0]!.payload.operationId) });
+    await expect(sendP).resolves.toBeUndefined();
+    expect(outcome).toBe("resolved");
+    h.dispose();
+  });
+
+  it("a send whose recovery never comes online stays queued (no draft restore, no error) and lands once the connection returns", async () => {
+    // The old contract gave up at a 30s budget and surfaced "not sent". The
+    // outbox contract is stronger: a dead transport NEVER settles the send, it
+    // only parks it; the send lands exactly once when a connection finally
+    // appears, with the same operationId.
+    const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 5_000, freshnessMs: 60_000 } });
+    const ws1 = await openAndAttach(h);
+    ws1.serverClose(1006);
+    let outcome: "pending" | "resolved" | "rejected" = "pending";
+    const sendP = h.store.sendPrompt("never recovers");
+    void sendP.then(() => { outcome = "resolved"; }, () => { outcome = "rejected"; });
+    // A long black hole: every attempt fails, nothing surfaces.
+    for (let i = 0; i < 60; i += 1) {
+      vi.advanceTimersByTime(1_000);
+      await flush(4);
+    }
+    expect(outcome).toBe("pending");
+    expect(h.controller("s1")!.getSnapshot().optimisticEntries).toHaveLength(1);
+
+    // The connection comes back: the SAME send is delivered once.
     const ws2 = h.lastSocket();
     ws2.serverOpen();
     ws2.serverSend(ackWithLiveness());
     await flush(8);
     const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach")!;
-    expect(attachFrame).toBeTruthy();
     ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
     await flush(8);
     const submits = submitFrames(ws2);
     expect(submits).toHaveLength(1);
-    expect(submits[0]!.payload.prompt).toBe("slow recovery");
+    expect(submits[0]!.payload.prompt).toBe("never recovers");
     ws2.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission("s1", submits[0]!.payload.operationId) });
-    await expect(sendP).resolves.toBeTruthy();
+    await expect(sendP).resolves.toBeUndefined();
     expect(outcome).toBe("resolved");
-    h.dispose();
-  });
-
-  it("a send whose recovery never comes online fails honestly at the shared budget and keeps the draft", async () => {
-    const reports: Array<{ kind: string; code: string }> = [];
-    const h = createHarness({
-      liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 5_000, freshnessMs: 60_000 },
-      connectionOptions: { reportSendFailure: (report) => { reports.push({ kind: report.kind, code: report.code }); } },
-    });
-    const ws1 = await openAndAttach(h);
-    ws1.serverClose(1006);
-    const sendP = h.store.sendPrompt("never recovers");
-    let error: unknown = null;
-    void sendP.catch((cause: unknown) => { error = cause; });
-    // Black-hole every attempt; the shared budget must expire once, ~30s in.
-    for (let i = 0; i < 60 && error === null; i += 1) {
-      vi.advanceTimersByTime(1_000);
-      await flush(4);
-    }
-    expect(error).toMatchObject({ code: "timeout", retryable: true, phase: "activation" });
-    expect(reports.map((report) => report.kind)).toContain("send_failure");
+    expect(submitFrames(ws2)).toHaveLength(1);
     h.dispose();
   });
 
@@ -403,22 +422,24 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
     // iOS suspends timers while hidden. The last inbound frame can still be
     // inside freshnessMs, so a time-only isFresh() would write into a socket
     // the proxy already killed. Hiding past one heartbeat must force a probe.
-    const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 5_000, freshnessMs: 60_000, hiddenProbeThresholdMs: 5_000 } });
+    vi.useRealTimers();
+    const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 40, freshnessMs: 60_000, hiddenProbeThresholdMs: 10 } });
     const ws1 = await openAndAttach(h);
     h.changeVisibility(false);
-    // One heartbeat interval plus a moment. Real iOS freezes timers for the
-    // whole backgrounding; this is the window where lastInboundAt is still
-    // inside freshnessMs, so a time-only isFresh() would still say fresh.
-    vi.advanceTimersByTime(31_000);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     ws1.silentDead = true;
     h.changeVisibility(true);
     await flush();
     const sendP = h.store.sendPrompt("after background");
+    let outcome: "pending" | "resolved" | "rejected" = "pending";
+    void sendP.then(() => { outcome = "resolved"; }, () => { outcome = "rejected"; });
     await flush();
+    // It never raced into the half-open socket.
     expect(submitFrames(ws1)).toHaveLength(0);
-    vi.advanceTimersByTime(5_000);
-    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await flush(10);
     expect(h.sockets.length).toBeGreaterThan(1);
+    expect(outcome).toBe("pending");
     const ws2 = h.lastSocket();
     ws2.serverOpen();
     ws2.serverSend(ackWithLiveness());
@@ -488,11 +509,8 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
     h.dispose();
   });
 
-  it("a user-side rejection is not retried and is still reported", async () => {
-    const reports: Array<{ kind: string; code: string }> = [];
-    const h = createHarness({
-      connectionOptions: { reportSendFailure: (report) => { reports.push({ kind: report.kind, code: report.code }); } },
-    });
+  it("a proven-final rejection is not retried and is still reported", async () => {
+    const h = createHarness();
     const ws = await openAndAttach(h);
     const sendP = h.store.sendPrompt("no such capability");
     await flush();
@@ -506,27 +524,45 @@ describe("idle-send recovery (runtime.liveness.v1)", () => {
         delivery: "not_delivered",
         sessionId: "s1",
         operationId: submit[0]!.payload.operationId,
-        error: { code: "unsupported_capability", message: "capability missing", retryable: false },
+        error: { code: "invalid_input", message: "payload is illegal", retryable: false },
       },
     });
-    await expect(sendP).rejects.toMatchObject({ code: "unsupported_capability", retryable: false });
+    // Only invalid_input / not_found are final, and only they reach the composer.
+    await expect(sendP).rejects.toMatchObject({ code: "invalid_input", retryable: false });
     expect(submitFrames(ws)).toHaveLength(1);
     expect(h.sockets).toHaveLength(1);
-    expect(reports).toEqual([{ kind: "send_failure", code: "unsupported_capability" }]);
     h.dispose();
   });
 
-  it("without the negotiated feature a dead transport still fails bounded (retryable timeout), never a fake success", async () => {
+  it("without the negotiated feature a dead transport never fakes success: the send stays queued and lands once", async () => {
     const h = createHarness({ liveness: { heartbeatIntervalMs: 30_000, pongTimeoutMs: 10_000 } });
     const ws1 = await openAndAttach(h, ackWithoutLiveness);
     vi.advanceTimersByTime(61_000);
     // Transport dies with a delivered close; reconnects stall (never opens).
     ws1.serverClose(1006);
+    let outcome: "pending" | "resolved" | "rejected" = "pending";
     const sendP = h.store.sendPrompt("offline send");
-    // Each reconnect attempt gets the bounded connect budget, then backs off.
+    void sendP.then(() => { outcome = "resolved"; }, () => { outcome = "rejected"; });
     vi.advanceTimersByTime(10_000 + 30_000);
     await flush();
-    await expect(sendP).rejects.toMatchObject({ code: "timeout", retryable: true });
+    // Still queued: no fake success, and no give-up either.
+    expect(outcome).toBe("pending");
+    // The transport finally comes back and the queued send lands exactly once.
+    const ws2 = h.lastSocket();
+    ws2.serverOpen();
+    ws2.serverSend(ackWithoutLiveness());
+    await flush(8);
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach");
+    if (attachFrame !== undefined) {
+      ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
+      await flush(8);
+    }
+    const submits = submitFrames(ws2);
+    expect(submits).toHaveLength(1);
+    expect(submits[0]!.payload.prompt).toBe("offline send");
+    ws2.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission("s1", submits[0]!.payload.operationId) });
+    await expect(sendP).resolves.toBeUndefined();
+    expect(outcome).toBe("resolved");
     h.dispose();
   });
 });
