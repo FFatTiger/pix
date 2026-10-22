@@ -179,6 +179,8 @@ export class TestRuntimeStore {
       model?: { provider: string; modelId: string } | null;
       thinkingLevel?: ThinkingLevel | null;
     };
+    /** Queue policy while the Agent runs (the authority decides delivery). */
+    whenBusy?: "steer" | "follow_up";
     expectedEpoch?: string;
     expectedRevision?: number;
   }): Promise<unknown> {

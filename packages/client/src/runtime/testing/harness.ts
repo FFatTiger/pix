@@ -106,6 +106,13 @@ export interface RuntimeHarness {
   changeAttention(attention: { visible: boolean; focused: boolean }): void;
   lastSocket(): FakeWebSocket;
   controller(sessionId: string): SessionController | null;
+  /**
+   * Force the transport to lose its current socket and come back on a NEW one
+   * (handshake acked, no attach). This is the deterministic shape of a dropped
+   * connection: retries that are driven by connection events fire here, and no
+   * timer is involved.
+   */
+  reconnectAfterFailure(options?: { sessionId?: string; epoch?: string; lastEventId?: number }): Promise<FakeWebSocket>;
 }
 
 export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
@@ -166,6 +173,51 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
     changeAttention: (attention: { visible: boolean; focused: boolean }) => { for (const cb of attentionListeners) cb(attention); },
     lastSocket: () => sockets[sockets.length - 1]!,
     controller: (sessionId) => registry.lookup(sessionId),
+    reconnectAfterFailure: async (options) => {
+      // Tear the transport down the way a real outage does, then let the retry
+      // (driven by connection events) open a fresh socket. Everything below is
+      // microtask-only, so it works under fake timers.
+      sockets[sockets.length - 1]!.serverClose();
+      await flush();
+      const before = sockets.length;
+      connection.recoverTransport("test outage");
+      for (let attempt = 0; attempt < 40 && sockets.length === before; attempt += 1) {
+        await flush();
+      }
+      const ws = sockets[sockets.length - 1]!;
+      if (ws.readyState !== OPEN) ws.serverOpen();
+      ws.serverSend({
+        type: "handshake_ack",
+        payload: {
+          protocolVersion: 2,
+          host: { mode: "local", capabilities: ["agent"] },
+          limits: { maxUpload: 0, maxOpenSessions: 4 },
+          sessionSnapshotSupport: true,
+          acceptedFeatures: ["runtime.read-rpc.v1", "runtime.submit-turn.v1", "runtime.observe-existing.v1"],
+        },
+      });
+      await flush();
+      // Re-attach the interrupted session the way a real client does: the
+      // controller's resync drives it once the handshake acked.
+      const sessionId = options?.sessionId;
+      if (sessionId !== undefined) {
+        const attachFrame = ws.sent.filter((frame): frame is { type?: string; id?: string } =>
+          (frame as { type?: string }).type === "attach").at(-1);
+        if (attachFrame?.id !== undefined) {
+          ws.serverSend({
+            type: "snapshot",
+            id: attachFrame.id,
+            payload: snapshotPayload({
+              sessionId,
+              epoch: options?.epoch ?? "e1",
+              lastEventId: options?.lastEventId ?? 0,
+            }),
+          });
+          await flush();
+        }
+      }
+      return ws;
+    },
   };
 }
 

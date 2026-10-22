@@ -686,8 +686,6 @@ const QUEUED_TURN_UNCERTAIN_CODES: ReadonlySet<string> = new Set([
 
 /** Bounded wait for a usable transport on ONE connection attempt. */
 const OUTBOX_WIRE_WAIT_MS = 20_000;
-/** Backoff between transient delivery failures (never a give-up budget). */
-const OUTBOX_RETRY_BACKOFF_MS = 2_000;
 /**
  * The ONLY send rejections that are final. A send the authority refuses for any
  * other reason stays in the outbox and is resent with the same operationId, so
@@ -867,8 +865,6 @@ export class SessionController implements RuntimeControllerPort {
   private readonly outboxUnsubscribe: () => void;
   /** The outbox entry currently being delivered (at most one, in order). */
   private delivering: OutboxEntry | null = null;
-  /** Retry timer for the next delivery attempt (transient failures only). */
-  private outboxRetryTimer: unknown = null;
 
   constructor(readonly sessionId: string, runtimeConnection: RuntimeConnection, options: SessionControllerOptions = {}) {
     if (typeof sessionId !== "string" || sessionId.length === 0) throw new Error("SessionController sessionId must be non-empty");
@@ -928,10 +924,6 @@ export class SessionController implements RuntimeControllerPort {
   dispose(): void {
     const error: ProtocolError = { code: "unavailable", message: "runtime controller disposed", retryable: false };
     this.outboxUnsubscribe();
-    if (this.outboxRetryTimer !== null) {
-      this.clearTimeoutFn(this.outboxRetryTimer);
-      this.outboxRetryTimer = null;
-    }
     // Pending sends STAY in the outbox: disposal must never drop the user's
     // message. Only the in-flight attempt is abandoned (it is retried later).
     this.delivering = null;
@@ -1771,8 +1763,7 @@ export class SessionController implements RuntimeControllerPort {
         // because the resend carries the SAME operationId and the authority
         // dedupes on its durable receipt — so nothing surfaces to the user.
         if (this.delivering?.operationId !== entry.operationId) return;
-        this.delivering = null;
-        this.scheduleOutboxRetry();
+        this.retryOutboxOnNextConnection();
       },
       onDisconnect: () => {
         if (this.delivering?.operationId !== entry.operationId) return;
@@ -1807,8 +1798,7 @@ export class SessionController implements RuntimeControllerPort {
       return;
     }
     if (!isFinalSendRejection(admission.error)) {
-      this.delivering = null;
-      this.scheduleOutboxRetry();
+      this.retryOutboxOnNextConnection();
       return;
     }
     // Proven final: this message will never be accepted.
@@ -1825,13 +1815,27 @@ export class SessionController implements RuntimeControllerPort {
     this.scheduleOutboxDrain();
   }
 
-  /** Bounded backoff for a transient delivery failure; never a give-up budget. */
-  private scheduleOutboxRetry(): void {
-    if (this.outboxRetryTimer !== null) return;
-    this.outboxRetryTimer = this.setTimeoutFn(() => {
-      this.outboxRetryTimer = null;
-      this.scheduleOutboxDrain();
-    }, OUTBOX_RETRY_BACKOFF_MS);
+  /**
+   * A transient failure keeps the send queued and makes the next CONNECTION
+   * event deliver it. There is no backoff timer and no retry counter: a timer
+   * would either spin forever on a dead link or keep a headless test process
+   * alive, and a counter would eventually give up on the user's message. When
+   * the failure happened on a connection that still looks healthy (a retryable
+   * authority answer), the transport is reset so a real connection attempt
+   * follows and drives the retry.
+   */
+  private retryOutboxOnNextConnection(): void {
+    this.delivering = null;
+    const state = this.runtimeConnection.connectionState;
+    if (state === "idle") {
+      this.runtimeConnection.connect();
+      return;
+    }
+    if (state === "ready" || state === "handshaking" || state === "attaching" || state === "attached") {
+      this.runtimeConnection.recoverTransport("send outbox retry");
+    }
+    // Any other state is already reconnecting/unavailable; its transition back
+    // to a usable connection is the retry trigger.
   }
 
   /** Transport changes are the retry trigger — never a busy poll. */
@@ -1910,9 +1914,9 @@ export class SessionController implements RuntimeControllerPort {
           return;
         }
         finish();
-        this.scheduleOutboxRetry();
+        this.retryOutboxOnNextConnection();
       },
-      onSendFailure: () => { finish(); this.scheduleOutboxRetry(); },
+      onSendFailure: () => { finish(); this.retryOutboxOnNextConnection(); },
       onDisconnect: () => { finish(); },
     });
   }

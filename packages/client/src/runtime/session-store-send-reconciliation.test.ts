@@ -167,15 +167,16 @@ describe("SessionStore — one unconditional send", () => {
     // rollover, capacity rollover...): the send is NOT reported as failed.
     ws.serverSend({ type: "submit_turn_result", id: first.id, payload: rejected("s1", first.payload.operationId as string, "unavailable", true) });
     await flush();
-    await vi.advanceTimersByTimeAsync(2_100);
+    // The retry is driven by a NEW connection attempt, not by a timer.
+    const retrySocket = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
     await flush();
-    const frames = submitFrames(ws);
-    expect(frames.length).toBeGreaterThanOrEqual(2);
+    const frames = submitFrames(retrySocket);
+    expect(frames.length).toBeGreaterThanOrEqual(1);
     const retry = frames.at(-1)!;
     expect(retry.payload.operationId).toBe(first.payload.operationId);
     expect(retry.id).not.toBe(first.id);
 
-    ws.serverSend({ type: "submit_turn_result", id: retry.id, payload: duplicateAdmission("s1", first.payload.operationId as string, "e1", "turn-1", 41) });
+    retrySocket.serverSend({ type: "submit_turn_result", id: retry.id, payload: duplicateAdmission("s1", first.payload.operationId as string, "e1", "turn-1", 41) });
     expect(await settled).toEqual({ ok: true });
   });
 
@@ -190,13 +191,13 @@ describe("SessionStore — one unconditional send", () => {
     const first = submitFrames(ws)[0]!;
     ws.serverSend({ type: "submit_turn_result", id: first.id, payload: rejected("s1", first.payload.operationId as string, "epoch_changed", true) });
     await flush();
-    await vi.advanceTimersByTimeAsync(2_100);
+    const retrySocket = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
     await flush();
-    const retry = submitFrames(ws).at(-1)!;
+    const retry = submitFrames(retrySocket).at(-1)!;
     expect(retry.payload.operationId).toBe(first.payload.operationId);
     // The retry also carries NO fence: the epoch guess is gone for good.
     expect(retry.payload.expectedEpoch).toBeUndefined();
-    ws.serverSend({ type: "submit_turn_result", id: retry.id, payload: acceptedAdmission("s1", first.payload.operationId as string, "e1", "turn-1", 41) });
+    retrySocket.serverSend({ type: "submit_turn_result", id: retry.id, payload: acceptedAdmission("s1", first.payload.operationId as string, "e1", "turn-1", 41) });
     expect(await settled).toEqual({ ok: true });
   });
 
@@ -213,11 +214,10 @@ describe("SessionStore — one unconditional send", () => {
     const outcome = await settled;
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect((outcome.cause as { code?: string }).code).toBe("invalid_input");
-    // Nothing is retried for a proven-final rejection.
-    const before = submitFrames(ws).length;
-    await vi.advanceTimersByTimeAsync(5_000);
+    // Nothing is retried for a proven-final rejection, even after a reconnect.
+    const reloadSocket = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
     await flush();
-    expect(submitFrames(ws)).toHaveLength(before);
+    expect(submitFrames(reloadSocket)).toHaveLength(0);
   });
 
   it("resumes a send that was enqueued before a reload", async () => {
