@@ -2615,16 +2615,17 @@ span.linenumber {
 }
 
 .status-capsule-label {
-  /* Yields first. The floor is what hands the remaining squeeze to the queue
-     summary: below it the label would only render an ellipsis anyway, so the
-     second shrink step starts there. */
+  /* The only shrinkable segment: the counts and the queued-message number stay
+     whole, and the label ellipsizes into whatever width is left. */
   flex: 1 1 auto;
-  min-width: 2.5em;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
+/* Segments that must stay whole: the state counts, the todo counter, and the
+   queued-message count. Only the label ever shrinks. */
 .status-capsule-count,
 .status-capsule-agents,
 .status-capsule-queue {
@@ -2635,16 +2636,6 @@ span.linenumber {
   color: var(--text-dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-}
-
-/* The queue summary is the longest phrase on the tab, so it is the second
-   thing to give way — after the label, never before the counts. */
-.status-capsule-queue {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .status-capsule-count + .status-capsule-agents::before,

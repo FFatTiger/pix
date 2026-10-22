@@ -139,8 +139,13 @@ describe("SubagentActivityCard", () => {
   it("counts queued messages beside the todo and agent counts", () => {
     renderCard({ queuedMessages: { steering: [], followUp: ["later"] } });
     const capsule = screen.getByRole("button", { name: "Expand status" });
-    const queue = within(capsule).getByText("1 queued");
-    expect(queue.className).toBe("status-capsule-queue");
+    // The queued segment reads like the agent counts — an icon plus the number —
+    // with the full sentence in its accessible name, so it never needs clipping.
+    const queue = capsule.querySelector(".status-capsule-queue") as HTMLElement;
+    expect(queue.textContent).toBe("1");
+    expect(queue.getAttribute("title")).toBe("1 queued");
+    expect(queue.getAttribute("aria-label")).toBe("1 queued");
+    expect(queue.querySelector("svg")).toBeTruthy();
     expect(capsule.textContent).toContain("Ship the panel");
   });
 

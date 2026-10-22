@@ -133,16 +133,17 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-shell')).toContain(
       "width: var(--status-card-width)",
     );
-    // Shrink order on the tab: the label gives way first, then the pending
-    // queue summary; the state counts never shrink. Nothing paints outside the
-    // tab, so a squeezed row ellipsizes instead of overflowing.
+    // The label is the only segment that shrinks. The todo counter, the agent
+    // counts and the queued-message count all stay whole, and nothing paints
+    // outside the tab or the card.
     expect(exactRule(css, ".status-capsule-label")).toContain("flex: 1 1 auto");
-    expect(exactRule(css, ".status-capsule-label")).toContain("min-width: 2.5em");
+    expect(exactRule(css, ".status-capsule-label")).toContain("min-width: 0");
     expect(exactRule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
-    expect(exactRule(css, ".status-capsule-queue")).toContain("flex: 0 1 auto");
-    expect(exactRule(css, ".status-capsule-queue")).toContain("text-overflow: ellipsis");
-    expect(exactRule(css, ".status-capsule-queue")).toContain("min-width: 0");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents,\n.status-capsule-queue")).toContain("flex: 0 0 auto");
+    // The queue segment is a count, not a phrase, so it has no ellipsis rule of
+    // its own — truncating "N queued" would cut mid-word.
+    expect(css).not.toContain(".status-capsule-queue {\n  flex: 0 1 auto");
+    expect(exactRule(css, ".status-capsule-queue")).toBeUndefined();
     expect(exactRule(css, ".subagent-activity-capsule")).toContain("overflow: hidden");
     expect(exactRule(css, ".status-card-header")).toContain("overflow: hidden");
   });

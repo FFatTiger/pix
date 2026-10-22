@@ -267,11 +267,16 @@ export function SubagentActivityCard({
         </span>
       ) : null}
       {queued.length > 0 && (todos.length > 0 || activities.length > 0) ? (
+        // Same shape as the agent counts: an icon plus a number, with the
+        // full sentence in the accessible name. A count+word pair cannot be
+        // truncated cleanly, so this segment never shrinks.
         <span
           className="status-capsule-queue"
           title={t("desktop.pendingMessagesCount", { count: queued.length })}
+          aria-label={t("desktop.pendingMessagesCount", { count: queued.length })}
         >
-          {t("desktop.pendingMessagesCount", { count: queued.length })}
+          <ArrowBendUpLeftIcon size={12} aria-hidden="true" />
+          {queued.length}
         </span>
       ) : null}
     </>
