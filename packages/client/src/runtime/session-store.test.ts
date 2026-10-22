@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
+import { authoritySnapshot, createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
 import type { FakeWebSocket } from "./testing/harness";
 
 /**
@@ -7,8 +7,18 @@ import type { FakeWebSocket } from "./testing/harness";
  * provably fresh transport before writing, which takes a few microtask rounds;
  * polling the actual frame keeps these tests deterministic without timers.
  */
+/** The latest submit_turn frame on the wire. */
+function submitFrame(ws: FakeWebSocket) {
+  return lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string; prompt: string; images?: unknown[] } }>(ws, "submit_turn")!;
+}
+
+/** Terminal status for the turn `respondSubmit` admitted: the send's slot frees. */
+function completeTurn(ws: FakeWebSocket, operationId: string, sessionId = "s1", epoch = "e1"): void {
+  ws.serverSend({ type: "turn_status", authority: authoritySnapshot(sessionId, epoch, 1), payload: { sessionId, epoch, operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+}
+
 /** Ack one submit_turn with an accepted admission for its operation. */
-function respondSubmit(ws: FakeWebSocket, id: string, operationId: string, sessionId = "s1", epoch = "e1"): void {
+function respondSubmit(ws: FakeWebSocket, id: string, operationId: string, sessionId = "s1", epoch = "e1", lastEventId = 1): void {
   ws.serverSend({
     type: "submit_turn_result",
     id,
@@ -17,10 +27,10 @@ function respondSubmit(ws: FakeWebSocket, id: string, operationId: string, sessi
       delivery: "accepted",
       sessionId,
       epoch,
-      revision: 1,
+      revision: lastEventId,
       operationId,
       turnId: "turn-1",
-      snapshot: snapshotPayload({ sessionId, epoch, lastEventId: 1 }).snapshot,
+      snapshot: snapshotPayload({ sessionId, epoch, lastEventId }).snapshot,
       turnStatus: { sessionId, epoch, operationId, turnId: "turn-1", revision: 0, state: "admitted" },
     },
   });
@@ -34,8 +44,9 @@ async function awaitSendFrame(ws: FakeWebSocket): Promise<void> {
 }
 
 
+/** Every real Host acks submit_turn (it closes rather than ack a degraded handshake). */
 function ack(caps: string[] = ["agent"]) {
-  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
+  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true, acceptedFeatures: ["runtime.submit-turn.v1"] } };
 }
 
 /** Handshake that negotiates the atomic submit seam (sendPrompt -> submit_turn). */
@@ -325,18 +336,18 @@ describe("SessionStore — prompt stream + abort", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("sends a prompt command and streams; abort uses an independent interrupt", async () => {
+  it("sends a prompt as submit_turn and streams; abort uses an independent interrupt", async () => {
     const h = createHarness();
-    const ws = await openAndAttach(h);
+    const ws = await openAndAttachSubmit(h);
     const promptP = h.store.sendPrompt("hello");
     await flush();
     await awaitSendFrame(ws);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
-    ws.serverSend({ type: "event", payload: { type: "message_update", sessionId: "s1", streamId: "st", messageId: "m", delta: { role: "assistant", delta: { type: "text", text: "hi" } }, eventId: 2, epoch: "e1" } });
+    const submit = submitFrame(ws);
+    expect(submit.payload.prompt).toBe("hello");
+    respondSubmit(ws, submit.id, submit.payload.operationId);
+    await expect(promptP).resolves.toBeUndefined();
+    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 2, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_update", sessionId: "s1", streamId: "st", messageId: "m", delta: { role: "assistant", delta: { type: "text", text: "hi" } }, eventId: 3, epoch: "e1" } });
     await flush();
     expect(h.store.getSnapshot().streaming).toBe(true);
     const abortP = h.store.abort();
@@ -433,27 +444,25 @@ describe("SessionStore — same-epoch resend vs epoch_changed reject", () => {
     return ws2;
   }
 
-  it("same epoch: the outbox resends after reconnect (identity is the operationId, not the commandId)", async () => {
+  it("same epoch: the outbox resends after reconnect with the SAME operationId", async () => {
     const h = createHarness();
     let ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hi");
     await flush();
     await awaitSendFrame(ws);
-    const cmd1 = lastFrame<{ type: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    const first = submitFrame(ws);
     ws.serverClose(1006);
     ws = await reconnectReady(h);
     await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
-    await flush();
-    const cmd2 = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; message?: string } } }>(ws, "command")!;
-    // The SAME logical send goes out again (same message); the outbox owns the
-    // identity (operationId), so the transport commandId may be minted afresh.
-    expect(cmd2.payload.command.message).toBe("hi");
-    expect(cmd2.payload.command.commandId).toBeTruthy();
-    ws.serverSend({ type: "response", id: cmd2.id, payload: { ok: true, result: { commandId: cmd2.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
-    expect(cmd1).toBeTruthy();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach");
+    if (attachFrame) ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
+    await awaitSendFrame(ws);
+    const resent = submitFrame(ws);
+    // The SAME logical send goes out again; the authority dedupes on operationId.
+    expect(resent.payload.prompt).toBe("hi");
+    expect(resent.payload.operationId).toBe(first.payload.operationId);
+    respondSubmit(ws, resent.id, resent.payload.operationId);
+    await expect(promptP).resolves.toBeUndefined();
   });
 
   it("a follow-up sent while the transport is down waits for the resume attach and goes out on it", async () => {
@@ -1442,8 +1451,6 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
     await awaitSendFrame(ws);
     const steerP = h.store.steer("steer during prompt");
     await flush();
-    const cmds = (ws.sent as { type: string; id?: string; payload?: { command?: { type?: string; commandId?: string } } }[]).filter((f) => f.type === "command");
-    expect(cmds.length).toBe(2);
     const steerCmd = commandFrame(ws);
     expect(steerCmd.payload.command.type).toBe("steer");
     // Settle steer first; the prompt promise must remain pending.
@@ -1453,11 +1460,12 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
     void promptP.then(() => { promptSettled = true; });
     await flush();
     expect(promptSettled).toBe(false);
-    const promptCmd = cmds.find((f) => f.payload?.command?.type === "prompt");
-    respondOk(ws, promptCmd!.id!, promptCmd!.payload!.command!.commandId!, "prompt");
-    await expect(promptP).resolves.toBeTruthy();
+    const submit = submitFrame(ws);
+    respondSubmit(ws, submit.id, submit.payload.operationId);
+    await expect(promptP).resolves.toBeUndefined();
     await expect(steerP).resolves.toBeTruthy();
   });
+
 
   it("second queued turn is session_busy and never overwrites the first waiter", async () => {
     const h = createHarness();
@@ -1790,15 +1798,15 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     const promptP = h.store.sendPrompt("long running prompt");
     await flush();
     await awaitSendFrame(ws);
-    const bashP = h.store.runBash("echo x");
-    await expect(bashP).rejects.toMatchObject({ code: "session_busy", retryable: false });
-    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(promptCmd.payload.command.type).toBe("prompt");
-    promptP.catch(() => undefined);
-    respondOk(ws, promptCmd.id, promptCmd.payload.command.commandId, "prompt");
+    await expect(h.store.runBash("echo x")).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const submit = submitFrame(ws);
+    respondSubmit(ws, submit.id, submit.payload.operationId);
+    await expect(promptP).resolves.toBeUndefined();
+    // Accepted but still running: the turn keeps the slot.
+    await expect(h.store.runBash("echo y")).rejects.toMatchObject({ code: "session_busy" });
+    completeTurn(ws, submit.payload.operationId);
     await flush(20);
-    console.log("DBG pending after ack:", h.store.getSnapshot().promptPending);
-    // Prompt slot freed: a bash can now go out and must not be a hung promise.
+    // Turn terminal: a bash can now go out and must not be a hung promise.
     const nextBash = h.store.runBash("echo after prompt");
     await flush();
     await awaitSendFrame(ws);
@@ -1806,6 +1814,7 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     respondOk(ws, bashCmd.id, bashCmd.payload.command.commandId, "bash");
     await expect(nextBash).resolves.toBeUndefined();
   });
+
 
   it("abortBash sends the abort_bash interrupt and resolves on ok (independent of the bash command)", async () => {
     const h = createHarness();
@@ -2088,13 +2097,13 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     const promptP = h.store.sendPrompt("long running prompt");
     await flush();
     await awaitSendFrame(ws);
-    const compactP = h.store.compact();
-    await expect(compactP).rejects.toMatchObject({ code: "session_busy", retryable: false });
-    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(promptCmd.payload.command.type).toBe("prompt");
-    respondOk(ws, promptCmd.id, promptCmd.payload.command.commandId, "prompt");
-    await expect(promptP).resolves.toBeTruthy();
+    await expect(h.store.compact()).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const submit = submitFrame(ws);
+    expect(submit.payload.prompt).toBe("long running prompt");
+    respondSubmit(ws, submit.id, submit.payload.operationId);
+    await expect(promptP).resolves.toBeUndefined();
   });
+
 
   it("abortCompaction sends the abort_compaction interrupt and resolves on ok (independent of the compact command)", async () => {
     const h = createHarness();
@@ -2502,13 +2511,12 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     expect(view.streaming).toBe(true);
     // The view.snapshot projection reflects the overlay…
     expect(view.snapshot?.state.isPromptRunning).toBe(true);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("hi there");
+    const submit = submitFrame(ws);
+    expect(submit.payload.prompt).toBe("hi there");
     // Accepted is transport admission, not terminal state: the UI-first
     // running marker remains until authoritative events take ownership.
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
+    respondSubmit(ws, submit.id, submit.payload.operationId, "s1", "e1", 0);
+    await expect(promptP).resolves.toBeUndefined();
     view = h.store.getSnapshot();
     expect(view.streaming).toBe(true);
     // The real committed user entry consumes the content-correlated bubble.
@@ -2544,8 +2552,8 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     expect(view.liveEntries.map((entry) => entry.entryId)).toEqual(["u1", "a1", expect.stringMatching(/^optimistic:/)]);
     expect((view.liveEntries.at(-1)!.message as { content: string }).content).toBe("new question");
 
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    const submit = submitFrame(ws);
+    respondSubmit(ws, submit.id, submit.payload.operationId, "s1", "e1", 0);
     await promptP;
   });
 
@@ -2573,8 +2581,8 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     const promptP = h.store.sendPrompt("fails early");
     await flush();
     await awaitSendFrame(ws);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    const submit = submitFrame(ws);
+    respondSubmit(ws, submit.id, submit.payload.operationId, "s1", "e1", 0);
     await promptP;
     expect(h.store.getSnapshot().optimisticRunningSessionId).toBe("s1");
     wsEvent(h, { type: "prompt_error", sessionId: "s1", errorMessage: "failed", eventId: 1, epoch: "e1" });
@@ -2606,8 +2614,8 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     await flush();
     await awaitSendFrame(ws);
     expect(h.store.getSnapshot().streaming).toBe(true);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: false, error: { code: "invalid_input", message: "no", retryable: false } } });
+    const submit = submitFrame(ws);
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "invalid_input", message: "no", retryable: false } } });
     // Only a proven-final rejection reaches the composer: bubble removed and the
     // speculative overlay released (nothing was delivered).
     await expect(promptP).rejects.toMatchObject({ code: "invalid_input" });
@@ -2641,8 +2649,8 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     promptP.catch(() => undefined);
     await flush();
     await awaitSendFrame(ws);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
+    const submit = submitFrame(ws);
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "unavailable", message: "busy", retryable: true } } });
     await flush(20);
     const view = h.store.getSnapshot();
     // Still pending, still owned by the outbox, still visible — and the UI-first
@@ -2661,11 +2669,10 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     const view = h.store.getSnapshot();
     expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "look at this")).toBe(true);
     expect(view.streaming).toBe(true);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string; images?: unknown[] } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
+    const submit = submitFrame(ws);
+    expect(submit.payload.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
+    respondSubmit(ws, submit.id, submit.payload.operationId, "s1", "e1", 0);
+    await expect(promptP).resolves.toBeUndefined();
     expect(h.store.getSnapshot().streaming).toBe(true);
     ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
     ws.serverSend({ type: "event", payload: { type: "agent_end", sessionId: "s1", eventId: 2, epoch: "e1" } });

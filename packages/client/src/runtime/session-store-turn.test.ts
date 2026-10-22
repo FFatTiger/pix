@@ -450,11 +450,11 @@ describe("SessionStore — unconditional send over the negotiated seam", () => {
   });
 });
 
-describe("SessionStore — Phase 3 legacy fallback (no negotiated submit seam)", () => {
+describe("SessionStore — a connection without the submit seam", () => {
   beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("without the feature, sendPrompt uses the legacy command-envelope prompt path", async () => {
+  it("without the feature nothing goes out: the send stays queued with its bubble for the next connection", async () => {
     const h = createHarness();
     h.store.connect();
     const ws = h.lastSocket();
@@ -469,70 +469,16 @@ describe("SessionStore — Phase 3 legacy fallback (no negotiated submit seam)",
     await flush();
     await p;
 
-    const sendP = h.store.sendPrompt("hi");
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { type: string; message: string; commandId: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("hi");
+    let settled = false;
+    void h.store.sendPrompt("hi").then(() => { settled = true; }, () => { settled = true; });
+    await flush(40);
+    expect(settled).toBe(false);
     expect(lastFrame(ws, "submit_turn")).toBeUndefined();
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(sendP).resolves.toBeTruthy();
+    expect((ws.sent as { type?: string; payload?: { command?: { type?: string } } }[]).some((f) => f.type === "command" && f.payload?.command?.type === "prompt")).toBe(false);
+    expect(h.store.getSnapshot().optimisticEntries.some((c) => (c.entry.message as { content: string }).content === "hi")).toBe(true);
+    h.dispose();
   });
 
-  it("feature-off: create is identity-only, then the legacy send applies staged settings before the prompt", async () => {
-    // FINITE legacy shim: without the atomic submit seam the staged model and
-    // thinking choices cannot ride the prompt, so they are applied as ordered
-    // commands first. Delivery identity/retry stay the outbox's.
-    const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackLegacy());
-    await flush();
-    expect(h.store.getSnapshot().submitTurnEnabled).toBe(false);
-
-    const createP = h.store.createSession({ cwd: "/x", projectRoot: "/x" });
-    await flush();
-    const createFrame = lastFrame<{ type: string; id: string }>(ws, "create")!;
-    ws.serverSend({ type: "response", id: createFrame.id, payload: { ok: true, result: { sessionId: "new-1", epoch: "eN", created: true, cwd: "/x", projectRoot: "/x" } } });
-    await expect(createP).resolves.toEqual({ sessionId: "new-1" });
-    // Identity-only create issues no attach of its own.
-    expect(h.store.getSnapshot().attached).toBe(false);
-
-    // The staged settings need the exact session attached first (the old v2
-    // chain did the same): the send itself requests that observation.
-    const attachP = h.store.openSession("new-1");
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "new-1", epoch: "eN" }) });
-    await flush();
-    await attachP;
-    const sendP = h.store.sendPromptToSession("new-1", "first", undefined, { model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel: "low" });
-    type CmdFrame = { type: string; id: string; payload: { command: { commandId: string; type: string; provider?: string; level?: string; message?: string } } };
-    const lastCmd = (): CmdFrame | undefined => lastFrame<CmdFrame>(ws, "command");
-    const waitForCmd = async (type: string): Promise<CmdFrame> => {
-      for (let i = 0; i < 60; i += 1) {
-        if (lastCmd()?.payload.command.type === type) return lastCmd()!;
-        await flush(4);
-      }
-      throw new Error(`command ${type} was never sent`);
-    };
-    const ack = (frame: CmdFrame, type: string): void => {
-      ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type } } } });
-    };
-
-    // Model first, then thinking, then the prompt — each awaited in order.
-    const model = await waitForCmd("set_model");
-    expect(model.payload.command.provider).toBe("openai");
-    ack(model, "set_model");
-    const thinking = await waitForCmd("set_thinking_level");
-    expect(thinking.payload.command.level).toBe("low");
-    ack(thinking, "set_thinking_level");
-    const prompt = await waitForCmd("prompt");
-    expect(prompt.payload.command.message).toBe("first");
-    ack(prompt, "prompt");
-    await expect(sendP).resolves.toBeTruthy();
-  });
 });
 
 

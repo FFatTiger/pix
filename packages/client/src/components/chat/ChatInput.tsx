@@ -1210,14 +1210,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       try {
         accepted = onSend(message, images.length ? images : undefined, { rawValue });
       } catch (cause) {
-        // Only a final rejection reaches here (the outbox retries everything
-        // transient silently): put the text back and say "not sent".
+        // A proven-final rejection puts the text back and says "not sent".
         if (isDefiniteSendFailure(cause)) {
           commitUploadedMentionsToDraft(mentions, markerLines, files);
           setFileAttachmentError(t("desktop.sendFailed"));
           return;
         }
-        commitUploadedMentionsToDraft(mentions, markerLines, files);
+        // Anything else is still the outbox's to deliver: the submission stays
+        // accepted (editor cleared, attachment committed) and NOTHING is shown.
+        settleAcceptedSubmission({ value, images, files });
         return;
       }
       if (accepted) {

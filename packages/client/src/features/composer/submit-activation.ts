@@ -17,20 +17,17 @@
  *  - an explicit change on a runtime that cannot apply it is still carried:
  *    the runtime rejects the unsupported mutation and the send fails closed
  *    (draft restored, staged intent preserved) instead of silently running a
- *    model the user never saw;
- *  - the finite legacy Protocol-v2 shim (no negotiated
- *    `runtime.submit-turn.v1`) keeps its documented staged-only semantics —
- *    only an explicit staged choice rides the legacy set_model→prompt chain.
+ *    model the user never saw.
+ *
+ * The capture never depends on the connection: a send composed while offline
+ * waits in the outbox and is delivered later on submit_turn, carrying exactly
+ * what was displayed when the user pressed Send.
  */
 import type { StagedModelRef } from "./session-staging-store.js";
 
 export interface SubmitModelCaptureInput {
   /** The model the composer displays at the instant of the send. */
   readonly displayedModel: StagedModelRef | null;
-  /** True when `runtime.submit-turn.v1` was negotiated on this connection. */
-  readonly negotiatedSubmitTurn: boolean;
-  /** The explicit staged choice (legacy shim carries exactly this). */
-  readonly stagedModel: StagedModelRef | null;
   /** True when the selected session is the attached live runtime. */
   readonly live: boolean;
   /** Whether the live runtime advertises `runtime.model.set`. */
@@ -44,7 +41,6 @@ export interface SubmitModelCaptureInput {
  * output, no store/session access (deterministically testable).
  */
 export function captureSubmitModel(input: SubmitModelCaptureInput): StagedModelRef | null {
-  if (!input.negotiatedSubmitTurn) return input.stagedModel;
   const displayed = input.displayedModel;
   if (displayed === null) return null;
   if (

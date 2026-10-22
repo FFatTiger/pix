@@ -256,6 +256,14 @@ async function connect(gateway, handshake = hello) {
   return session;
 }
 
+test("a sessiond that does not answer system.hello closes the socket instead of acking a degraded handshake", async () => {
+  const client = new FakeClient(); // no system.hello handler: the call throws
+  const session = await connect(makeGateway(client), watchHello);
+  await wait();
+  assert.equal(session.sent.length, 0, "no handshake_ack with every feature off");
+  assert.deepEqual(session.closed, { code: 1011, reason: "sessiond unavailable" });
+});
+
 test("negotiated assistant presence: baseline and pushes become assistant_state frames only for negotiating clients", async () => {
   const client = new FakeClient();
   client.handlers["system.hello"] = { protocolVersion: 2, capabilities: [RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_ASSISTANT_PRESENCE_FEATURE] };

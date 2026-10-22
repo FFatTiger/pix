@@ -100,7 +100,7 @@ async function acquireExact(ws: FakeWebSocket, sample: ExactRuntimeApi, sessionI
 }
 
 describe("exact React hooks (4A.3.2a)", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("useRuntimeConnection: stable connect/createSession + global fields only", async () => {
@@ -525,7 +525,7 @@ describe("exact React hooks (4A.3.2a)", () => {
 });
 
 describe("SelectedSessionProvider / useSelectedRuntime (4A.3.2a)", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("returns the exact runtime for the provided selection and null for null (never holder/foreground fallback)", async () => {
@@ -626,7 +626,7 @@ describe("SelectedSessionProvider / useSelectedRuntime (4A.3.2a)", () => {
 });
 
 describe("ownership invariant (4A.3.2a)", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("provider owns exactly ONE connection + registry; hooks share those SAME owners", async () => {
@@ -681,7 +681,7 @@ describe("ownership invariant (4A.3.2a)", () => {
 });
 
 describe("exact stop via the hook routes through the registry lease (F2)", () => {
-  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   it("confirmed stop (stopped:true) clears the exact attachment lease and marks stopped", async () => {

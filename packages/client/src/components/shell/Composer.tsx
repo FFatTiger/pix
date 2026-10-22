@@ -8,7 +8,7 @@ import {
   describeWorkspaceAccess,
   type WorkspaceAccessDecision,
 } from "@/api/workspace-access";
-import { useRuntime, useRuntimeConnection, useExactActionCoordinator } from "@/runtime";
+import { useRuntime, useExactActionCoordinator } from "@/runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
 import { useSessionStaging } from "@/features/composer/session-staging-provider";
 import {
@@ -253,10 +253,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const workspace = useSelectedWorkspaceAccess(selectedSessionProp ?? null);
   const liveWorkspaceEnabled = workspace.liveWorkspaceEnabled;
   const workspaceDecision = workspace.decision;
-  // Connection-global transport surface for the negotiated submit-turn feature
-  // (legacy v2 shim vs submit-turn terminal catalog refresh).
-  const connection = useRuntimeConnection();
-  const submitTurnEnabled = connection.acceptedFeatures.includes("runtime.submit-turn.v1");
   // Imperative exact-action coordinator for a POST-CREATE session id (unknown
   // until create resolves); never the raw registry. Selected-session actions
   // go through `exact` (ID-bound exact hook).
@@ -731,14 +727,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   /** Fixed copy for the ONLY two failures a send can report: the payload is
    *  illegal, or the session is gone. Every transient failure stays silent and
    *  is retried by the outbox, so this helper is never reached for one. */
-  const describeSendFailure = useCallback((cause: unknown): string => {
-    if (cause && typeof cause === "object" && "code" in cause) {
-      const code = (cause as { code?: unknown }).code;
-      if (code === "invalid_input") return t("desktop.sendFailed");
-      if (code === "not_found") return t("desktop.sendFailed");
-    }
-    return t("desktop.sendFailed");
-  }, [t]);
+  // The ONLY two outcomes that can reach here are proven-final ones, and the one
+  // actionable local case is a home draft with NO project chosen: it cannot be
+  // sent at all, so say so instead of the generic copy.
+  const describeSendFailure = useCallback((_cause?: unknown): string => (
+    !selectedSessionId && !cwd ? t("desktop.selectProjectFirst") : t("desktop.sendFailed")
+  ), [selectedSessionId, cwd, t]);
 
   // --- send paths -------------------------------------------------------------
   // Sending is the ACTIVATION intent. Existing-session send uses the selected
@@ -767,8 +761,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         wireImages = toImageAttachments(images);
         carriedModel = captureSubmitModel({
           displayedModel: model,
-          negotiatedSubmitTurn: submitTurnEnabled,
-          stagedModel,
           live,
           modelSetSupported: hasModelSet,
           authorityModel: live && state?.model
@@ -819,14 +811,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             // captured record generation (identity fence — a newer selection,
             // including a re-selected same value, is never erased; no staged
             // record at send time is a no-op). Catalog refresh is deferred to
-            // the terminal turn status on the negotiated submit seam (Phase 3):
-            // the admission ack must not refresh the catalog before the message
-            // commits. The legacy v2 shim has no terminal status, so it
-            // refreshes at settlement as before.
+            // the terminal turn status: the admission ack must not refresh the
+            // catalog before the message commits.
             if (mountedRef.current) staging.clearMatching(targetKey, submission.revision);
-            if (!submitTurnEnabled) {
-              onSessionActivitySettled?.({ sessionId, cwd, firstMessage: message });
-            }
           })
           .catch((cause: unknown) => {
             if (!isCurrent()) return;
@@ -890,7 +877,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         });
       return false;
     },
-    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, hasModelSet, state, transcript.persistedModel, staging, submitTurnEnabled, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t, autoEnablePush],
+    [selectedSessionId, exact, exactActionsFor, isCurrent, restoreDraft, describeSendFailure, stagedModel, stagedThinking, model, live, hasModelSet, state, transcript.persistedModel, staging, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, cwd, liveWorkspaceEnabled, workspaceDecision, t, autoEnablePush],
   );
 
   // Phase 3: the catalog refresh is deferred to COMMITTED/TERMINAL turn status

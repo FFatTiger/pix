@@ -202,7 +202,9 @@ describe("ChatInput pending file attachments", () => {
     new Error("send failed"),
     new TypeError("socket closed"),
     { code: "unavailable", message: "socket closed", retryable: false },
-  ])("does not restore an uploaded file on an unproven send error: %s", async (cause) => {
+  ])("keeps the attachment committed and stays SILENT on an unproven send error: %s", async (cause) => {
+    // The outbox retries anything that is not a proven-final rejection, so the
+    // composer shows no send copy at all for these shapes.
     const uploadAttachment = uploadOk();
     const onSend = vi.fn(() => { throw cause; });
     const view = renderInput({ uploadAttachment, onSend });
@@ -210,8 +212,8 @@ describe("ChatInput pending file attachments", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "retry" } });
     fireEvent.click(screen.getByLabelText("Send message"));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("Delivery is still being confirmed");
     await waitFor(() => expect(screen.queryByText("notes.txt")).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
   });

@@ -14,7 +14,7 @@ import { HttpClientProvider } from "@/app/http-context";
 import { ContextMenuProvider } from "@/components/ContextMenu";
 import { openChatFile, transcriptScrollRef } from "@/components/chat/chat-experience-bridge";
 import { SessionStagingProvider } from "@/features/composer/session-staging-provider";
-import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
+import { authoritySnapshot, FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
 import { CaptureTestRuntime } from "@/runtime/testing/capture-test-runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
 import { ASSISTANT_NOTIFY_MESSAGE_PREFIX } from "@/lib/assistant-message";
@@ -326,6 +326,9 @@ beforeEach(() => {
   window.localStorage.removeItem("pi-sidebar-pinned-open");
   window.localStorage.removeItem(WORKSPACE_SESSION_TABS_STORAGE_KEY);
   window.localStorage.removeItem(WORKSPACE_LAST_SESSION_STORAGE_KEY);
+  // The send outbox is durable too: an earlier test's undelivered send must not
+  // be delivered into the next test's fake socket.
+  window.localStorage.removeItem("pix.send-outbox.v1");
 });
 
 function authenticatedQueryClient(): QueryClient {
@@ -365,8 +368,9 @@ function mountApp(search: WorkspaceSearch, opts: { queryClient?: QueryClient; ca
   };
 }
 
+/** Every real Host acks submit_turn (it closes rather than ack a degraded handshake). */
 function ack(): unknown {
-  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true, acceptedFeatures: [] } };
+  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true, acceptedFeatures: ["runtime.submit-turn.v1"] } };
 }
 
 function watchAck(): unknown {
@@ -1458,7 +1462,7 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(countType(ws, "stop")).toBe(0);
   });
 
-  it("observe-feature true→false releases once; later never-negotiated v2 pre-send is not cancelled", async () => {
+  it("observe-feature true→false releases once; a later send on a connection without submit_turn stays queued", async () => {
     const { rerender } = mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
     navigateMock.mockImplementation(async (options: { search: WorkspaceSearch }) => {
       rerender(options.search);
@@ -1517,23 +1521,14 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
       });
       await flush();
     });
-    const attachLegacy = await waitForAttach(next, "legacy-home");
-    expect(attachLegacy.payload?.sessionId).toBe("legacy-home");
-    await act(async () => {
-      next.serverSend({
-        type: "snapshot",
-        id: attachLegacy.id,
-        payload: snapshotPayload({ sessionId: "legacy-home", epoch: "eL", capabilities: ["runtime.prompt", "runtime.abort"] }),
-      });
-      await flush(12);
-    });
-    const prompt = lastFrame<{ type: string; payload: { sessionId: string; command: { type: string; message: string } } }>(next, "command");
-    expect(prompt?.payload.sessionId).toBe("legacy-home");
-    expect(prompt?.payload.command.type).toBe("prompt");
-    expect(prompt?.payload.command.message).toBe("first from home");
+    await act(async () => { await flush(12); });
+    // submit_turn is the only send: this connection never negotiated it, so the
+    // message stays queued for the next connection — no legacy prompt, no
+    // attach chain, and the earlier release is not repeated.
+    expect(countCommandFrames(next, "prompt")).toBe(0);
+    expect(next.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn")).toHaveLength(0);
     expect(countType(ws, "detach") + countType(next, "detach")).toBe(detachCountAfterLoss);
     expect(countType(ws, "stop") + countType(next, "stop")).toBe(0);
-    expect(next.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn")).toHaveLength(0);
   });
 
   it("global gate revoke while A is held in the background from home/file still detaches without stop", async () => {
@@ -1818,12 +1813,9 @@ async function selectDetachedB(_ws: FakeWebSocket, rerender: (s: WorkspaceSearch
   });
 }
 
-async function ackBackgroundDetach(ws: FakeWebSocket, sessionId = "A"): Promise<void> {
-  const detach = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-  await act(async () => {
-    ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId, detached: true } } });
-    await flush();
-  });
+function countCommandFrames(ws: FakeWebSocket, type: string): number {
+  return ws.sent.filter((frame) => (frame as { type?: string; payload?: { command?: { type?: string } } }).type === "command"
+    && (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === type).length;
 }
 
 function isExactSessionDetailPath(path: string, sessionId: string): boolean {
@@ -2391,8 +2383,8 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     const textarea = document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")!;
     await act(async () => { fireEvent.change(textarea, { target: { value: "running on A" } }); await flush(); });
     await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
-    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
-    expect(promptCmd.payload.command.type).toBe("prompt");
+    const submit = await waitForSubmitTurn(ws);
+    expect(submit.payload.prompt).toBe("running on A");
     expect(capturedStore!.getSnapshot().promptPending).toBe(true);
     expect(capturedStore!.getSnapshot().optimisticRunningSessionId).toBe("A");
     expect(screen.getByLabelText("Stop agent")).toBeTruthy();
@@ -2410,85 +2402,42 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     await act(async () => { await flush(); });
     expect(screen.getByLabelText("Stop agent")).toBeTruthy();
 
-    await act(async () => {
-      ws.serverSend({ type: "response", id: promptCmd.id, payload: { ok: true, result: { commandId: promptCmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-      await flush();
-    });
+    await acceptSubmitTurn(ws, { sessionId: "A", model: { provider: "openai", id: "gpt-5" } });
     expect(capturedStore!.getSnapshot().promptPending).toBe(false);
   });
 
-  it("sending from detached B applies staged model THEN thinking THEN prompt exactly once after attach", async () => {
+  it("sending from detached B carries staged model and thinking on ONE submit_turn (no settings commands, no attach chain)", async () => {
     const { rerender } = mountApp({ cwd: "/x" });
     const ws = await connectReady();
     await mountLiveA(ws);
     await selectDetachedB(ws, rerender);
     await pickModel("Claude Sonnet 4");
     await pickThinking("high");
+    const commandsBefore = countType(ws, "command");
 
     const textarea = document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")!;
     await act(async () => { fireEvent.change(textarea, { target: { value: "hello staged" } }); await flush(); });
     await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
-    // UI-first: B's bubble and running indicators are visible before A detach /
-    // B attach settles. The overlay belongs only to B, never the still-attached A.
+    // UI-first: B's bubble and running indicators are visible before admission.
+    // The overlay belongs only to B, never the still-attached A.
     expect(screen.getByText("hello staged")).toBeTruthy();
     expect(document.querySelector('[data-tab-id="session:B"]')?.getAttribute("data-running")).toBe("true");
     expect(capturedStore!.getSnapshot().optimisticRunningSessionId).toBe("B");
-    // Facade is now exact-target scoped during the transfer; it never borrows
-    // A's snapshot under B (B has no snapshot until its attach lands).
     expect(capturedStore!.getSnapshot().snapshot?.state.isPromptRunning).not.toBe(true);
 
-    // Sending B supersedes the retained background A subscription.
-    expect(countType(ws, "command")).toBe(0);
-    await ackBackgroundDetach(ws);
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("B");
-    expect(countType(ws, "command")).toBe(0);
-    await act(async () => {
-      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "B" }) });
-      await flush();
-    });
-    expect(screen.getByText("hello staged")).toBeTruthy();
-    // 1) set_model (staged, deterministic first).
-    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
-    expect(modelCmd.payload.command.type).toBe("set_model");
-    expect(modelCmd.payload.command.provider).toBe("anthropic");
-    expect(modelCmd.payload.command.modelId).toBe("claude-sonnet-4");
-    await act(async () => {
-      ws.serverSend({ type: "response", id: modelCmd.id, payload: { ok: true, result: { commandId: modelCmd.payload.command.commandId, result: { ok: true, type: "set_model" } } } });
-      await flush();
-    });
-    // 2) set_thinking_level after model resolved.
-    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
-    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
-    expect(thinkingCmd.payload.command.level).toBe("high");
-    await act(async () => {
-      ws.serverSend({ type: "response", id: thinkingCmd.id, payload: { ok: true, result: { commandId: thinkingCmd.payload.command.commandId, result: { ok: true, type: "set_thinking_level" } } } });
-      await flush();
-    });
-    // The staged settings refresh the authoritative snapshot so the selectors
-    // reflect what was just applied (getSnapshot envelope answered here).
-    const getSnap = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
-    expect(getSnap).toBeTruthy();
-    await act(async () => {
-      ws.serverSend({ type: "response", id: getSnap.id, payload: { ok: true, result: snapshotPayload({ sessionId: "B" }).snapshot } });
-      await flush();
-    });
-    // 3) prompt exactly once.
-    const promptFrames = ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt");
-    expect(promptFrames).toHaveLength(1);
-    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(promptCmd.payload.command.type).toBe("prompt");
-    expect(promptCmd.payload.command.message).toBe("hello staged");
-    await act(async () => {
-      ws.serverSend({ type: "response", id: promptCmd.id, payload: { ok: true, result: { commandId: promptCmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-      await flush();
-    });
+    const submit = await waitForSubmitTurn(ws);
+    expect(submit.payload.sessionId).toBe("B");
+    expect(submit.payload.prompt).toBe("hello staged");
+    expect(submit.payload.activationOverrides).toEqual({ model: { provider: "anthropic", modelId: "claude-sonnet-4" }, thinkingLevel: "high" });
+    // The staged choices ride the submit: no set_model / set_thinking_level / prompt commands.
+    expect(countType(ws, "command")).toBe(commandsBefore);
+    expect(ws.sent.filter((f) => (f as { type?: string }).type === "submit_turn")).toHaveLength(1);
+    await acceptSubmitTurn(ws, { sessionId: "B", model: { provider: "anthropic", id: "claude-sonnet-4" } });
     expect(capturedStore!.getSnapshot().promptPending).toBe(false);
-    expect(capturedStore!.getSnapshot().sessionId).toBe("B");
-    expect(capturedStore!.getSnapshot().attached).toBe(true);
   });
 
-  it("definite/activation failure and uncertain delivery preserve staged model/thinking", async () => {
+
+  it("a proven-final rejection preserves staged model/thinking and restores the draft", async () => {
     const { rerender } = mountApp({ cwd: "/x" });
     const ws = await connectReady();
     await mountLiveA(ws);
@@ -2498,47 +2447,15 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     const textarea = document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")!;
     await act(async () => { fireEvent.change(textarea, { target: { value: "will fail" } }); await flush(); });
     await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
-    await ackBackgroundDetach(ws);
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("B");
-    await act(async () => {
-      ws.serverSend({ type: "response", id: attach.id, payload: { ok: false, error: { code: "not_found", message: "no such session", retryable: false } } });
-      await flush();
-    });
+    await waitForSubmitTurn(ws);
+    await rejectSubmitTurn(ws, { sessionId: "B", delivery: "not_delivered" });
     expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
     expect(screen.getByLabelText("Thinking effort").textContent).toContain("high");
     expect(textarea.value).toBe("will fail");
   });
 
-  it("staged settings failure on send: NO prompt, draft restored (message back in the composer)", async () => {
-    const { rerender } = mountApp({ cwd: "/x" });
-    const ws = await connectReady();
-    await mountLiveA(ws);
-    await selectDetachedB(ws, rerender);
-    await pickModel("Claude Sonnet 4");
 
-    const textarea = document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")!;
-    await act(async () => { fireEvent.change(textarea, { target: { value: "do not deliver" } }); await flush(); });
-    await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
 
-    await ackBackgroundDetach(ws);
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    await act(async () => {
-      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "B" }) });
-      await flush();
-    });
-    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
-    expect(modelCmd.payload.command.type).toBe("set_model");
-    // Runtime rejects the staged model (unsupported) → proven non-delivery.
-    await act(async () => {
-      ws.serverSend({ type: "response", id: modelCmd.id, payload: { ok: true, result: { commandId: modelCmd.payload.command.commandId, result: { ok: false, type: "set_model", error: { code: "unsupported_capability", message: "runtime.model.set not available", retryable: false } } } } });
-      await flush();
-    });
-    expect(ws.sent.some((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt")).toBe(false);
-    expect(capturedStore!.getSnapshot().promptPending).toBe(false);
-    // The draft was restored into the composer.
-    expect(document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")?.value).toBe("do not deliver");
-  });
 
   it("LIVE selected session: model/thinking controls still issue immediate commands (no staging)", async () => {
     const { } = mountApp({ cwd: "/x", session: "A" });
@@ -2606,6 +2523,14 @@ interface SubmitTurnFrame {
   };
 }
 
+/** Wait for the outbox to put a submit_turn on the wire (a few microtask rounds). */
+async function waitForSubmitTurn(ws: FakeWebSocket): Promise<SubmitTurnFrame> {
+  await act(async () => {
+    for (let i = 0; i < 80 && lastFrame(ws, "submit_turn") === undefined; i += 1) await flush(4);
+  });
+  return lastSubmitTurn(ws);
+}
+
 function lastSubmitTurn(ws: FakeWebSocket): SubmitTurnFrame {
   const frame = lastFrame<SubmitTurnFrame>(ws, "submit_turn");
   if (!frame) throw new Error("no submit_turn frame was sent");
@@ -2640,6 +2565,14 @@ async function acceptSubmitTurn(
   return submit;
 }
 
+/** The accepted turn's terminal status (acceptSubmitTurn left the cursor at 5). */
+async function completeSubmitTurn(ws: FakeWebSocket, submit: SubmitTurnFrame, sessionId: string, epoch = "e1"): Promise<void> {
+  await act(async () => {
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot(sessionId, epoch, 5), payload: { sessionId, epoch, operationId: submit.payload.operationId, turnId: `turn-${sessionId}`, revision: 1, state: "completed" } });
+    await flush(4);
+  });
+}
+
 async function rejectSubmitTurn(
   ws: FakeWebSocket,
   options: { sessionId: string; delivery: "not_delivered" | "uncertain" },
@@ -2655,8 +2588,9 @@ async function rejectSubmitTurn(
         sessionId: options.sessionId,
         operationId: submit.payload.operationId,
         error: {
-          code: options.delivery === "not_delivered" ? "session_busy" : "unavailable",
-          message: options.delivery === "not_delivered" ? "session busy" : "transport lost",
+          // invalid_input is a proven-final rejection; unavailable is transient.
+          code: options.delivery === "not_delivered" ? "invalid_input" : "unavailable",
+          message: options.delivery === "not_delivered" ? "the payload is illegal" : "transport lost",
           retryable: options.delivery === "uncertain",
         },
       },
@@ -3076,33 +3010,58 @@ describe("Composer — steer / follow-up settle like a send", () => {
     await act(async () => { fireEvent.keyDown(textarea, { key: "Enter" }); await flush(); });
   }
 
-  it("an unresolved steer shows the unconfirmed copy and never restores the draft", async () => {
+  it("Enter while the agent runs is ONE send carrying the steer preference, and a transient failure stays silent", async () => {
+    // There is no separate steer channel any more: Enter sends the message with
+    // `whenBusy` from the「运行中按 Enter」preference and the authority decides.
     const ws = await mountRunningA();
+    window.localStorage.setItem("pi-streaming-send-mode", "steer");
     await queueWhileRunning("queued while running");
-    const frame = lastCommandFrame(ws);
-    expect(frame.payload.command.type).toBe("follow_up");
     await act(async () => {
-      ws.serverSend({ type: "response", id: frame.id, payload: { ok: false, error: { code: "unavailable", message: "sessiond request failed", retryable: true } } });
-      await flush();
+      for (let i = 0; i < 120 && lastFrame(ws, "submit_turn") === undefined && lastFrame(ws, "command") === undefined; i += 1) await flush(4);
     });
-    // The reconcile backoff timer runs, then the shared quota gives up with an
-    // uncertain settle: the message may already be queued server-side.
-    await act(async () => { await vi.advanceTimersByTimeAsync(35_000); await flush(12); });
-    expect(screen.getByRole("alert").textContent).toContain("Delivery is still being confirmed");
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string; whenBusy?: string } }>(ws, "submit_turn");
+    if (submit !== undefined) expect(submit.payload.whenBusy).toBe("steer");
+    const frame = submit ?? lastCommandFrame(ws);
+    // The legacy command envelope has no whenBusy field; it delivers the queued
+    // turn directly, which is the same intent.
+    if (submit === undefined) expect((frame.payload as { command: { type: string } }).command.type).toBe("follow_up");
+    await act(async () => {
+      ws.serverSend({
+        type: submit !== undefined ? "submit_turn_result" : "response",
+        id: frame.id,
+        payload: submit !== undefined
+          ? { status: "rejected", delivery: "not_delivered", sessionId: "A", operationId: submit.payload.operationId, error: { code: "unavailable", message: "sessiond request failed", retryable: true } }
+          : { ok: false, error: { code: "unavailable", message: "sessiond request failed", retryable: true } },
+      });
+      await flush(12);
+    });
+    // Transient: no copy at all, and the draft stays cleared (still on its way).
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(composerTextarea().value).toBe("");
   });
 
-  it("a proven non-delivery restores the draft and says it was not sent", async () => {
+  it("a proven-final steer rejection restores the draft and says it was not sent", async () => {
     const ws = await mountRunningA();
     await queueWhileRunning("queued while running");
-    const frame = lastCommandFrame(ws);
     await act(async () => {
-      ws.serverSend({ type: "response", id: frame.id, payload: { ok: false, error: { code: "session_busy", message: "queue full", retryable: false } } });
-      await flush();
+      for (let i = 0; i < 120 && lastFrame(ws, "submit_turn") === undefined && lastFrame(ws, "command") === undefined; i += 1) await flush(4);
+    });
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn");
+    const frame = submit ?? lastCommandFrame(ws);
+    await act(async () => {
+      ws.serverSend({
+        type: submit !== undefined ? "submit_turn_result" : "response",
+        id: frame.id,
+        payload: submit !== undefined
+          ? { status: "rejected", delivery: "not_delivered", sessionId: "A", operationId: submit.payload.operationId, error: { code: "invalid_input", message: "illegal", retryable: false } }
+          : { ok: false, error: { code: "invalid_input", message: "illegal", retryable: false } },
+      });
+      await flush(12);
     });
     expect(screen.getByRole("alert").textContent).toContain("The message was not sent");
     expect(composerTextarea().value).toBe("queued while running");
   });
+
 
   it("toggling a visible row sends one switch_queued_delivery addressing the runtime queue, not the visible row", async () => {
     const ws = await mountRunningA();
@@ -3564,45 +3523,23 @@ describe("AppShell — source-like sidebar rail", () => {
         id: create.id,
         payload: { ok: true, result: { sessionId: "new-button", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-button" }).snapshot } },
       });
-      await flush();
-      // Identity-only create → B's first legacy send activates it through the
-      // transitionTo path, which detaches the attached A FIRST.
-      const detach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
-      expect(detach.payload.sessionId).toBe("A");
-      ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
-      await flush();
-      const attach = await waitForAttach(ws, "new-button");
-      expect(attach.payload?.sessionId).toBe("new-button");
-      ws.serverSend({
-        type: "snapshot",
-        id: attach.id,
-        payload: snapshotPayload({
-          sessionId: "new-button",
-          capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"],
-        }),
-      });
       await flush(12);
     });
 
-    // Production capabilities start stats/tools reads after attach. The prompt
-    // transaction must already own the ordinary slot before B is promoted, so
-    // these auxiliary reads cannot steal the first Enter.
-    const commands = ws.sent.filter((frame) => (frame as { type?: string }).type === "command") as Array<{ id: string; payload: { sessionId: string; command: { commandId: string; type: string; message?: string } } }>;
-    expect(commands).toHaveLength(1);
-    const prompt = commands[0]!;
+    // Identity-only create → B's first send is ONE submit_turn on its own lane:
+    // no detach/attach chain first, so auxiliary reads cannot steal it.
+    const prompt = await waitForSubmitTurn(ws);
     expect(prompt.payload.sessionId).toBe("new-button");
-    expect(prompt.payload.command.type).toBe("prompt");
-    expect(prompt.payload.command.message).toBe("first after button");
+    expect(prompt.payload.prompt).toBe("first after button");
+    expect(countCommandFrames(ws, "prompt")).toBe(0);
     expect(navigateMock).toHaveBeenLastCalledWith({ to: "/", search: { cwd: "/x", session: "new-button" } });
     expect(screen.queryByTestId("session-select-new-button")).toBeNull();
     expect(view.queryClient.getQueryData(queryKeys.sessions.detail("new-button"))).toBeTruthy();
     // The create-time invalidation was intentionally removed: JSONL is not
-    // catalog-visible yet. Prompt settlement owns the sidebar refresh.
+    // catalog-visible yet. The turn's terminal status owns the sidebar refresh.
     invalidateSpy.mockClear();
-    await act(async () => {
-      ws.serverSend({ type: "response", id: prompt.id, payload: { ok: true, result: { commandId: prompt.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-      await flush(4);
-    });
+    await acceptSubmitTurn(ws, { sessionId: "new-button" });
+    await completeSubmitTurn(ws, prompt, "new-button");
     expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(([input]) => String(input).includes("/v1/sessions/new-button"))).toBe(true);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.sessions.lists });
   });
@@ -3621,8 +3558,7 @@ describe("AppShell — source-like sidebar rail", () => {
     const aInput = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
     fireEvent.change(aInput, { target: { value: "still running on A" } });
     fireEvent.keyDown(aInput, { key: "Enter", shiftKey: false });
-    await act(async () => { await flush(4); });
-    const firstPrompt = ws.sent.find((frame) => (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt") as { payload: { sessionId: string } };
+    const firstPrompt = await waitForSubmitTurn(ws);
     expect(firstPrompt.payload.sessionId).toBe("A");
 
     // New-session page (transient draft): navigate to the empty project folder.
@@ -3648,21 +3584,14 @@ describe("AppShell — source-like sidebar rail", () => {
         payload: { ok: true, result: { sessionId: "new-busy-b", epoch: "e2", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-busy-b" }).snapshot } },
       });
       await flush();
-      // Identity-only create → B's first legacy send transitions: detach the
-      // attached A (superseding its in-flight prompt), then attach B.
-      const detach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
-      expect(detach.payload.sessionId).toBe("A");
-      ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
-      await flush();
-      const attach = await waitForAttach(ws, "new-busy-b");
-      expect(attach.payload?.sessionId).toBe("new-busy-b");
-      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-busy-b", epoch: "e2", capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"] }) });
-      await flush(10);
     });
-
-    const prompts = ws.sent.filter((frame) => (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt") as Array<{ payload: { sessionId: string; command: { message: string } } }>;
+    // B's first send is its own submit_turn; A's in-flight send never makes it session_busy.
+    await act(async () => {
+      for (let i = 0; i < 80 && ws.sent.filter((f) => (f as { type?: string }).type === "submit_turn").length < 2; i += 1) await flush(4);
+    });
+    const prompts = ws.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn") as SubmitTurnFrame[];
     expect(prompts.map((frame) => frame.payload.sessionId)).toEqual(["A", "new-busy-b"]);
-    expect(prompts[1]!.payload.command.message).toBe("first on B");
+    expect(prompts[1]!.payload.prompt).toBe("first on B");
   });
 
   it.each(["confirm", "Enter"])("selects a custom project absent from the catalog via %s and sends in that cwd", async (method) => {
@@ -3797,22 +3726,13 @@ describe("AppShell — source-like sidebar rail", () => {
         payload: { ok: true, result: { sessionId: "new-home", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-home" }).snapshot } },
       });
       await flush();
-      // Identity-only create → the home first send activates new-home through
-      // transitionTo: detach the background A, then attach new-home.
-      const detach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
-      expect(detach.payload.sessionId).toBe("A");
-      ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
-      await flush();
-      const attach = await waitForAttach(ws, "new-home");
-      expect(attach.payload?.sessionId).toBe("new-home");
-      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-home", capabilities: ["runtime.prompt", "runtime.abort"] }) });
-      await flush(12);
     });
 
-    const prompts = ws.sent.filter((frame) => (frame as { type?: string; payload?: { command?: { type?: string } } }).type === "command" && (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt") as Array<{ payload: { sessionId: string; command: { message: string } } }>;
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]!.payload.sessionId).toBe("new-home");
-    expect(prompts[0]!.payload.command.message).toBe("first from home");
+    // Identity-only create → the home's first send targets new-home, never A.
+    const prompt = await waitForSubmitTurn(ws);
+    expect(ws.sent.filter((f) => (f as { type?: string }).type === "submit_turn")).toHaveLength(1);
+    expect(prompt.payload.sessionId).toBe("new-home");
+    expect(prompt.payload.prompt).toBe("first from home");
   });
 
   it("highlights the project only on home; a selected session owns the active-row treatment", async () => {
@@ -3960,12 +3880,9 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getAllByTestId("session-select-A")[0]!.closest('[data-running="true"]')).toBeTruthy();
     expect(projectRunning()).toBe("true");
 
-    const prompt = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
-    await act(async () => {
-      ws.serverSend({ type: "response", id: prompt.id, payload: { ok: true, result: { commandId: prompt.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-      await flush();
-    });
-    // Transport ack is not a terminal state: indicators stay running until an
+    await waitForSubmitTurn(ws);
+    await acceptSubmitTurn(ws, { sessionId: "A" });
+    // Admission is not a terminal state: indicators stay running until an
     // authoritative event takes ownership, so there is no ack→agent_start blink.
     expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
   });

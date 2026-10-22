@@ -40,10 +40,6 @@ function ackSubmitTurn(caps: string[] = ["agent"]) {
   };
 }
 
-function ackLegacy(caps: string[] = ["agent"]) {
-  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
-}
-
 async function openAndAttachTurn(h: RuntimeHarness, sessionId = "s1", epoch = "e1"): Promise<FakeWebSocket> {
   h.store.connect();
   const ws = h.lastSocket();
@@ -269,65 +265,28 @@ describe("SessionController — Phase 5A identity optimistic commit", () => {
     expect(h.store.getSnapshot().optimisticEntries.length).toBe(0);
   });
 
-  it("LEGACY fallback isolation: without the negotiated seam (no identity) the quarantined text path still removes the bubble", async () => {
+  it("text fallback: an accepted turn whose statuses carried no userEntryId is still consumed by its own commit", async () => {
     const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackLegacy());
-    await flush();
-    expect(h.store.getSnapshot().submitTurnEnabled).toBe(false);
-    const p = h.store.openSession("s1");
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
-    await flush();
-    await p;
-
-    // Legacy command-envelope prompt: the bubble carries NO identity.
-    const sendP = h.store.sendPrompt("legacy text");
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { type: string; commandId: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await flush();
-    await sendP;
+    const ws = await openAndAttachTurn(h);
+    await startAcceptedTurn(h, ws, "plain text");
     const bubble = h.store.getSnapshot().optimisticEntries;
     expect(bubble.length).toBe(1);
-    // The outbox gives even the legacy command envelope an operation identity,
-    // so the bubble is never identity-less and the quarantined text fallback is
-    // not needed for it.
     expect(bubble[0]!.identity?.operationId).toBeTruthy();
+    expect(bubble[0]!.identity?.userEntryId).toBeNull();
 
-    sendUserCommit(ws, "s1", "entry-5", 1, "legacy text");
+    sendUserCommit(ws, "s1", "entry-5", 2, "plain text");
     await flush();
     expect(h.store.getSnapshot().optimisticEntries.length).toBe(0);
   });
 
-  it("LEGACY fallback isolation: the identity-less single-candidate owner rule still applies (exact legacy semantics the Phase 7 removal deletes)", async () => {
+  it("text fallback: a single candidate without a userEntryId is the only possible owner of a user commit", async () => {
     const h = createHarness();
-    h.store.connect();
-    const ws = h.lastSocket();
-    ws.serverOpen();
-    ws.serverSend(ackLegacy());
-    await flush();
-    const p = h.store.openSession("s1");
-    await flush();
-    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1" }) });
-    await flush();
-    await p;
-    const sendP = h.store.sendPrompt("legacy one");
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await flush();
-    await sendP;
+    const ws = await openAndAttachTurn(h);
+    await startAcceptedTurn(h, ws, "one");
 
-    // Different text: the content match fails, but with exactly ONE legacy
-    // candidate it is the only possible owner (documented heuristic) —
-    // consumed. This pins the legacy semantics the Phase 7 removal deletes.
-    sendUserCommit(ws, "s1", "entry-5", 1, "unrelated committed text");
+    // Different text: the content match fails, but with exactly ONE candidate
+    // lacking a user-entry identity it is the only possible owner — consumed.
+    sendUserCommit(ws, "s1", "entry-5", 2, "unrelated committed text");
     await flush();
     expect(h.store.getSnapshot().optimisticEntries.length).toBe(0);
   });

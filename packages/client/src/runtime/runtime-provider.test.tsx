@@ -136,19 +136,8 @@ function mountComposerRerender(initialSessionId: string, live = false): { rerend
   return { rerender: (sessionId: string, nextLive = live) => view.rerender(<Tree sessionId={sessionId} live={nextLive} />) };
 }
 
-function ack(caps: string[] = ["agent"], acceptedFeatures: string[] = []) {
+function ack(caps: string[] = ["agent"], acceptedFeatures: string[] = ["runtime.submit-turn.v1"]) {
   return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true, acceptedFeatures } };
-}
-
-/**
- * Acknowledge the outbox's post-create observation attach if one is issued.
- * Without the negotiated submit seam the first send observes the exact new
- * session before prompting, so these flows no longer assume the attach exists.
- */
-async function ackPostCreateAttach(ws: FakeWebSocket, sessionId: string, capabilities: string[]): Promise<void> {
-  const attach = lastFrame<{ type: string; id: string }>(ws, "attach");
-  if (attach === undefined) return;
-  await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId, capabilities }) });
 }
 
 async function driveReady(): Promise<FakeWebSocket> {
@@ -358,15 +347,12 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
       id: create.id,
       payload: { ok: true, result: { sessionId: "new-1", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-1" }).snapshot } },
     });
-    // The first send is delivered by the outbox: without the negotiated submit
-    // seam it observes the exact new session first, then prompts.
-    await ackPostCreateAttach(ws, "new-1", ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"]);
-    await flush();
-    for (let i = 0; i < 60 && !(ws.sent as { type?: string }[]).some((f) => f.type === "command"); i += 1) await flush(4);
-
-    const commands = ws.sent.filter((frame) => (frame as { type?: string }).type === "command") as Array<{ payload: { command: { type: string; message?: string } } }>;
-    expect(commands.map((frame) => frame.payload.command.type)).toEqual(["prompt"]);
-    expect(commands[0]!.payload.command.message).toBe("first message");
+    // The first send is delivered by the outbox as ONE submit_turn.
+    const submit = await awaitSubmit(ws);
+    expect(submitFrames(ws)).toHaveLength(1);
+    expect(submit.payload.sessionId).toBe("new-1");
+    expect(submit.payload.prompt).toBe("first message");
+    expect(countCommandType(ws, "prompt")).toBe(0);
     expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("");
   });
 
@@ -397,12 +383,9 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
 
     const create = lastFrame<{ type: string; id: string }>(ws, "create")!;
     await serverSend(ws, { type: "response", id: create.id, payload: { ok: true, result: { sessionId: "new-edited", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-edited" }).snapshot } } });
-    await ackPostCreateAttach(ws, "new-edited", ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"]);
-    await flush();
-
-    const prompt = ws.sent.find((frame) => (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt") as { payload: { sessionId: string; command: { message: string } } };
+    const prompt = await awaitSubmit(ws);
     expect(prompt.payload.sessionId).toBe("new-edited");
-    expect(prompt.payload.command.message).toBe("first message");
+    expect(prompt.payload.prompt).toBe("first message");
     expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("next draft while creating");
   });
 
@@ -425,9 +408,8 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
       ok: true, result: { sessionId: "new-post-dispatch", epoch: "e1", created: true,
         cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-post-dispatch" }).snapshot },
     } });
-    await ackPostCreateAttach(ws, "new-post-dispatch", ["runtime.prompt", "runtime.abort"]);
-    for (let i = 0; i < 80 && countCommandType(ws, "prompt") === 0; i += 1) await flush(4);
-    expect(countCommandType(ws, "prompt")).toBe(1);
+    await awaitSubmit(ws);
+    expect(submitFrames(ws)).toHaveLength(1);
     // The draft stays cleared: the message is delivered by the outbox. The alert
     // here is the post-dispatch callback's own error, never a send failure —
     // a send is not blamed for an unrelated callback throwing.
@@ -531,9 +513,9 @@ describe("Composer — capability honesty + send/abort", () => {
     expect(textarea.disabled).toBe(false);
     fireEvent.change(textarea, { target: { value: "hello world" } });
     fireEvent.click(screen.getByLabelText("Send message"));
-    await flush();
-    const cmd = lastFrame<{ type: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.message).toBe("hello world");
+    const submit = await awaitSubmit(ws);
+    expect(submit.payload.prompt).toBe("hello world");
+    await acceptSubmit(ws, submit);
     // start streaming → Abort control appears
     await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
     const abortBtn = screen.getByLabelText("Stop agent");
@@ -584,10 +566,9 @@ describe("Composer — capability honesty + send/abort", () => {
       expect(requestPermission).toHaveBeenCalledTimes(1);
       // …and the device-once marker is written first.
       expect(window.localStorage.getItem(PUSH_AUTO_ENABLE_MARKER_KEY)).toBe("1");
-      // The send itself is unaffected: exactly the same prompt command.
-      await flush();
-      const cmd = lastFrame<{ type: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
-      expect(cmd.payload.command.message).toBe("hello push");
+      // The send itself is unaffected: exactly the same submit_turn.
+      const submit = await awaitSubmit(ws);
+      expect(submit.payload.prompt).toBe("hello push");
       expect(screen.queryByRole("alert")).toBeNull();
     } finally {
       vi.unstubAllGlobals();
@@ -765,7 +746,7 @@ describe("RuntimeProvider — sendPrompt images + navigateTree detached", () => 
   beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; window.localStorage.removeItem("pix.send-outbox.v1"); });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
-  it("sendPrompt with images sends an exact prompt command carrying the image attachments", async () => {
+  it("sendPrompt with images sends an exact submit_turn carrying the image attachments", async () => {
     let exposed!: NonNullable<ReturnType<typeof useRuntime>>;
     function Probe(): null {
       exposed = requireExact(useRuntime("s1"));
@@ -779,12 +760,10 @@ describe("RuntimeProvider — sendPrompt images + navigateTree detached", () => 
     let rejection: unknown = null;
     const p = exposed.sendPrompt("look at this", [{ type: "image", data: "AAAA", mimeType: "image/png" }]);
     p.then(() => { settled = true; }, (error: unknown) => { rejection = error; });
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string; images?: unknown[] } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("look at this");
-    expect(cmd.payload.command.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    const submit = await awaitSubmit(ws);
+    expect(submit.payload.prompt).toBe("look at this");
+    expect(submit.payload.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
+    await acceptSubmit(ws, submit);
     expect(settled).toBe(true);
     expect(rejection).toBeNull();
   });
@@ -1026,6 +1005,34 @@ describe("Composer — F9 stats late-settle generation on session switch", () =>
   });
 });
 
+type SubmitFrame = { type: "submit_turn"; id: string; payload: { sessionId: string; operationId: string; prompt: string; images?: unknown[] } };
+
+function submitFrames(ws: FakeWebSocket): SubmitFrame[] {
+  return ws.sent.filter((f) => (f as { type?: string }).type === "submit_turn") as SubmitFrame[];
+}
+
+/** Wait for the outbox to put its `count`-th submit_turn on the wire. */
+async function awaitSubmit(ws: FakeWebSocket, count = 1): Promise<SubmitFrame> {
+  for (let i = 0; i < 80 && submitFrames(ws).length < count; i += 1) await flush(4);
+  return submitFrames(ws)[count - 1]!;
+}
+
+/** Accept a submit_turn without moving the cursor, so the test's eventIds from 1 apply. */
+async function acceptSubmit(ws: FakeWebSocket, frame: SubmitFrame): Promise<void> {
+  const { sessionId, operationId } = frame.payload;
+  await serverSend(ws, { type: "submit_turn_result", id: frame.id, payload: {
+    status: "accepted", delivery: "accepted", sessionId, epoch: "e1", revision: 0, operationId, turnId: "turn-1",
+    snapshot: snapshotPayload({ sessionId, epoch: "e1", lastEventId: 0 }).snapshot as never,
+    turnStatus: { sessionId, epoch: "e1", operationId, turnId: "turn-1", revision: 0, state: "admitted" },
+  } });
+}
+
+/** The accepted turn's terminal status: the authority's end of the turn. */
+async function completeSubmit(ws: FakeWebSocket, frame: SubmitFrame, lastEventId: number): Promise<void> {
+  const { sessionId, operationId } = frame.payload;
+  await serverSend(ws, { type: "turn_status", authority: authoritySnapshot(sessionId, "e1", lastEventId), payload: { sessionId, epoch: "e1", operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+}
+
 function countCommandType(ws: FakeWebSocket, type: string): number {
   return ws.sent.filter((f) => {
     const frame = f as { payload?: { command?: { type?: string } } };
@@ -1067,28 +1074,26 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     expect(screen.getByLabelText("Stop agent")).toBeTruthy();
     // Transport admission is not completion: Stop remains visible through the
     // ack→agent_start gap and clears only on the authoritative terminal event.
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    const submit = await awaitSubmit(ws);
+    await acceptSubmit(ws, submit);
     expect(screen.getByLabelText("Stop agent")).toBeTruthy();
     await serverSend(ws, { type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
     expect(screen.getByLabelText("Stop agent")).toBeTruthy();
     await serverSend(ws, { type: "event", payload: { type: "agent_end", sessionId: "s1", eventId: 2, epoch: "e1" } });
-    expect(screen.getByLabelText("Stop agent")).toBeTruthy();
     await serverSend(ws, { type: "event", payload: { type: "agent_settled", sessionId: "s1", eventId: 3, epoch: "e1" } });
+    await completeSubmit(ws, submit, 3);
     expect(screen.queryByLabelText("Stop agent")).toBeNull();
   });
 
-  it("keeps an optimistic bubble and clears the draft for an unmarked command error", async () => {
+  it("keeps an optimistic bubble and clears the draft for a retryable admission error", async () => {
     mount(<><TranscriptList sessionId="s1" /><Composer sessionId="s1" live /></>);
     const ws = await driveReady();
     await driveAttach(ws);
     typeAndSend("will be rejected");
     await flush();
     expect(screen.getByText("will be rejected")).toBeTruthy();
-    // Wait for the outbox to put the send on the wire before acking it.
-    for (let i = 0; i < 80 && lastFrame(ws, "command") === undefined && lastFrame(ws, "submit_turn") === undefined; i += 1) await flush(4);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: false, error: { code: "unavailable", message: "transport flaked", retryable: true } } });
+    const submit = await awaitSubmit(ws);
+    await serverSend(ws, { type: "submit_turn_result", id: submit.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "unavailable", message: "transport flaked", retryable: true } } });
     // A retryable transport answer never fails the message: it stays queued, the
     // bubble stays, and the draft stays cleared — with NO send-failure copy.
     expect(capturedStore!.getSnapshot().optimisticEntries).toHaveLength(1);
@@ -1102,8 +1107,7 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     const ws = await driveReady();
     await driveAttach(ws);
     typeAndSend("sent before disconnect");
-    await flush();
-    expect(lastFrame(ws, "command")).toBeTruthy();
+    expect(await awaitSubmit(ws)).toBeTruthy();
     await act(async () => {
       ws.serverClose(1006);
       await vi.advanceTimersByTimeAsync(35_000);
@@ -1140,14 +1144,13 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     expect(screen.getByRole("alert").textContent).toContain("Your draft has been kept");
   });
 
-  it("an UNCERTAIN (retryable) rejection keeps the optimistic bubble (delivery ambiguous)", async () => {
+  it("a retryable rejection keeps the optimistic bubble and the draft cleared", async () => {
     mount(<><TranscriptList sessionId="s1" /><Composer sessionId="s1" live /></>);
     const ws = await driveReady();
     await driveAttach(ws);
     typeAndSend("maybe delivered");
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
+    const submit = await awaitSubmit(ws);
+    await serverSend(ws, { type: "submit_turn_result", id: submit.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "unavailable", message: "busy", retryable: true } } });
     // The bubble stays (the turn may be running server-side); the draft is NOT restored.
     expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "maybe delivered")).toBe(true);
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
@@ -1171,14 +1174,14 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     expect(screen.getByText("look at this")).toBeTruthy();
     // Speculative running overlay is active (store view), exactly like text sends.
     expect(capturedStore!.getSnapshot().streaming).toBe(true);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; images?: unknown[] } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
-    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    const submit = await awaitSubmit(ws);
+    expect(submit.payload.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
+    await acceptSubmit(ws, submit);
     await p;
     expect(capturedStore!.getSnapshot().streaming).toBe(true);
     await serverSend(ws, { type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
     await serverSend(ws, { type: "event", payload: { type: "agent_end", sessionId: "s1", eventId: 2, epoch: "e1" } });
+    await completeSubmit(ws, submit, 2);
     expect(capturedStore!.getSnapshot().streaming).toBe(false);
   });
 
@@ -1399,13 +1402,10 @@ describe("Composer — send is one unconditional operation (no activation chain)
     expect(before.map((frame) => frame.payload.command.type)).toEqual(["get_session_stats"]);
 
     typeAndSend("prompt wins now");
-    await awaitWire(ws);
-    const commands = ws.sent.filter((frame) => (frame as { type?: string }).type === "command") as Array<{ payload: { sessionId: string; command: { type: string; message?: string } } }>;
-    // The stats read settled first (it was already in flight); the send goes out
-    // on its own lane and never reports session_busy for it.
-    expect(commands.map((frame) => frame.payload.command.type)).toContain("prompt");
-    const prompt = commands.find((frame) => frame.payload.command.type === "prompt")!;
-    expect(prompt.payload.command.message).toBe("prompt wins now");
+    // The stats read is still in flight; the send goes out on its own lane and
+    // never reports session_busy for it.
+    const prompt = await awaitSubmit(ws);
+    expect(prompt.payload.prompt).toBe("prompt wins now");
     expect(capturedStore!.getSnapshot().promptPending).toBe(true);
   });
 

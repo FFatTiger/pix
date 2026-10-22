@@ -626,15 +626,12 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
         explicitActivateEnabled = requestedExplicitActivate && authorizerWired && gateVerifierWired && hostHasAgent && attachActivateCompatible;
         questionnaireEnabled = requestedQuestionnaire && buildCompatible;
       } catch {
-        runningWatchEnabled = false;
-        assistantPresenceEnabled = false;
-        readRpcEnabled = false;
-        submitTurnEnabled = false;
-        sendUnconditionalEnabled = false;
-        epochRolloverEnabled = false;
-        observeExistingEnabled = false;
-        explicitActivateEnabled = false;
-        questionnaireEnabled = false;
+        // sessiond did not answer (restarting, or briefly stalled). Acking now
+        // would hand the browser a connection with every negotiated feature off
+        // until its next reconnect — a half-working link that cannot send. Close
+        // instead: the browser reconnects and negotiates against a live sessiond.
+        session.close(CLOSE_INTERNAL_ERROR, "sessiond unavailable");
+        return;
       }
     }
     const acceptedFeatures = [

@@ -14,8 +14,6 @@ const MODEL_B = { provider: "anthropic", modelId: "claude" };
 function input(overrides: Partial<Parameters<typeof captureSubmitModel>[0]> = {}) {
   return {
     displayedModel: MODEL_A,
-    negotiatedSubmitTurn: true,
-    stagedModel: null,
     live: false,
     modelSetSupported: false,
     authorityModel: null,
@@ -23,7 +21,7 @@ function input(overrides: Partial<Parameters<typeof captureSubmitModel>[0]> = {}
   };
 }
 
-describe("captureSubmitModel — negotiated runtime.submit-turn.v1", () => {
+describe("captureSubmitModel", () => {
   it("carries an unchanged attached model when model.set is available to fence external updates", () => {
     expect(captureSubmitModel(input({ live: true, modelSetSupported: true, authorityModel: MODEL_A }))).toEqual(MODEL_A);
   });
@@ -34,7 +32,7 @@ describe("captureSubmitModel — negotiated runtime.submit-turn.v1", () => {
   });
 
   it("carries an explicit change on a live session", () => {
-    expect(captureSubmitModel(input({ live: true, stagedModel: MODEL_B, authorityModel: MODEL_A, displayedModel: MODEL_B }))).toEqual(MODEL_B);
+    expect(captureSubmitModel(input({ live: true, authorityModel: MODEL_A, displayedModel: MODEL_B }))).toEqual(MODEL_B);
   });
 
   it("a MISSING known model is never replaced by an arbitrary fallback", () => {
@@ -57,9 +55,3 @@ describe("captureSubmitModel — negotiated runtime.submit-turn.v1", () => {
   });
 });
 
-describe("captureSubmitModel — finite legacy v2 shim (no negotiated submit-turn)", () => {
-  it("keeps staged-only semantics: the legacy set_model→prompt chain never carries a display baseline", () => {
-    expect(captureSubmitModel(input({ negotiatedSubmitTurn: false, stagedModel: null, displayedModel: MODEL_A }))).toBeNull();
-    expect(captureSubmitModel(input({ negotiatedSubmitTurn: false, stagedModel: MODEL_B, displayedModel: MODEL_A }))).toEqual(MODEL_B);
-  });
-});

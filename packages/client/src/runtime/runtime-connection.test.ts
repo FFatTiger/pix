@@ -267,7 +267,7 @@ describe("RuntimeConnection — sole socket, binding and bounded attempts", () =
     expect(logical.failures).toHaveLength(0);
   });
 
-  it("disconnect rejects one-shot once while logical retry remains owner-held and re-registers fresh", () => {
+  it("disconnect notifies one-shot AND logical-retry owners; logical retry re-registers fresh", () => {
     const { connection, sockets } = makeConnection();
     const binding = connection.registerController("s1", port(record()));
     let ws = ready(connection, sockets);
@@ -284,7 +284,10 @@ describe("RuntimeConnection — sole socket, binding and bounded attempts", () =
     const firstLogical = binding.sendAttempt(commandSpec(logical, "stable-command"))!;
     ws.serverClose(1006);
     expect(oneShot.disconnects).toHaveLength(1);
-    expect(logical.disconnects).toHaveLength(0);
+    // A logical-retry lane is NOT settled with an error (no onSendFailure) but it
+    // MUST learn its attempt is gone: its retry is gated on that notification.
+    expect(logical.disconnects).toHaveLength(1);
+    expect(logical.failures).toHaveLength(0);
 
     vi.advanceTimersByTime(250);
     ws = sockets.at(-1)!;
