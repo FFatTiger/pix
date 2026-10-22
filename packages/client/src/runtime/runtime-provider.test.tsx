@@ -140,6 +140,17 @@ function ack(caps: string[] = ["agent"], acceptedFeatures: string[] = []) {
   return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true, acceptedFeatures } };
 }
 
+/**
+ * Acknowledge the outbox's post-create observation attach if one is issued.
+ * Without the negotiated submit seam the first send observes the exact new
+ * session before prompting, so these flows no longer assume the attach exists.
+ */
+async function ackPostCreateAttach(ws: FakeWebSocket, sessionId: string, capabilities: string[]): Promise<void> {
+  const attach = lastFrame<{ type: string; id: string }>(ws, "attach");
+  if (attach === undefined) return;
+  await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId, capabilities }) });
+}
+
 async function driveReady(): Promise<FakeWebSocket> {
   const store = capturedStore!;
   let ws: FakeWebSocket | undefined;
@@ -347,9 +358,11 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
       id: create.id,
       payload: { ok: true, result: { sessionId: "new-1", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-1" }).snapshot } },
     });
-    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"] }) });
+    // The first send is delivered by the outbox: without the negotiated submit
+    // seam it observes the exact new session first, then prompts.
+    await ackPostCreateAttach(ws, "new-1", ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"]);
     await flush();
+    for (let i = 0; i < 60 && !(ws.sent as { type?: string }[]).some((f) => f.type === "command"); i += 1) await flush(4);
 
     const commands = ws.sent.filter((frame) => (frame as { type?: string }).type === "command") as Array<{ payload: { command: { type: string; message?: string } } }>;
     expect(commands.map((frame) => frame.payload.command.type)).toEqual(["prompt"]);
@@ -384,8 +397,7 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
 
     const create = lastFrame<{ type: string; id: string }>(ws, "create")!;
     await serverSend(ws, { type: "response", id: create.id, payload: { ok: true, result: { sessionId: "new-edited", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-edited" }).snapshot } } });
-    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-edited", capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"] }) });
+    await ackPostCreateAttach(ws, "new-edited", ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"]);
     await flush();
 
     const prompt = ws.sent.find((frame) => (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt") as { payload: { sessionId: string; command: { message: string } } };
