@@ -84,7 +84,12 @@ describe("status card composer-strip layout", () => {
     expect(css.indexOf(".status-card-panel,\n.subagent-activity-capsule {")).toBeGreaterThan(
       css.indexOf("border: 0;\n  color: var(--text-muted);"),
     );
-    expect(rule(css, ".status-card-shell::before,\n.status-card-shell::after")).toBeDefined();
+    // The fillets overlap the edge's 1px side border and paint above the tab
+    // and the card, so the border bends into the arc instead of running on
+    // beside it (visible once the focus ring colors the edge).
+    expect(rule(css, ".status-card-shell::before,\n.status-card-shell::after")).toContain("z-index: 41");
+    expect(exactRule(css, ".status-card-shell::before")).toContain("left: -7px");
+    expect(exactRule(css, ".status-card-shell::after")).toContain("right: -7px");
     expect(css).not.toContain(".subagent-activity-capsule::before");
     expect(css).not.toContain(".subagent-activity-capsule::after");
     expect(rule(css, ".status-card-shell")).toContain("margin-left: 20px");

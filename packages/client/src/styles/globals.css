@@ -2458,22 +2458,27 @@ span.linenumber {
    sides. They live on the container both states draw their edge on: while
    expanded, the card's edge is what they meet. The tab sits inset on the
    composer's straight top edge (see .status-card-shell), so the composer
-   keeps all four rounded corners. */
+   keeps all four rounded corners.
+   Each fillet overlaps the edge's 1px side border, so its arc starts ON that
+   border, and it paints above the tab and the card (z 40) so the side border
+   ends where the arc begins — one line bending into the composer, never a
+   vertical stub beside a curve. */
 .status-card-shell::before,
 .status-card-shell::after {
   content: "";
   position: absolute;
   bottom: 0;
+  z-index: 41;
   width: 8px;
   height: 8px;
   pointer-events: none;
 }
 .status-card-shell::before {
-  left: -8px;
+  left: -7px;
   background: radial-gradient(circle at 0 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
 }
 .status-card-shell::after {
-  right: -8px;
+  right: -7px;
   background: radial-gradient(circle at 100% 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
 }
 
