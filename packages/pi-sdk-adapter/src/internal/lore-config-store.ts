@@ -22,6 +22,49 @@ const LORE_CONFIG_MAX_BYTES = 64 * 1024;
 const LORE_TEST_TIMEOUT_MS = 10_000;
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
+/** Private IPv4 ranges (CIDR base, prefix bits) where plain HTTP is allowed. */
+const PRIVATE_IPV4_RANGES: readonly (readonly [number, number])[] = [
+  [ipv4ToInt([127, 0, 0, 0]), 8], // loopback
+  [ipv4ToInt([10, 0, 0, 0]), 8], // RFC 1918
+  [ipv4ToInt([172, 16, 0, 0]), 12], // RFC 1918
+  [ipv4ToInt([192, 168, 0, 0]), 16], // RFC 1918
+  [ipv4ToInt([169, 254, 0, 0]), 16], // link-local
+  [ipv4ToInt([100, 64, 0, 0]), 10], // CGNAT shared space (Tailscale)
+];
+
+function ipv4ToInt(octets: readonly number[]): number {
+  return ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!match) return false;
+  const octets = match.slice(1).map(Number);
+  if (octets.some((octet) => octet > 255)) return false;
+  const value = ipv4ToInt(octets);
+  return PRIVATE_IPV4_RANGES.some(([base, bits]) => (value >>> (32 - bits)) === (base >>> (32 - bits)));
+}
+
+/** IPv6 ULA (fc00::/7, includes Tailscale fd7a:115c:a1e0::/48) and link-local (fe80::/10). */
+function isPrivateIpv6(hostname: string): boolean {
+  if (!hostname.startsWith("[") || !hostname.endsWith("]")) return false;
+  const address = hostname.slice(1, -1).toLowerCase();
+  return /^f[cd][0-9a-f]{2}:/.test(address) || /^fe[89ab][0-9a-f]:/.test(address);
+}
+
+/**
+ * Plain HTTP stays confined to hosts that never leave the user's own network:
+ * loopback, private LAN / link-local addresses, the Tailscale address space,
+ * and mDNS (`.local`) / Tailscale MagicDNS (`.ts.net`) names. `hostname` is
+ * the WHATWG-normalized `URL.hostname` (lowercase, IPv4 canonical, IPv6
+ * bracketed). Everything else must use https.
+ */
+function isPlainHttpAllowedHost(hostname: string): boolean {
+  if (LOOPBACK_HOSTNAMES.has(hostname)) return true;
+  if (isPrivateIpv4(hostname) || isPrivateIpv6(hostname)) return true;
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(local|ts\.net)$/.test(hostname);
+}
+
 const secureState = createPosixSecureStateBackend();
 
 function runtimeError(code: "invalid_input" | "unavailable", message: string) {
@@ -119,7 +162,7 @@ export function detectLoreConnection(env: NodeJS.ProcessEnv = process.env): Lore
   return projectLoreConnection(readSharedLoreConfig(env), env);
 }
 
-/** Parsed + validated base URL; http allowed only on loopback hosts. */
+/** Parsed + validated base URL; http allowed only on local-network hosts. */
 function validateLoreBaseUrl(raw: string): URL {
   let url: URL;
   try {
@@ -130,8 +173,8 @@ function validateLoreBaseUrl(raw: string): URL {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw runtimeError("invalid_input", "Lore base URL must be http(s)");
   }
-  if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
-    throw runtimeError("invalid_input", "plain HTTP is only allowed for loopback Lore servers");
+  if (url.protocol === "http:" && !isPlainHttpAllowedHost(url.hostname)) {
+    throw runtimeError("invalid_input", "plain HTTP is only allowed for local-network Lore servers");
   }
   return url;
 }
@@ -231,7 +274,7 @@ export async function testLoreConnection(
     return { ok: false, reason: "invalid_url" };
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return { ok: false, reason: "invalid_url" };
-  if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) return { ok: false, reason: "insecure_http" };
+  if (url.protocol === "http:" && !isPlainHttpAllowedHost(url.hostname)) return { ok: false, reason: "insecure_http" };
   const explicitToken = typeof input?.apiToken === "string" && input.apiToken.length > 0 ? input.apiToken : undefined;
   // The saved token only ever travels to the CURRENTLY EFFECTIVE base. A
   // probe of any other origin must carry its own explicit token — never the

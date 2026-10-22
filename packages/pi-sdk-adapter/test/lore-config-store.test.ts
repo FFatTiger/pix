@@ -98,16 +98,41 @@ describe("saveLoreConnection", () => {
     assert.equal("api_token" in raw, false);
   });
 
-  it("rejects plain http for non-loopback servers, accepts loopback http", async () => {
-    await assert.rejects(
-      saveLoreConnection({ baseUrl: "http://192.168.1.10:18901", apiToken: "lm_t" }, { env: baseEnv }),
-      /http/i,
-    );
-    const loopback = await saveLoreConnection(
-      { baseUrl: "http://127.0.0.1:18901", apiToken: "lm_t" },
-      { env: baseEnv },
-    );
-    assert.equal(loopback.baseUrl, "http://127.0.0.1:18901");
+  it("accepts plain http only for loopback / LAN / Tailscale / .local hosts", async () => {
+    for (const baseUrl of [
+      "http://127.0.0.1:18901",
+      "http://localhost:18901",
+      "http://[::1]:18901",
+      "http://10.1.2.3:18901",
+      "http://192.168.50.20:18901",
+      "http://172.16.0.5:18901",
+      "http://172.31.255.254:18901",
+      "http://192.168.1.10:18901",
+      "http://169.254.10.1:18901",
+      "http://100.64.0.1:18901",
+      "http://100.127.255.254:18901",
+      "http://[fd7a:115c:a1e0::1]:18901",
+      "http://[fe80::1]:18901",
+      "http://nas.local:18901",
+      "http://lore.tail1234.ts.net:18901",
+    ]) {
+      const saved = await saveLoreConnection({ baseUrl, apiToken: "lm_t" }, { env: baseEnv });
+      assert.equal(saved.baseUrl, baseUrl, baseUrl);
+    }
+    for (const baseUrl of [
+      "http://core.example",
+      "http://8.8.8.8:18901",
+      "http://172.32.0.1:18901",
+      "http://100.128.0.1:18901",
+      "http://192.169.0.1:18901",
+      "http://[2001:db8::1]:18901",
+      "http://[fd::1]:18901",
+      "http://[::ffff:10.0.0.1]:18901",
+      "http://nas.local.example.com:18901",
+      "http://nas:18901",
+    ]) {
+      await assert.rejects(saveLoreConnection({ baseUrl, apiToken: "lm_t" }, { env: baseEnv }), /http/i, baseUrl);
+    }
   });
 
   it("accepts an existing 0755 Lore directory (Lore's own mode) and keeps config.json 0600", async () => {
@@ -282,6 +307,16 @@ describe("testLoreConnection", () => {
       }) as typeof fetch }),
       { ok: false, reason: "insecure_http" },
     );
+    // A LAN http base passes the scheme gate and is actually probed.
+    let probed = "";
+    assert.deepEqual(
+      await testLoreConnection({ baseUrl: "http://192.168.50.20:18901", apiToken: "lm_t" }, { env: baseEnv, fetchImpl: (async (url: string) => {
+        probed = url;
+        return jsonResponse({ status: "ok" });
+      }) as unknown as typeof fetch }),
+      { ok: true, baseUrl: "http://192.168.50.20:18901" },
+    );
+    assert.equal(probed, "http://192.168.50.20:18901/api/health?client_type=pi");
     assert.deepEqual(
       await testLoreConnection({ baseUrl: "https://core.example" }, { env: baseEnv, fetchImpl: (async () => {
         throw new Error("must not fetch");

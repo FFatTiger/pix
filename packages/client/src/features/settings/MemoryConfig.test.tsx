@@ -83,10 +83,12 @@ describe("MemoryConfig", () => {
     });
     mount(fetchMock);
     fireEvent.click(await screen.findByRole("radio", { name: "Lore" }));
-    // Guidance links: free cloud key / self-host / manual connection.
+    // No saved connection → Lore Cloud: only the key link + token, the
+    // hosted address is implied (no address field).
+    expect((screen.getByRole("radio", { name: "Lore Cloud" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByText("Create a free cloud key")).toBeTruthy();
-    expect(screen.getByText("Self-host guide")).toBeTruthy();
-    expect(screen.getByText("Connect an existing server")).toBeTruthy();
+    expect(screen.queryByText("Self-host guide")).toBeNull();
+    expect(screen.queryByLabelText("Server address")).toBeNull();
     // Token field never echoes a value (write-only).
     const token = screen.getByLabelText("API token") as HTMLInputElement;
     expect(token.type).toBe("password");
@@ -116,5 +118,67 @@ describe("MemoryConfig", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Off" }));
     // Off keeps the page to the three-way choice — no explanatory section.
     expect(screen.queryByText(/memory_read|plugin/i)).toBeNull();
+  });
+
+  it("self-hosted shows the address field and guide links; a saved LAN address preselects it", async () => {
+    const LAN = { configured: true, baseUrl: "http://192.168.50.20:18901", source: "config", tokenConfigured: true };
+    mount(defaultFetch({ memory: { revision, provider: "lore", providerExplicit: true, lore: LAN } }));
+    expect((await screen.findByRole("radio", { name: "Self-hosted" })).getAttribute("aria-checked")).toBe("true");
+    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe("http://192.168.50.20:18901");
+    expect(screen.getByText("Self-host guide")).toBeTruthy();
+    expect(screen.getByText("Connect an existing server")).toBeTruthy();
+    expect((screen.getByLabelText("API token") as HTMLInputElement).placeholder).toMatch(/Saved/);
+    // Switching to Lore Cloud drops the address field; the saved token does
+    // not apply to the hosted endpoint, so the placeholder stops claiming it.
+    fireEvent.click(screen.getByRole("radio", { name: "Lore Cloud" }));
+    expect(screen.queryByLabelText("Server address")).toBeNull();
+    expect((screen.getByLabelText("API token") as HTMLInputElement).placeholder).not.toMatch(/Saved/);
+    // Back to self-hosted restores the saved address.
+    fireEvent.click(screen.getByRole("radio", { name: "Self-hosted" }));
+    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe("http://192.168.50.20:18901");
+  });
+
+  it("a test REQUEST failure is shown, never swallowed", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/v1/settings/memory/lore-test")) {
+        return json({ error: { code: "RATE_LIMITED", message: "slow down" } }, { status: 429 });
+      }
+      if (path.includes("/v1/settings/memory")) return json({ revision, provider: "lore", providerExplicit: true, lore: LORE_CONNECTED });
+      return json({});
+    });
+    mount(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Too many tests/);
+  });
+
+  it("an insecure-http probe result shows the LAN/Tailscale rule", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/v1/settings/memory/lore-test")) return json({ ok: false, reason: "insecure_http" });
+      if (path.includes("/v1/settings/memory")) return json({ revision, provider: "lore", providerExplicit: true, lore: LORE_CONNECTED });
+      return json({});
+    });
+    mount(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/HTTPS.*LAN, Tailscale/);
+  });
+
+  it("a failed save's error clears when another provider is picked", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.includes("/v1/settings/memory") && init?.method === "PUT") {
+        return json({ error: { code: "UNAVAILABLE", message: "x" } }, { status: 503 });
+      }
+      if (path.includes("/v1/settings/memory")) return json({ revision, provider: "local", providerExplicit: false, lore: LORE_NONE });
+      return json({});
+    });
+    mount(fetchMock);
+    fireEvent.click(await screen.findByRole("radio", { name: "Off" }));
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    expect(await screen.findByText("Failed to save memory settings")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "Local memory" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Off" }));
+    expect(screen.queryByText("Failed to save memory settings")).toBeNull();
   });
 });
