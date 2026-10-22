@@ -163,7 +163,7 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
     failed.dispose();
   });
 
-  it("old-daemon create omission never guesses revision zero and attaches first", async () => {
+  it("old-daemon create omission never guesses a revision: the send carries no fence at all", async () => {
     const h = createHarness({ storeOptions: { maxControllers: 2 } });
     const ws = await ready(h);
     const create = h.store.createSession({ cwd: "/x", projectRoot: "/x" });
@@ -173,15 +173,30 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
     await create;
     const send = h.store.sendPromptToSession("legacy", "first");
     await flush();
-    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn")).toHaveLength(0);
-    const attach = lastFrame<{ type: "attach"; id: string; payload: Record<string, unknown> }>(ws, "attach")!;
-    expect(attach.payload).toEqual({ sessionId: "legacy" });
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "legacy", epoch: "eL", lastEventId: 9 }) });
-    await flush();
-    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { expectedRevision?: number } }>(ws, "submit_turn")!;
-    expect(submit.payload.expectedRevision).toBe(9);
+    // The create result omitted lastEventId. There is nothing to attach to and
+    // nothing to guess: the send goes out unfenced and the authority decides.
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { expectedEpoch?: string; expectedRevision?: number; operationId: string } }>(ws, "submit_turn")!;
+    expect(submit.payload.expectedEpoch).toBeUndefined();
+    expect(submit.payload.expectedRevision).toBeUndefined();
+    // No speculative pre-send attach is needed for an atomic admission.
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(0);
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: submit.id,
+      payload: {
+        status: "accepted",
+        delivery: "accepted",
+        sessionId: "legacy",
+        epoch: "eL",
+        revision: 9,
+        operationId: submit.payload.operationId,
+        turnId: "turn-1",
+        snapshot: snapshotPayload({ sessionId: "legacy", epoch: "eL", lastEventId: 9 }).snapshot as never,
+        turnStatus: { sessionId: "legacy", epoch: "eL", operationId: submit.payload.operationId, turnId: "turn-1", revision: 0, state: "admitted" },
+      },
+    });
+    await expect(send).resolves.toBeUndefined();
     h.dispose();
-    await send.catch(() => undefined);
   });
 
   it("A→B→A retains A snapshot/history/cursor, sends observation detach only, and resumes exact cursor", async () => {
@@ -1041,9 +1056,11 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
     const activateBeforePromote = ws.sent.filter((frame) => (frame as { type?: string }).type === "activate").length;
     const stopBeforePromote = ws.sent.filter((frame) => (frame as { type?: string }).type === "stop").length;
     expect(h.controller("created-home")?.getSnapshot()).toMatchObject({
+      // An un-accepted send owns only its bubble: `turnActive` starts at
+      // acceptance, so before the ACK the lane is pending but not tracked.
       promptPending: true,
-      turnActive: true,
-      turnDelivery: "in_flight",
+      turnActive: false,
+      turnDelivery: null,
     });
 
     expect(h.registry.promoteCreatedPresentation("created-home")).toBe(true);
@@ -1079,7 +1096,9 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
       Promise.reject(new Error("accepted admission after new-home promotion must resolve the original submit promise")),
     ]);
     expect(firstSettled).toBe(1);
-    expect(firstValue).toMatchObject({ status: "accepted", operationId: firstOperationId, turnId: "turn-H1" });
+    // The outbox resolves the send on ACCEPTANCE (the message is now the
+    // authority's responsibility). The admission identity lives on the view.
+    expect(firstValue).toBeUndefined();
     expect(h.controller("created-home")?.getSnapshot()).toMatchObject({
       promptPending: false,
       turnActive: true,
@@ -1150,7 +1169,9 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
     const second = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string; prompt: string } }>(ws, "submit_turn")!;
     expect(second.payload.prompt).toBe("second from home");
     expect(second.payload.operationId).not.toBe(firstOperationId);
-    expect(h.controller("created-home")?.getSnapshot()).toMatchObject({ turnActive: true, turnDelivery: "in_flight" });
+    // The first turn already reached terminal, so the SECOND send is a fresh
+    // pending lane: pending bubble, no tracked turn until it is accepted.
+    expect(h.controller("created-home")?.getSnapshot()).toMatchObject({ turnActive: false, turnDelivery: null, promptPending: true });
     ws.serverSend({
       type: "submit_turn_result",
       id: second.id,

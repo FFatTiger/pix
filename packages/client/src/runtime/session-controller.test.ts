@@ -107,9 +107,12 @@ describe("SessionController — immutable exact-session ownership", () => {
     const next = controller.submitTurn({ sessionId: "A", prompt: "valid next turn" }).catch((error: unknown) => error);
     await flush();
     expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn")).toHaveLength(1);
-    expect(controller.getSnapshot().turnActive).toBe(true);
+    // An un-accepted send is NOT a tracked turn: the bubble is the send receipt,
+    // `turnActive` starts only once the authority accepted it.
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(1);
+    expect(controller.getSnapshot().turnActive).toBe(false);
     controller.dispose();
-    await next;
+    void next;
     expect(settlements).toBe(1);
     h.dispose();
   });
@@ -127,14 +130,22 @@ describe("SessionController — immutable exact-session ownership", () => {
     const pendingA = controllerA.sendPrompt("prompt A").catch((error) => error);
     const pendingB = controllerB.submitTurn({ sessionId: "B", prompt: "prompt B" }).catch((error) => error);
     await flush();
-    expect(controllerA.getSnapshot().turnActive).toBe(true);
-    expect(controllerB.getSnapshot().turnActive).toBe(true);
+    // Each controller owns its own optimistic bubble (the send receipt) and the
+    // two never leak into each other. `turnActive` starts only on acceptance.
+    expect(controllerA.getSnapshot().turnActive).toBe(false);
+    expect(controllerB.getSnapshot().turnActive).toBe(false);
     expect(controllerA.getSnapshot().optimisticEntries.map((entry) => entry.sessionId)).toEqual(["A"]);
     expect(controllerB.getSnapshot().optimisticEntries.map((entry) => entry.sessionId)).toEqual(["B"]);
+    expect(controllerA.getSnapshot().promptPending).toBe(true);
+    expect(controllerB.getSnapshot().promptPending).toBe(true);
     controllerA.dispose();
     controllerB.dispose();
-    await pendingA;
-    await pendingB;
+    // An un-delivered send is parked in the outbox, so it never settles on its
+    // own. Disposal keeps it queued (nothing is dropped) — awaiting it would
+    // hang, which is exactly the guarantee we want.
+    expect(h.controller("A")).toBeNull();
+    void pendingA;
+    void pendingB;
     h.dispose();
   });
 

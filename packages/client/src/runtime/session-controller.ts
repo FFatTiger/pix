@@ -59,6 +59,7 @@ import {
   RUNTIME_OBSERVE_EXISTING_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
+  MAX_IMAGE_ATTACHMENTS,
   type BrowserRuntimeAttachParams,
   type CorrelatedRuntimeCommandResult,
   type ExtensionUiInteractiveMethod,
@@ -452,6 +453,8 @@ interface PromptTransaction {
   readonly sessionId: string;
   /** Send identity that owns this bubble (see the send outbox). */
   readonly operationId: string;
+  /** LC-02 provenance captured when the SEND STARTED (not at admission). */
+  readonly provenance: PresentationProvenance | null;
   phase: "activating" | "dispatching";
 }
 
@@ -1418,7 +1421,7 @@ export class SessionController implements RuntimeControllerPort {
       }
     }
     const optimisticId = this.appendOptimisticUserEntry(sessionId, message);
-    this.promptTransaction = { optimisticId, sessionId, operationId, phase: "activating" };
+    this.promptTransaction = { optimisticId, sessionId, operationId, provenance: this.captureProvenance(), phase: "activating" };
     this.bindOptimisticIdentity(optimisticId, { operationId, turnId: null, userEntryId: null, finalLeafId: null });
     if (!this.optimisticPromptRunning) this.optimisticPromptRunning = true;
     this.optimisticPromptSessionId = sessionId;
@@ -1625,6 +1628,16 @@ export class SessionController implements RuntimeControllerPort {
         retryable: false,
       } satisfies ProtocolError));
     }
+    // Illegal payloads fail locally BEFORE the outbox: an over-limit image set
+    // would otherwise be rejected by the wire schema on every retry, and the
+    // user would wait forever for a message that can never be accepted.
+    if (input.images !== undefined && input.images.length > MAX_IMAGE_ATTACHMENTS) {
+      return Promise.reject(this.activationFailure({
+        code: "invalid_input",
+        message: "too many image attachments",
+        retryable: false,
+      } satisfies ProtocolError));
+    }
     return this.enqueueSend({
       sessionId,
       prompt: input.prompt,
@@ -1788,15 +1801,17 @@ export class SessionController implements RuntimeControllerPort {
       const settlement = this.outboxSettlements.get(entry.operationId);
       this.outboxSettlements.delete(entry.operationId);
       settlement?.resolve(undefined);
-      // Capture the bubble identity BEFORE the transaction is released (the
-      // accepted turn keeps owning it until the authority commits the entry).
-      const optimisticId = this.promptTransaction?.operationId === entry.operationId
-        ? this.promptTransaction.optimisticId
-        : null;
-      if (this.promptTransaction !== null && this.promptTransaction.operationId === entry.operationId) {
-        this.settlePromptTransaction(this.promptTransaction, { removeBubble: false, clearRunning: false });
+      // Capture the bubble identity and the SEND-START provenance BEFORE the
+      // transaction is released (the accepted turn keeps owning the bubble
+      // until the authority commits the entry, and a late admission for a since
+      // navigated-away session must stay background).
+      const tx = this.promptTransaction?.operationId === entry.operationId ? this.promptTransaction : null;
+      const optimisticId = tx?.optimisticId ?? null;
+      const provenance = tx?.provenance ?? this.captureProvenance();
+      if (tx !== null) {
+        this.settlePromptTransaction(tx, { removeBubble: false, clearRunning: false });
       }
-      this.adoptSentTurn(entry, admission, optimisticId);
+      this.adoptSentTurn(entry, admission, optimisticId, provenance);
       this.notify();
       this.scheduleOutboxDrain();
       return;
@@ -1900,8 +1915,17 @@ export class SessionController implements RuntimeControllerPort {
       disconnectPolicy: "logical_retry",
       onSent: () => undefined,
       onFrame: (frame) => {
-        if (frame.type !== "response" || frame.id !== commandId) return;
+        // The response envelope is correlated by its own `id`; the business
+        // commandId lives inside the result. Matching the two would never
+        // settle a legacy send.
+        if (frame.type !== "response") return;
         const payload = frame.payload;
+        if (!payload.ok && payload.error.code === "not_found") {
+          // Nothing else can correlate this response to our prompt.
+          return;
+        }
+        if (payload.ok && typeof (payload.result as { commandId?: unknown }).commandId === "string"
+          && (payload.result as { commandId: string }).commandId !== commandId) return;
         if (payload.ok) {
           this.outbox.dequeue(entry.operationId);
           const settlement = this.outboxSettlements.get(entry.operationId);
@@ -3082,8 +3106,7 @@ export class SessionController implements RuntimeControllerPort {
    * authority's responsibility; this only follows its status so the UI can
    * reconcile the bubble and refresh the catalog at terminal.
    */
-  private adoptSentTurn(entry: OutboxEntry, admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>, optimisticId: string | null): void {
-    const provenance = this.captureProvenance();
+  private adoptSentTurn(entry: OutboxEntry, admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>, optimisticId: string | null, provenance: PresentationProvenance | null): void {
     if (this.pendingTurn !== null) {
       // A previous accepted turn is still tracked (this send may have been
       // queued behind it). Its bubble is consumed by its own committed entry,

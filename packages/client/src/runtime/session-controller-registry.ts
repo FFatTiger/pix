@@ -746,6 +746,8 @@ export class SessionControllerRegistry {
    *  - `activation` is the finite legacy v2 send chain (acquiring attach).
    */
   private requestObservationFor(sessionId: string, context: ObservationRequestContext): Promise<void> {
+    // A send whose presentation was already superseded completes in the
+    // BACKGROUND: it must never steal the lease.
     if (context.provenance !== null && !this.isPresentationCurrent(context.provenance)) {
       return Promise.resolve();
     }

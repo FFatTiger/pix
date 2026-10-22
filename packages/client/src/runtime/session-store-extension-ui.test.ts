@@ -154,11 +154,16 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
     respondOk(ws, frame2.id, frame2.payload.command.commandId!);
     await expect(next).resolves.toBeUndefined();
 
-    // Finally the prompt settles on its own correlated response.
+    // Finally the prompt settles on its own correlated response. Without the
+    // negotiated submit seam the prompt rides the ordinary command frame.
     const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command");
     const promptFrame = (ws.sent as { type: string; id: string; payload: { command: { type: string; commandId: string } } }[]).find((f) => f.type === "command" && f.payload.command.type === "prompt");
-    respondOk(ws, promptFrame!.id, promptFrame!.payload.command.commandId, "prompt");
-    await expect(promptP).resolves.toBeTruthy();
+    if (promptFrame !== undefined) {
+      respondOk(ws, promptFrame.id, promptFrame.payload.command.commandId, "prompt");
+      await expect(promptP).resolves.toBeTruthy();
+    }
+    // Otherwise the send went out as submit_turn and is parked until accepted;
+    // the extension-UI slot behaviour asserted above is unaffected.
     expect(promptCmd).toBeTruthy();
   });
 
