@@ -2514,10 +2514,10 @@ html.dark .catalog-meta-item--error {
 .settings-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 
 /* Inline unsaved-changes guard inside the settings dialog. */
-.settings-guard-backdrop { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0, 0, 0, .35); }
-.settings-guard-card { width: min(360px, 100%); padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); box-shadow: 0 8px 32px rgba(0, 0, 0, .22); }
-.settings-guard-title { margin: 0 0 6px; font-size: 14px; font-weight: var(--text-weight-strong); color: var(--text); }
-.settings-guard-body { margin: 0 0 14px; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+.settings-guard-backdrop { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0, 0, 0, .5); }
+.settings-guard-card { width: min(400px, 100%); padding: 20px; border-radius: 12px; background: var(--surface-frame); box-shadow: 0 12px 40px rgba(0, 0, 0, .4); }
+.settings-guard-title { margin: 0 0 8px; font-size: 15px; font-weight: var(--text-weight-strong); color: var(--text); }
+.settings-guard-body { margin: 0 0 20px; font-size: 13px; line-height: 1.55; color: var(--text-muted); }
 .settings-guard-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 640px) {

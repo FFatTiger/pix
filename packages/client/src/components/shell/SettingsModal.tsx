@@ -39,6 +39,7 @@ import { SkillsConfig } from "@/features/settings/SkillsConfig";
 import { SubagentSettingsConfig } from "@/features/settings/SubagentSettingsConfig";
 import { ToolsConfig } from "@/features/settings/ToolsConfig";
 import { SettingsDraftContext, type SettingsDraftApi, type SettingsDraftHandle } from "@/features/settings/settings-draft";
+import { SettingsButton } from "@/features/settings/settings-ui";
 import type { SettingsPageId } from "@/features/settings/settings-page";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
@@ -326,13 +327,11 @@ export function SettingsModal({
                 <h3 className="settings-guard-title">{t("desktop.settingsGuardTitle")}</h3>
                 <p className="settings-guard-body">{t("desktop.settingsGuardBody")}</p>
                 <div className="settings-guard-actions">
-                  <button type="button" className="settings-nav-item" onClick={() => setPendingAction(null)} style={{ border: "1px solid var(--border)", borderRadius: "var(--control-radius)" }}>
+                  <SettingsButton onClick={() => setPendingAction(null)}>
                     {t("desktop.settingsGuardKeep")}
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-nav-item"
-                    style={{ border: "1px solid color-mix(in srgb, var(--status-danger) 30%, transparent)", borderRadius: "var(--control-radius)", color: "var(--status-danger)" }}
+                  </SettingsButton>
+                  <SettingsButton
+                    variant="danger"
                     onClick={() => {
                       const action = pendingAction;
                       setPendingAction(null);
@@ -340,7 +339,7 @@ export function SettingsModal({
                     }}
                   >
                     {t("desktop.settingsGuardDiscard")}
-                  </button>
+                  </SettingsButton>
                 </div>
               </div>
             </div>
