@@ -1716,7 +1716,7 @@ export class SessionController implements RuntimeControllerPort {
       },
       () => {
         // The transport is not usable right now. Nothing is lost: the entry
-        // stays queued and the next transport change retries it.
+        // stays queued and the next usability event retries it.
         settled = true;
         if (this.delivering?.operationId !== entry.operationId) return;
         this.delivering = null;
@@ -1734,7 +1734,6 @@ export class SessionController implements RuntimeControllerPort {
       await this.whenSendable(OUTBOX_WIRE_WAIT_MS);
     })();
   }
-
   private sendOutboxEntry(entry: OutboxEntry): void {
     const request: SubmitTurnRequest = {
       sessionId: entry.sessionId,
@@ -1789,10 +1788,15 @@ export class SessionController implements RuntimeControllerPort {
       const settlement = this.outboxSettlements.get(entry.operationId);
       this.outboxSettlements.delete(entry.operationId);
       settlement?.resolve(undefined);
+      // Capture the bubble identity BEFORE the transaction is released (the
+      // accepted turn keeps owning it until the authority commits the entry).
+      const optimisticId = this.promptTransaction?.operationId === entry.operationId
+        ? this.promptTransaction.optimisticId
+        : null;
       if (this.promptTransaction !== null && this.promptTransaction.operationId === entry.operationId) {
         this.settlePromptTransaction(this.promptTransaction, { removeBubble: false, clearRunning: false });
       }
-      this.adoptSentTurn(entry, admission);
+      this.adoptSentTurn(entry, admission, optimisticId);
       this.notify();
       this.scheduleOutboxDrain();
       return;
@@ -1832,14 +1836,29 @@ export class SessionController implements RuntimeControllerPort {
       return;
     }
     if (state === "ready" || state === "handshaking" || state === "attaching" || state === "attached") {
+      // The answer came over a socket that still looks healthy, so no connection
+      // event will follow on its own: reset the transport so ONE real attempt
+      // does, and let that attempt drive the retry.
       this.runtimeConnection.recoverTransport("send outbox retry");
+      return;
     }
     // Any other state is already reconnecting/unavailable; its transition back
-    // to a usable connection is the retry trigger.
+    // to a usable connection is the retry trigger (`onTransportForOutbox`).
+    // Nothing is armed here: with no transition there is nothing to recover from.
   }
 
   /** Transport changes are the retry trigger — never a busy poll. */
   private onTransportForOutbox(): void {
+    if (this.delivering !== null) return;
+    this.scheduleOutboxDrain();
+  }
+
+  /**
+   * Re-drain after a sendable transport appeared. `whenSendable` may resolve
+   * without any connection-state change (the socket was already usable when the
+   * wait began), so the drain cannot rely on the subscription alone.
+   */
+  private onOutboxWireReady(): void {
     if (this.delivering !== null) return;
     this.scheduleOutboxDrain();
   }
@@ -3073,9 +3092,7 @@ export class SessionController implements RuntimeControllerPort {
    * authority's responsibility; this only follows its status so the UI can
    * reconcile the bubble and refresh the catalog at terminal.
    */
-  private adoptSentTurn(entry: OutboxEntry, admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>): void {
-    const tx = this.promptTransaction;
-    const optimisticId = tx !== null && tx.operationId === entry.operationId ? tx.optimisticId : null;
+  private adoptSentTurn(entry: OutboxEntry, admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>, optimisticId: string | null): void {
     const provenance = this.captureProvenance();
     if (this.pendingTurn !== null) {
       // A previous accepted turn is still tracked (this send may have been
@@ -3086,11 +3103,11 @@ export class SessionController implements RuntimeControllerPort {
       this.pendingTurn = null;
     }
     if (optimisticId !== null) {
-      this.bindOptimisticIdentity(optimisticId, {
-        operationId: entry.operationId,
-        turnId: admission.turnId ?? null,
-        userEntryId: admission.turnStatus.userEntryId ?? null,
-        finalLeafId: null,
+      // Refine the bubble's authority identity (first answer wins per field), so
+      // the committed user entry consumes it by exact id.
+      this.updateOptimisticIdentity(optimisticId, {
+        ...(admission.turnId === undefined ? {} : { turnId: admission.turnId }),
+        ...(admission.turnStatus.userEntryId === undefined ? {} : { userEntryId: admission.turnStatus.userEntryId }),
       });
     }
     // Accepted admission consumes the one-shot created submit fence.
