@@ -1663,7 +1663,10 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const { port } = await newRuntime(harness);
         const pending = port.execute({ type: "prompt", message: "long prompt" });
         await delay(30);
-        const busy = await port.execute({ type: "prompt", message: "again" });
+        // A second PROMPT while one runs is queued by submitTurn, not refused;
+        // the surviving explicit busy surface is a concurrent mutation command
+        // that cannot overlap a running turn.
+        const busy = await port.execute({ type: "compact" });
         assertErrorCode(busy, "session_busy");
         assert.equal(busy.error.retryable, true);
         await port.interrupt({ type: "abort" });

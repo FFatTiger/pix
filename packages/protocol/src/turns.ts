@@ -14,8 +14,9 @@ import { RuntimeSnapshotSchema } from "./snapshot.js";
 export const PromptDispositionSchema = z.enum(["started", "handled", "queued"]);
 export type PromptDisposition = z.infer<typeof PromptDispositionSchema>;
 
-/** Wire projection of runtime-core `QueuedInputDisposition`. */
-export const QueuedInputDispositionSchema = z.enum(["handled", "queued"]);
+/** Wire projection of runtime-core `QueuedInputDisposition`. `started` means the
+ * runtime found the session idle and ran the message as a new turn. */
+export const QueuedInputDispositionSchema = z.enum(["handled", "queued", "started"]);
 export type QueuedInputDisposition = z.infer<typeof QueuedInputDispositionSchema>;
 
 /** Protocol-v2 additive atomic prompt admission (runtime.submit-turn.v1). */

@@ -1547,3 +1547,39 @@ test("send rejects ONLY invalid_input / not_found; every other failure stays ret
   await isolated.shutdown();
   await service.shutdown();
 });
+
+test("send race: a queued delivery whose turn already ended starts a turn instead of rejecting", async () => {
+  // sessiond decides "queue it" by observing the running state, but the turn can
+  // finish before the queue command arrives. The runtime answers that with a
+  // not-running failure (session_busy / conflict); the message is still owed
+  // delivery, so it must start a turn with the SAME operationId.
+  const ledger = receiptLedger();
+  const workers = new FakeWorkerFactory({
+    snapshot: promptCapSnapshot(),
+    commandDelayMs: 40,
+    queuedSendFindsIdleTurn: true,
+  });
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId) { return { cwd: `/${sessionId}`, projectRoot: `/${sessionId}` }; } },
+    workerFactory: workers,
+    sentMessages: ledger,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  const activated = await service.activate("s");
+  const first = await service.submitTurn({ sessionId: "s", prompt: "first", operationId: "op-race-1" });
+  assert.equal(first.status, "accepted");
+
+  // The previous turn ends while this send is being admitted as a queued one.
+  const race = await service.submitTurn({ sessionId: "s", prompt: "second", operationId: "op-race-2", whenBusy: "follow_up" });
+  // The queue attempt failed on a stopped turn → a NEW turn starts; never a
+  // final rejection, never a silent drop.
+  assert.equal(race.status, "accepted");
+  if (race.status === "accepted") {
+    assert.equal(race.turnStatus.state, "admitted", "the fallback starts a fresh turn, not a queued entry");
+  }
+  const dispatched = workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn");
+  assert.equal(dispatched.length, 2, "the raced send starts its own turn after the queue path proved the turn gone");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.command").length, 1, "one queue attempt, then the fallback turn");
+  assert.equal(ledger.calls >= 1, true);
+  await service.shutdown();
+});

@@ -37,8 +37,10 @@ export type RuntimeTurnAdmission =
  * receipt, never infer it from the absence of a user entry id. */
 export type PromptDisposition = "started" | "handled" | "queued";
 
-/** Pi 1.0 steer/followUp disposition. */
-export type QueuedInputDisposition = "handled" | "queued";
+/** Pi 1.0 steer/followUp disposition. `started` is pix's own addition: the
+ * runtime found the session IDLE and started a turn instead of parking the
+ * message in a queue nothing would drain. */
+export type QueuedInputDisposition = "handled" | "queued" | "started";
 
 /** Terminal result of an admitted turn. The entry id is optional until the
  * backend exposes a structural operation-to-entry correlation. */

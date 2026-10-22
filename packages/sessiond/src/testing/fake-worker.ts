@@ -87,6 +87,11 @@ export interface FakeWorkerOptions {
   /** Answer these command types with a scripted unavailable failure (used to
    * prove callers degrade honestly when a mid-sequence command fails). */
   failCommandTypes?: readonly string[];
+  /**
+   * Answer steer/follow_up with `session_busy` — the runtime's answer when the
+   * turn these were queued for has already ended (the admission race).
+   */
+  queuedSendFindsIdleTurn?: boolean;
 }
 
 /**
@@ -417,6 +422,11 @@ export class FakeWorkerConnection implements WorkerConnection {
               ...(keep === 0 ? {} : { leafId: command.targetId }),
             },
           };
+        }
+        if (this.options.queuedSendFindsIdleTurn === true && (command.type === "steer" || command.type === "follow_up")) {
+          const gone: RuntimeCommandOutcome = { ok: false, type: command.type, error: { code: "session_busy", message: "the queued turn is no longer running", retryable: true } };
+          setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, gone), this.options.commandDelayMs ?? 0);
+          return;
         }
         if (this.options.failCommandTypes?.includes(command.type)) {
           const failed: RuntimeCommandOutcome = { ok: false, type: command.type, error: { code: "unavailable", message: `scripted ${command.type} failure`, retryable: true } };

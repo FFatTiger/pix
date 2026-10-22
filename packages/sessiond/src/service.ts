@@ -56,7 +56,7 @@ import type { RuntimeCloseReason, SessiondRunningWatchPush } from "@fffattiger/p
 import type { AssistantPresence } from "@fffattiger/pix-protocol";
 import { READ_ONLY_RUNTIME_COMMAND_TYPES, compareSessionQueryHits, isRuntimeError, isAssistantWorkspacePath, matchSessionQuery, resolveAssistantWorkspaceDir, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMatchSource, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
 import { AssistantOpsAuthority, type AssistantOpsRecordView } from "./assistant-ops.js";
-import { SENT_MESSAGE_LEDGER_LIMIT, type DurableSendReceipt, type SentMessageLedgerPort } from "./sent-messages.js";
+import { SENT_MESSAGE_LEDGER_LIMIT, isNotRunningQueuedSendFailure, type DurableSendReceipt, type SentMessageLedgerPort } from "./sent-messages.js";
 import { AssistantResidencySupervisor, type AssistantResidencySurface } from "./assistant-residency.js";
 import { WorkspaceStateError } from "./workspace-state.js";
 import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, epochChangedCommand, epochChangedInterrupt, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
@@ -2366,7 +2366,7 @@ export class SessiondService {
     record: RecordState,
     input: RuntimeSubmitTurnParams,
     fingerprint: string,
-  ): Promise<SubmitTurnAdmission> {
+  ): Promise<SubmitTurnAdmission | { pending: Promise<SubmitTurnAdmission> }> {
     const delivery = input.whenBusy ?? "follow_up";
     const command: RuntimeCommand = delivery === "steer"
       ? { commandId: queuedSendCommandId(input.operationId), type: "steer", message: input.prompt, ...(input.images === undefined ? {} : { images: [...input.images] }) }
@@ -2400,6 +2400,13 @@ export class SessiondService {
     if (!outcome.result.ok) {
       record.turnOperations.delete(input.operationId);
       const error = outcome.result.error;
+      // RACE: the turn this message was queued for may have ended between the
+      // busy check and this command. The runtime answers that with an idle/
+      // not-running failure; the message must then START a turn instead of
+      // folding into a final rejection.
+      if (isNotRunningQueuedSendFailure(error)) {
+        return this.dispatchTurn(record, input, fingerprint);
+      }
       // Only a permanent, payload-shaped failure is final; everything else is
       // retryable so the outbox resends the SAME operationId.
       const final = !error.retryable && (error.code === "invalid_input" || error.code === "unsupported_capability" || error.code === "not_found");

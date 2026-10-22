@@ -455,6 +455,15 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           // an extension input handler consumed it and the SDK queued nothing.
           // The SDK emits queue_update synchronously while the call runs; an
           // authoritative reconcile from driver state covers any missed event.
+          //
+          // A queued send that arrives after the turn it was queued for has
+          // already ENDED must not park forever: the SDK accepts the input into
+          // a queue nothing will ever drain. Only commands that carry a SEND
+          // identity take the fallback (a plain steer/follow_up is queue
+          // surgery, where parking is the requested behavior).
+          if (sendOperationIdOf(command.commandId ?? "") !== undefined && !this.promptRunning && !this.driver.getState().isStreaming) {
+            return this.startQueuedSendAsTurn(command, "steer");
+          }
           const disposition = await this.driver.steer(command.message, command.images);
           if (disposition === "queued") {
             const state = this.driver.getState();
@@ -471,6 +480,9 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           return { ok: true, type: "steer", disposition };
         }
         case "follow_up": {
+          if (sendOperationIdOf(command.commandId ?? "") !== undefined && !this.promptRunning && !this.driver.getState().isStreaming) {
+            return this.startQueuedSendAsTurn(command, "follow_up");
+          }
           const disposition = await this.driver.followUp(command.message, command.images);
           if (disposition === "queued") {
             const state = this.driver.getState();
@@ -1711,6 +1723,28 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           : { images: turn.images }),
       };
     });
+  }
+
+  /**
+   * A queued-delivery command that turned out to address an IDLE runtime. The
+   * sender asked for a message, not for a no-op, so the same send identity
+   * starts a turn instead of parking in a queue nothing will drain (the race
+   * between sessiond's busy check and the previous turn ending).
+   */
+  private async startQueuedSendAsTurn(
+    command: Extract<RuntimeCommand, { type: "steer" | "follow_up" }>,
+    delivery: "steer" | "follow_up",
+  ): Promise<RuntimeCommandResult> {
+    const handle = await this.submitTurn({
+      prompt: command.message,
+      ...(command.images === undefined ? {} : { images: command.images }),
+      whenBusy: delivery,
+      ...(sendOperationIdOf(command.commandId ?? "") === undefined ? {} : { operationId: sendOperationIdOf(command.commandId ?? "") as string }),
+    });
+    if (!handle.admission.ok) return this.failure(command.type, handle.admission.error);
+    const terminal = await handle.completion;
+    if (!terminal.ok) return this.failure(command.type, terminal.error);
+    return { ok: true, type: command.type, disposition: "started" };
   }
 
   /**
