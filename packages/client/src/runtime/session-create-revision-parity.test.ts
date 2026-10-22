@@ -140,12 +140,13 @@ describe("provisional create + send parity (outbox contract)", () => {
     const sendP = h.store.sendPromptToSession("new-1", "hello");
     await flush();
     const submit = submitFrames(ws)[0]!;
-    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: accepted(submit.payload.operationId as string, 2) });
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: accepted(submit.payload.operationId as string, 1) });
     await expect(sendP).resolves.toBeUndefined();
 
     const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
     expect(attach.payload.sessionId).toBe("new-1");
     ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-1", epoch: "eN", lastEventId: 2 }) });
+    ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "new-1", eventId: 2, epoch: "eN" } });
     await flush();
 
     // A cross-tab navigate fence arrives while the accepted turn runs → it is

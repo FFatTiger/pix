@@ -465,6 +465,99 @@ describe("SessionStore — same-epoch resend vs epoch_changed reject", () => {
     await expect(promptP).resolves.toBeUndefined();
   });
 
+  it("an offline send delivered on reconnect shows the reply even when its admission beats the resume snapshot", async () => {
+    const h = createHarness();
+    let ws = await openAndAttach(h);
+    ws.serverClose(1006);
+    await flush();
+    const promptP = h.store.sendPrompt("while offline");
+    await flush();
+    // Several failed reconnects while offline.
+    for (let i = 0; i < 3; i += 1) {
+      const before = h.sockets.length;
+      for (let t = 0; t < 40 && h.sockets.length === before; t += 1) { vi.advanceTimersByTime(500); await flush(); }
+      h.lastSocket().serverClose(1006);
+      await flush();
+    }
+    const before = h.sockets.length;
+    for (let t = 0; t < 40 && h.sockets.length === before; t += 1) { vi.advanceTimersByTime(500); await flush(); }
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+    await awaitSendFrame(ws);
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    const submit = submitFrame(ws);
+    // The authority answers the submit first, then the resume attach.
+    respondSubmit(ws, submit.id, submit.payload.operationId, "s1", "e1", 0);
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
+    await expect(promptP).resolves.toBeUndefined();
+    ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "u", messageId: "u", message: { role: "user", content: "while offline" }, eventId: 2, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "s1", streamId: "u", messageId: "u", message: { role: "user", content: "while offline" }, entryId: "eu", eventId: 3, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "a", messageId: "a", message: { role: "assistant", model: "m", provider: "p" }, eventId: 4, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "s1", streamId: "a", messageId: "a", message: { role: "assistant", content: [{ type: "text", text: "the reply" }], model: "m", provider: "p" }, entryId: "ea", parentEntryId: "eu", eventId: 5, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "agent_end", sessionId: "s1", eventId: 6, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "agent_settled", sessionId: "s1", eventId: 7, epoch: "e1" } });
+    await flush(20);
+    const view = h.store.getSnapshot();
+    const texts = view.liveEntries.map((e) => { const c = (e.message as { content: unknown }).content; return typeof c === "string" ? c : (c as { text?: string }[]).map((b) => b.text ?? "").join(""); });
+    expect(texts).toContain("the reply");
+    expect(view.streaming).toBe(false);
+    completeTurn(ws, submit.payload.operationId);
+    await flush(20);
+    // Still observing the session, and no leftover bubble beside the committed entry.
+    expect(h.store.getSnapshot().attached).toBe(true);
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(0);
+  });
+
+  it("a resend answered duplicate for a turn that finished while the Host was down keeps the replay and settles", async () => {
+    const h = createHarness();
+    let ws = await openAndAttach(h);
+    const promptP = h.store.sendPrompt("answer lost");
+    await awaitSendFrame(ws);
+    const operationId = submitFrame(ws).payload.operationId;
+    // The authority admitted it, but the answer died with the Host.
+    ws.serverClose(1006);
+    await flush();
+    const before = h.sockets.length;
+    for (let t = 0; t < 40 && h.sockets.length === before; t += 1) { vi.advanceTimersByTime(500); await flush(); }
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+    await awaitSendFrame(ws);
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    const submit = submitFrame(ws);
+    expect(submit.payload.operationId).toBe(operationId);
+    // The duplicate (journal head 7, turn already completed) beats the resume attach.
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: submit.id,
+      payload: {
+        status: "duplicate", delivery: "accepted", sessionId: "s1", epoch: "e1", revision: 7, operationId, turnId: "turn-1",
+        snapshot: snapshotPayload({ lastEventId: 7 }).snapshot,
+        turnStatus: { sessionId: "s1", epoch: "e1", operationId, turnId: "turn-1", revision: 1, state: "completed", userEntryId: "eu", finalLeafId: "ea" },
+      },
+    });
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ lastEventId: 7 }) });
+    await expect(promptP).resolves.toBeUndefined();
+    ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "u", messageId: "u", message: { role: "user", content: "answer lost" }, eventId: 2, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "s1", streamId: "u", messageId: "u", message: { role: "user", content: "answer lost" }, entryId: "eu", eventId: 3, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "a", messageId: "a", message: { role: "assistant", model: "m", provider: "p" }, eventId: 4, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "s1", streamId: "a", messageId: "a", message: { role: "assistant", content: [{ type: "text", text: "the reply" }], model: "m", provider: "p" }, entryId: "ea", parentEntryId: "eu", eventId: 5, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "agent_end", sessionId: "s1", eventId: 6, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "agent_settled", sessionId: "s1", eventId: 7, epoch: "e1" } });
+    await flush(20);
+    const view = h.store.getSnapshot();
+    expect(view.liveEntries.map((e) => e.entryId)).toEqual(["eu", "ea"]);
+    expect(view.streaming).toBe(false);
+    expect(view.turnActive).toBe(false);
+    expect(view.optimisticEntries).toHaveLength(0);
+    expect(ws.sent.filter((f) => (f as { type?: string }).type === "submit_turn")).toHaveLength(1);
+  });
+
   it("a follow-up sent while the transport is down waits for the resume attach and goes out on it", async () => {
     const h = createHarness();
     let ws = await openAndAttach(h);
@@ -2713,6 +2806,19 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     ws.serverSend({ type: "event", payload: { type: "agent_settled", sessionId: "s1", eventId: 3, epoch: "e1" } });
     await flush();
     expect(h.store.getSnapshot().streaming).toBe(false);
+  });
+
+  it("an image with no text is sent as a message", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const promptP = h.store.sendPrompt("", [{ type: "image", data: "AAAA", mimeType: "image/png" }]);
+    await awaitSendFrame(ws);
+    const submit = submitFrame(ws);
+    expect(submit.payload.prompt).toBe("");
+    expect(submit.payload.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
+    respondSubmit(ws, submit.id, submit.payload.operationId, "s1", "e1", 0);
+    await expect(promptP).resolves.toBeUndefined();
+    await expect(h.store.sendPrompt("  ")).rejects.toBeDefined();
   });
 
   it("detach retains the exact speculative layer until correlated authority settles it", async () => {

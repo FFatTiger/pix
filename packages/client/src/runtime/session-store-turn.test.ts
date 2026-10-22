@@ -670,6 +670,7 @@ describe("SessionController — terminal authority convergence", () => {
   it("wrong session/epoch/turn/operation and old transport generation cannot replace or settle exact pending", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);
+    ws.serverSend({ type: "snapshot", payload: snapshotPayload({ lastEventId: 2 }) });
     const submit = await admitted(h, ws, 2);
     const controller = h.controller("s1")!;
     const frame = terminal(submit.payload.operationId, idleAuthority("s1", "e1", 2));

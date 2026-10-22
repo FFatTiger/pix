@@ -49,7 +49,8 @@ async function openAndAttachTurn(h: RuntimeHarness, sessionId = "s1", epoch = "e
   const p = h.store.openSession(sessionId);
   await flush();
   const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-  ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, epoch }) });
+  // The journal head the admissions below report (revision 1).
+  ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, epoch, lastEventId: 1 }) });
   await flush();
   await p;
   return ws;

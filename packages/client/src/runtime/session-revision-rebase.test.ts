@@ -185,10 +185,10 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
       delivery: "accepted",
       sessionId: "s1",
       epoch: "e1",
-      revision: 2,
+      revision: 1,
       operationId: submit.payload.operationId,
       turnId: "turn-1",
-      snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 2 }).snapshot as never,
+      snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 1 }).snapshot as never,
       turnStatus: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 0, state: "admitted" },
     };
     ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: admission });
@@ -200,9 +200,9 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
     // DEFERRED: no generation churn, anchor + live tail preserved.
     // A committed user entry lands in the live tail while the turn runs
     // (correlated start+end pair, contiguous cursor).
-    sendUserCommit(ws, "s1", "entry-4", 3, "hello");
+    sendUserCommit(ws, "s1", "entry-4", 2, "hello");
     await flush();
-    ws.serverSend(sessionChangedEvent("s1", "entry-2", 5));
+    ws.serverSend(sessionChangedEvent("s1", "entry-2", 4));
     await flush();
     const deferred = h.store.getSnapshot();
     expect(deferred.historyAnchorLeafId).toBe("entry-3");
@@ -268,10 +268,10 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
       delivery: "accepted",
       sessionId: "s1",
       epoch: "e1",
-      revision: 2,
+      revision: 1,
       operationId: submit.payload.operationId,
       turnId: "turn-1",
-      snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 2 }).snapshot as never,
+      snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 1 }).snapshot as never,
       turnStatus: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 0, state: "admitted" },
     };
     ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: admission });
@@ -279,8 +279,8 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
     await sendP;
 
     // Two consecutive committed fences while deferred: the later one wins.
-    ws.serverSend(sessionChangedEvent("s1", "entry-1", 3));
-    ws.serverSend(sessionChangedEvent("s1", "entry-2", 4));
+    ws.serverSend(sessionChangedEvent("s1", "entry-1", 2));
+    ws.serverSend(sessionChangedEvent("s1", "entry-2", 3));
     await flush();
     expect(h.store.getSnapshot().historyAnchorLeafId).toBe("entry-3");
 
@@ -425,10 +425,10 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
         delivery: "accepted",
         sessionId: "s1",
         epoch: "e1",
-        revision: 2,
+        revision: 1,
         operationId: submit.payload.operationId,
         turnId: "turn-1",
-        snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 2 }).snapshot as never,
+        snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 1 }).snapshot as never,
         turnStatus: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 0, state: "admitted" },
       },
     });
@@ -436,7 +436,7 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
     await sendP;
     expect(h.store.getSnapshot().optimisticEntries.length).toBe(1);
 
-    ws.serverSend(sessionChangedEvent("s1", "entry-2", 3));
+    ws.serverSend(sessionChangedEvent("s1", "entry-2", 2));
     await flush();
     // Deferred, then applied at terminal — the bubble must survive BOTH.
     expect(h.store.getSnapshot().optimisticEntries.length).toBe(1);
@@ -487,16 +487,16 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
         delivery: "accepted",
         sessionId: "s1",
         epoch: "e1",
-        revision: 2,
+        revision: 1,
         operationId: submit.payload.operationId,
         turnId: "turn-1",
-        snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 2 }).snapshot as never,
+        snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 1 }).snapshot as never,
         turnStatus: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 0, state: "admitted" },
       },
     });
     await flush();
     await sendP;
-    ws.serverSend(sessionChangedEvent("s1", "entry-1", 3));
+    ws.serverSend(sessionChangedEvent("s1", "entry-1", 2));
     await flush();
     expect(h.store.getSnapshot().historyAnchorLeafId).toBe("entry-3");
 

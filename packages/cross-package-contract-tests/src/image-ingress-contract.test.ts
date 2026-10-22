@@ -54,6 +54,10 @@ test("protocol accepts eight canonical images and rejects nine", () => {
     operationId: "op1",
     images: nine,
   }).success, false);
+  // An image alone is a message; empty text without an image is not.
+  assert.equal(SubmitTurnRequestSchema.safeParse({ sessionId: "s1", prompt: "", operationId: "op1", images: eight.slice(0, 1) }).success, true);
+  assert.equal(SubmitTurnRequestSchema.safeParse({ sessionId: "s1", prompt: "  ", operationId: "op1" }).success, false);
+  assert.equal(SubmitTurnRequestSchema.safeParse({ sessionId: "s1", prompt: "", operationId: "op1", images: [] }).success, false);
 });
 
 test("aggregate base64 is inclusive at 14M and rejects one character over", () => {

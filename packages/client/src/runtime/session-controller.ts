@@ -1629,7 +1629,7 @@ export class SessionController implements RuntimeControllerPort {
       } satisfies ProtocolError));
     }
     if (sessionId !== this.sessionId) return Promise.reject(this.activationFailure(this.identityMismatchError(sessionId)));
-    if (typeof input.prompt !== "string" || input.prompt.trim().length === 0) {
+    if (typeof input.prompt !== "string" || (input.prompt.trim().length === 0 && (input.images?.length ?? 0) === 0)) {
       return Promise.reject(this.activationFailure({
         code: "invalid_input",
         message: "prompt must be non-empty",
@@ -2980,6 +2980,11 @@ export class SessionController implements RuntimeControllerPort {
     if (pending.turnId !== null && status.turnId !== pending.turnId) return;
     if (pending.epoch !== null && status.epoch !== pending.epoch) return;
     if (status.revision <= pending.statusRevision) return;
+    this.applyTurnStatus(pending, status, message.authority);
+    this.notify();
+  }
+
+  private applyTurnStatus(pending: TurnPending, status: WsTurnStatusMessage["payload"], authority: WsTurnStatusMessage["authority"]): void {
     pending.turnId = status.turnId;
     pending.epoch = status.epoch;
     pending.statusRevision = status.revision;
@@ -2998,7 +3003,6 @@ export class SessionController implements RuntimeControllerPort {
       }
     }
     if (status.state === "completed" || status.state === "failed") {
-      const authority = message.authority;
       if (authority !== undefined
         && authority.sessionId === this.sessionId && authority.snapshot.sessionId === this.sessionId
         && authority.epoch === status.epoch && (this.epoch === null || this.epoch === authority.epoch)
@@ -3056,7 +3060,6 @@ export class SessionController implements RuntimeControllerPort {
       // NOW, forced (the terminal status is authoritative).
       this.flushPendingLeafRebase(true);
     }
-    this.notify();
   }
 
   /**
@@ -3081,12 +3084,15 @@ export class SessionController implements RuntimeControllerPort {
         ...(admission.turnStatus.userEntryId === undefined ? {} : { userEntryId: admission.turnStatus.userEntryId }),
       });
     }
-    // Accepted admission consumes the one-shot created submit fence.
-    const keepAheadSameEpoch = this.authorityCursorKnown
+    // Accepted admission consumes the one-shot created submit fence. A known
+    // same-epoch cursor stays put: the admission revision is the journal head,
+    // and jumping to it would drop the events in between (a resent duplicate
+    // after a reconnect is answered while the attach replay is still coming).
+    const keepSameEpochCursor = this.authorityCursorKnown
       && this.epoch === admission.epoch
-      && this.lastEventId > admission.revision
       && this.snapshot !== null;
-    if (!keepAheadSameEpoch) {
+    const keepAheadSameEpoch = keepSameEpochCursor && this.lastEventId > admission.revision;
+    if (!keepSameEpochCursor) {
       this.epoch = admission.epoch;
       this.lastEventId = admission.revision;
     }
@@ -3114,7 +3120,7 @@ export class SessionController implements RuntimeControllerPort {
         );
       }
     }
-    this.pendingTurn = {
+    const pending: TurnPending = {
       operationId: entry.operationId,
       sessionId: entry.sessionId,
       provenance,
@@ -3127,6 +3133,7 @@ export class SessionController implements RuntimeControllerPort {
       attempt: null,
       terminal: false,
     };
+    this.pendingTurn = pending;
     if (!this.attached) {
       // LC-02: the request carries the SEND-START provenance — a late admission
       // for a superseded presentation completes in the background and never
@@ -3140,6 +3147,10 @@ export class SessionController implements RuntimeControllerPort {
         },
       );
     }
+    // A duplicate of a turn that already finished (e.g. while the Host was
+    // down) owes no further turn_status: settle it through the same path.
+    const status = admission.turnStatus;
+    if (status.state === "completed" || status.state === "failed") this.applyTurnStatus(pending, status, undefined);
   }
 
   /**

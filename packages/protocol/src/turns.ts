@@ -55,13 +55,17 @@ export const SubmitTurnRequestSchema = z.strictObject({
   /** Legacy fence fields — accepted for old clients, ignored by the authority. */
   expectedEpoch: EpochSchema.optional(),
   expectedRevision: z.number().int().nonnegative().safe().optional(),
-  prompt: NonBlankTextSchema,
+  /** May be empty when images are attached: an image alone is a message. */
+  prompt: z.string(),
   images: ImageAttachmentArraySchema.optional(),
   activationOverrides: TurnActivationOverridesSchema.optional(),
   operationId: NonEmptyStringSchema,
   /** Queue policy the authority applies when the session is already running. */
   whenBusy: SubmitTurnWhenBusySchema.optional(),
 }).superRefine((value, ctx) => {
+  if (!NonBlankTextSchema.safeParse(value.prompt).success && (value.images?.length ?? 0) === 0) {
+    ctx.addIssue({ code: "custom", path: ["prompt"], message: "prompt must be non-blank unless images are attached" });
+  }
   if (value.expectedRevision !== undefined && value.expectedEpoch === undefined) {
     ctx.addIssue({ code: "custom", path: ["expectedRevision"], message: "expectedRevision requires expectedEpoch" });
   }
