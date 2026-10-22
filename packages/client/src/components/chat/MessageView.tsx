@@ -9,7 +9,7 @@ import { copyText } from "@/lib/clipboard";
 import { cssPx, cssViewportSize } from "@/lib/ui-scale";
 import { urls } from "@/api/urls";
 
-import { formatToolDurationMs, isEmptyThinkingBlock } from "@/lib/message-display";
+import { formatToolDurationMs, isEmptyThinkingBlock, isStoppedAssistant } from "@/lib/message-display";
 import { parseSkillBlock } from "@/lib/skill-block";
 import { resolveModelLabel } from "@/lib/model-display";
 import type { MentionValidators } from "@/lib/mention-tokens";
@@ -879,10 +879,10 @@ function AssistantMessageView({
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  const failureMessage = message.stopReason === "error" && message.errorMessage
+  const failureMessage = message.stopReason === "error" && message.errorMessage && !isStoppedAssistant(message)
     ? message.errorMessage
     : null;
-  if (blocks.length === 0 && !isStreaming && !failureMessage) return null;
+  if (blocks.length === 0 && !isStreaming && !failureMessage && !turnStopped) return null;
 
   return (
     <div className={["chat-assistant-message", isStreaming ? "is-streaming" : ""].filter(Boolean).join(" ")}>

@@ -71,6 +71,8 @@ export interface RuntimeState {
   leafId?: string;
   isStreaming: boolean;
   isPromptRunning: boolean;
+  /** The last settled run was stopped by the user (absent before any settle). */
+  lastTurnAborted?: boolean;
   isBashRunning: boolean;
   isCompacting: boolean;
   bash?: BashProjection;

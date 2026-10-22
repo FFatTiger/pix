@@ -436,6 +436,7 @@ export function mapRuntimeState(state: RuntimeState) {
     ...(state.leafId === undefined ? {} : { leafId: state.leafId }),
     isStreaming: state.isStreaming,
     isPromptRunning: state.isPromptRunning,
+    ...(state.lastTurnAborted === undefined ? {} : { lastTurnAborted: state.lastTurnAborted }),
     isBashRunning: state.isBashRunning,
     isCompacting: state.isCompacting,
     ...(state.bash === undefined ? {} : { bash: mapBashProjection(state.bash) }),

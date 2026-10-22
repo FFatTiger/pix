@@ -173,10 +173,19 @@ describe("chat-projection — user → process → final", () => {
       user("发给另一个会话"),
       assistant([{ type: "toolCall", toolCallId: "a1", toolName: "send_to_session", input: { session: "x", message: "go" } }], { stopReason: "aborted" }),
       toolResult("a1", "ok", { details: { sessionId: "s-9", cwd: "/repos/other", title: "另一个会话" } }),
-    ], { lastTurnAborted: true });
+    ]);
     expect(kinds(rows)).toEqual(["message", "process"]);
     const process = rows[1]!;
     expect(process.kind === "process" && process.turnActions?.map((action) => action.toolCallId)).toEqual(["a1"]);
+    // Stopped on the settled tail: the answer row carries the stop marker, and the chips with it.
+    const stopped = build([
+      user("发给另一个会话"),
+      assistant([{ type: "toolCall", toolCallId: "a1", toolName: "send_to_session", input: { session: "x", message: "go" } }], { stopReason: "aborted" }),
+      toolResult("a1", "ok", { details: { sessionId: "s-9", cwd: "/repos/other", title: "另一个会话" } }),
+    ], { lastTurnAborted: true });
+    const answer = stopped.at(-1)!;
+    expect(answer.kind === "message" && answer.turnStopped).toBe(true);
+    expect(answer.kind === "message" && answer.turnActions?.map((action) => action.toolCallId)).toEqual(["a1"]);
   });
 
   it("keeps session actions on the answer row when the turn has one", () => {
@@ -695,5 +704,21 @@ describe("chat-projection — stopped-turn marker on the settled tail", () => {
     for (const row of rows) {
       if (row.kind === "message") expect(row.turnStopped).toBeUndefined();
     }
+  });
+
+  it("a stop pi recorded as an abort error is a stop, never a failure card", () => {
+    const turn: AgentMessage[] = [
+      user("hello"),
+      assistant([{ type: "toolCall", toolCallId: "tc1", toolName: "bash", input: {} }]),
+      toolResult("tc1", "Command aborted"),
+      assistant([], { stopReason: "error", errorMessage: "This operation was aborted" }),
+    ];
+    const final = build(turn, { lastTurnAborted: true }).at(-1)!;
+    expect(final.kind).toBe("message");
+    if (final.kind === "message") expect(final.turnStopped).toBe(true);
+    // A real provider failure still shows its error.
+    const failed = build([user("hi"), assistant([], { stopReason: "error", errorMessage: "429 rate limited" })], { lastTurnAborted: false }).at(-1)!;
+    expect(failed.kind).toBe("message");
+    if (failed.kind === "message") expect(failed.turnStopped).toBeUndefined();
   });
 });

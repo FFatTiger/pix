@@ -69,6 +69,16 @@ describe("SnapshotMapper run without a message stream", () => {
     assert.equal(snapshot.state.isStreaming, false);
     assert.equal(snapshot.state.isPromptRunning, true);
     assert.deepEqual(snapshot.streaming, { active: false, phase: "idle" });
+    const stopped = mapper.map(
+      {
+        sessionId: "sess-1",
+        state: { sessionId: "sess-1", isStreaming: false, isPromptRunning: false, lastTurnAborted: true, isBashRunning: false, isCompacting: false, model: null, messageCount: 1 },
+        capabilities: createCapabilitySet([]),
+        streaming: { active: false, phase: "idle" },
+      },
+      { cwd: "/workspace", projectRoot: "/workspace" },
+    );
+    assert.equal(stopped.state.lastTurnAborted, true);
     const frame = { type: "worker.snapshot", payload: { sessionId: snapshot.sessionId, snapshot } };
     assert.equal(WorkerToSessiondPushSchema.safeParse(frame).success, true);
   });

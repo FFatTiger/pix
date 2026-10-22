@@ -25,11 +25,22 @@ export function isEmptyThinkingBlock(block: AssistantContentBlock, options: Disp
  * (stopReason "error"). Ported verbatim from the legacy web lib/message-display so a
  * failed turn always renders an answer row instead of silently vanishing.
  */
+// ponytail: pi records some user stops as stopReason "error" carrying the
+// platform abort message (the provider saw an un-aborted signal). Treat those
+// as stops; drop the pattern once pi records them as "aborted".
+const ABORT_ERROR_MESSAGE = /^(This operation was aborted|Request was aborted)\.?$/;
+
+/** The user stopped this message's turn — a stop, never a provider failure. */
+export function isStoppedAssistant(message: AssistantMessage): boolean {
+  return message.stopReason === "aborted"
+    || (message.stopReason === "error" && ABORT_ERROR_MESSAGE.test(message.errorMessage?.trim() ?? ""));
+}
+
 export function getAssistantErrorMessage(
   message: AssistantMessage,
   options: DisplayOptions = {},
 ): string | null {
-  if (options.isStreaming || message.stopReason !== "error") return null;
+  if (options.isStreaming || message.stopReason !== "error" || isStoppedAssistant(message)) return null;
   return message.errorMessage?.trim() || "Unknown provider error";
 }
 

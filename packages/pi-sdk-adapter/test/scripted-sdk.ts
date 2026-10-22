@@ -321,7 +321,7 @@ class ScriptedSdkDriver implements PiRuntimeDriver {
     return message;
   }
 
-  private aborted() { this.pendingUi = undefined; this.status = "idle"; this.emit({ type: "agent_end" }); this.emit({ type: "agent_settled" }); throw new Error("prompt aborted"); }
+  private aborted() { this.pendingUi = undefined; this.status = "idle"; this.emit({ type: "agent_end" }); this.emit({ type: "agent_settled", aborted: true }); throw new Error("prompt aborted"); }
   private requestUi(method: "confirm" | "input"): Promise<{ value?: string; cancelled?: true }> { return new Promise((resolve) => { const settled = new Set<() => void>(); const done = (result: { value?: string; cancelled?: true }) => { this.pendingUi = undefined; for (const listener of settled) listener(); settled.clear(); resolve(result); }; const request: DriverUiRequest = { id: `sdk-ui-${this.turn}-${method}`, method, title: method === "confirm" ? "Confirm" : "Input", ...(method === "confirm" ? { message: "Continue?" } : { placeholder: "value" }), settle: (result) => done({ ...(result.value === undefined ? {} : { value: result.value }), ...(result.cancelled ? { cancelled: true } : {}) }), input: (data) => done({ value: data }), cancel: () => done({ cancelled: true }), onSettled: (listener) => settled.add(listener) }; this.pendingUi = request; this.ui?.(request); }); }
   private async drain() { if (this.status !== "idle") return; const next = this.steering.shift() ?? this.follow.shift(); if (!next) return; this.emit({ type: "queue_update" }); await this.runTurn(next.message, next.images, false); }
 }

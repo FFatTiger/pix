@@ -18,7 +18,7 @@
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolResultMessage } from "@fffattiger/pix-protocol";
 import type { ProcessContentBlock } from "@/lib/process-content";
 import { collectProcessContentBlocks, messageToProcessContentBlocks, splitAssistantContentBlocks } from "@/lib/process-content";
-import { getAssistantErrorMessage, getDisplayableAssistantBlocks, lastContiguousTextRun, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { getAssistantErrorMessage, getDisplayableAssistantBlocks, isStoppedAssistant, lastContiguousTextRun, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnShownFiles, extractTurnWrittenFiles, mergeTurnFileRows, type TurnFileRow, type WrittenFile } from "@/lib/turn-written-files";
 import { extractTurnActions, type TurnAction } from "@/lib/turn-actions";
 import { resolveModelLabel } from "@/lib/model-display";
@@ -662,7 +662,16 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     const fallbackAnswerBlocks = finalSplit.answerBlocks.length === 0 && finalError === null
       ? lastContiguousTextRun(finalAssistant)
       : finalSplit.answerBlocks;
-    const finalAnswerMessage = finalSplit.answerBlocks.length > 0 || finalError !== null || fallbackAnswerBlocks.length > 0
+    // The settled-tail "stopped" marker needs BOTH signals: the runtime's
+    // last settle was aborted AND this turn's final assistant message was
+    // the stopped one. The state flag alone could mislabel the previous
+    // turn after a stop that produced no entries; the stopReason alone
+    // would mark old history turns that were never the just-settled tail.
+    const turnStopped = lastTurnAborted
+      && endIdx === messages.length
+      && isStoppedAssistant(finalAssistant);
+    // A stopped tail keeps its answer row even when empty: it carries the marker.
+    const finalAnswerMessage = finalSplit.answerBlocks.length > 0 || finalError !== null || fallbackAnswerBlocks.length > 0 || turnStopped
       ? withAssistantBlocks(finalAssistant, fallbackAnswerBlocks)
       : null;
 
@@ -703,14 +712,6 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     }
 
     if (finalAnswerMessage) {
-      // The settled-tail "stopped" marker needs BOTH signals: the runtime's
-      // last settle was aborted AND this turn's final assistant message was
-      // the aborted one. The state flag alone could mislabel the previous
-      // turn after a stop that produced no entries; the stopReason alone
-      // would mark old history turns that were never the just-settled tail.
-      const turnStopped = lastTurnAborted
-        && endIdx === messages.length
-        && finalAssistant.stopReason === "aborted";
       rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles, turnFiles, turnActions, ...(turnStopped ? { turnStopped: true } : {}) }));
     }
     // Trailing entries after the final assistant (custom notifications,

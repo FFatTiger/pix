@@ -271,6 +271,8 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private thinkingPinned = false;
   private pinnedThinkingLevel: RuntimeState["thinkingLevel"] | undefined;
   private queued: QueuedMessages = { steering: [], followUp: [] };
+  /** Outcome of the last settled run; a snapshot carries it like the event did. */
+  private lastTurnAborted: boolean | undefined;
   /** Completion of the turn this adapter launched last (settles after an abort too). */
   private activeTurn: Promise<RuntimeTurnTerminal> | null = null;
   /** True while a switch_queued_delivery rebuild is in flight: intermediate SDK
@@ -1284,6 +1286,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       ...(state.leafId === undefined ? {} : { leafId: state.leafId }),
       isStreaming: state.isStreaming,
       isPromptRunning: this.promptRunning || state.isStreaming,
+      ...(this.lastTurnAborted === undefined ? {} : { lastTurnAborted: this.lastTurnAborted }),
       isBashRunning: state.isBashRunning,
       isCompacting: state.isCompacting || this.compaction !== null,
       ...(this.bash === null ? {} : { bash: this.bash }),
@@ -1317,7 +1320,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     const type = typeof raw.type === "string" ? raw.type : "";
     const sessionId = this.identity.sessionId;
     switch (type) {
-      case "agent_start": this.emit({ type, sessionId }); return;
+      case "agent_start": this.lastTurnAborted = undefined; this.emit({ type, sessionId }); return;
       case "agent_end":
         this.clearPendingToolWrites();
         // Turn boundary: every committed parent toolResult already consumed
@@ -1336,6 +1339,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           this.pendingBashTerminals = [];
           this.publishCommittedBashTerminals(pending);
         }
+        this.lastTurnAborted = raw.aborted === true;
         this.emit({ type, sessionId, ...(raw.aborted === true ? { aborted: true } : {}) });
         return;
       }

@@ -69,6 +69,24 @@ describe("Stop with a queued message", () => {
   });
 });
 
+describe("stop outcome in the snapshot", () => {
+  it("a stopped run is reported by the snapshot, and the next run clears it", async () => {
+    const { adapter, events } = await setup();
+    try {
+      await adapter.submitTurn({ prompt: "long task no-write" });
+      await until(() => events.some((event) => event.type === "message_update"));
+      await adapter.execute({ type: "abort" });
+      await until(() => events.some((event) => event.type === "agent_settled"));
+      assert.equal((await adapter.getSnapshot()).state.lastTurnAborted, true);
+      const next = await adapter.submitTurn({ prompt: "again no-write" });
+      await next.completion;
+      assert.equal((await adapter.getSnapshot()).state.lastTurnAborted, false);
+    } finally {
+      await adapter.close("user");
+    }
+  });
+});
+
 describe("image-only send", () => {
   it("starts a turn with an image and no text", async () => {
     const { adapter, events } = await setup();
