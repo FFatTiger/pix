@@ -35,7 +35,7 @@ import {
   fileTabId,
   minimalFileTab,
   minimalSessionTab,
-  loadLastWorkspaceSession,
+  loadLastWorkspaceTab,
   loadWorkspaceSessionTabs,
   openFileWorkspaceTab,
   assistantTabId,
@@ -43,7 +43,7 @@ import {
   openAssistantWorkspaceTab,
   openSessionWorkspaceTab,
   reconcileWorkspaceCwd,
-  saveLastWorkspaceSession,
+  saveLastWorkspaceTab,
   saveWorkspaceSessionTabs,
   saveFileWorkspaceViewerState,
   sessionTabId,
@@ -197,7 +197,7 @@ export function AppShell({ search }: AppShellProps) {
   // of the URL that was visible when the process was killed. Restore exactly
   // once for that empty cold-start route. Explicit session/file/cwd links are
   // authoritative, and later in-app navigation to home must stay on home.
-  const coldStartSessionRef = useRef<ReturnType<typeof loadLastWorkspaceSession> | undefined>(undefined);
+  const coldStartSessionRef = useRef<ReturnType<typeof loadLastWorkspaceTab> | undefined>(undefined);
   if (coldStartSessionRef.current === undefined) {
     const emptyStartupRoute = search.session === undefined
       && search.file === undefined
@@ -205,7 +205,7 @@ export function AppShell({ search }: AppShellProps) {
       && search.assistant === undefined
       && search.assistantDraft === undefined
       && search.next === undefined;
-    coldStartSessionRef.current = emptyStartupRoute ? loadLastWorkspaceSession() : null;
+    coldStartSessionRef.current = emptyStartupRoute ? loadLastWorkspaceTab() : null;
   }
   const coldStartRestorePendingRef = useRef(coldStartSessionRef.current !== null);
   const coldStartRestoreStartedRef = useRef(false);
@@ -216,9 +216,11 @@ export function AppShell({ search }: AppShellProps) {
     void Promise.resolve(navigate({
       to: "/",
       replace: true,
-      search: target.cwd === undefined
-        ? { session: target.sessionId }
-        : { cwd: target.cwd, session: target.sessionId },
+      search: target.kind === "assistant"
+        ? { assistant: true }
+        : target.cwd === undefined
+          ? { session: target.sessionId }
+          : { cwd: target.cwd, session: target.sessionId },
     })).catch(() => {
       coldStartRestorePendingRef.current = false;
     });
@@ -493,9 +495,12 @@ export function AppShell({ search }: AppShellProps) {
   useEffect(() => {
     const coldStartTarget = coldStartSessionRef.current;
     if (coldStartRestorePendingRef.current) {
-      if (search.session === coldStartTarget?.sessionId) {
+      const arrived = coldStartTarget?.kind === "assistant"
+        ? search.assistant === true
+        : search.session === coldStartTarget?.sessionId;
+      if (arrived) {
         coldStartRestorePendingRef.current = false;
-      } else if (search.session === undefined && search.file === undefined && search.cwd === undefined) {
+      } else if (search.session === undefined && search.file === undefined && search.cwd === undefined && search.assistant === undefined) {
         // Do not erase the restore target while the initial replace navigation
         // is still moving the cold-start route away from `/`.
         return;
@@ -504,15 +509,19 @@ export function AppShell({ search }: AppShellProps) {
       }
     }
     if (search.session !== undefined) {
-      saveLastWorkspaceSession(search.session);
-    } else if (search.file === undefined && !isAssistantView && search.assistantDraft === undefined) {
+      saveLastWorkspaceTab({ sessionId: search.session });
+    } else if (search.assistant === true) {
+      // The assistant is a place the user can be, exactly like a session: a
+      // killed PWA reopens it. Read from the route, not the capability-gated
+      // view, so a capability still loading never records "home" instead.
+      saveLastWorkspaceTab({ assistant: true });
+    } else if (search.file === undefined && search.assistantDraft === undefined) {
       // A cwd-scoped new-session page is an intentional home. File tabs are
-      // ephemeral, so viewing one preserves the previous session target; the
-      // assistant view and the assistant draft state are NOT home declarations
-      // — visiting them must not erase the cold-start restore target.
-      saveLastWorkspaceSession(null);
+      // ephemeral, so viewing one preserves the previous target; the assistant
+      // draft state is NOT a home declaration either.
+      saveLastWorkspaceTab(null);
     }
-  }, [search.cwd, search.file, search.session, search.assistantDraft]);
+  }, [search.cwd, search.file, search.session, search.assistant, search.assistantDraft]);
   useEffect(() => subscribeWorkspaceSessionTabs(() => {
     setTabs((current) => [
       ...loadWorkspaceSessionTabs(),

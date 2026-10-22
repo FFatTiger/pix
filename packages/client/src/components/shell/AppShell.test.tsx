@@ -5655,6 +5655,20 @@ describe("AppShell — assistant view (Pixie tab + shared status markers)", () =
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistant: true } }));
   });
 
+  it("viewing the assistant records it as the last location, and a killed PWA reopens it", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
+    mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { for (let i = 0; i < 12; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+    expect(JSON.parse(window.localStorage.getItem(WORKSPACE_LAST_SESSION_STORAGE_KEY) ?? "null")).toEqual({ version: 1, assistant: true });
+    cleanup();
+
+    // The PWA relaunches its start_url (`/`): the assistant comes back.
+    navigateMock.mockReset();
+    mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { for (let i = 0; i < 12; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", replace: true, search: { assistant: true } });
+  });
+
   it("hides the entry without the assistant capability and degrades both URL flags to home", async () => {
     globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
     mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models"] });

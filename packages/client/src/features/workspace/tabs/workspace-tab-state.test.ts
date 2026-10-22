@@ -8,7 +8,7 @@ import {
   minimalAssistantTab,
   minimalFileTab,
   minimalSessionTab,
-  loadLastWorkspaceSession,
+  loadLastWorkspaceTab,
   loadWorkspaceSessionTabs,
   normalizeFileTabPath,
   openAssistantWorkspaceTab,
@@ -16,7 +16,7 @@ import {
   openSessionWorkspaceTab,
   reconcileWorkspaceCwd,
   saveFileWorkspaceViewerState,
-  saveLastWorkspaceSession,
+  saveLastWorkspaceTab,
   saveWorkspaceSessionTabs,
   sessionTabId,
   WORKSPACE_SESSION_TABS_STORAGE_KEY,
@@ -85,17 +85,17 @@ describe("session tab persistence", () => {
       sessions: [{ assistant: true }, { assistant: "yes" }, { assistant: true }, { sessionId: "A", cwd: "/x" }],
     }));
     expect(loadWorkspaceSessionTabs()).toEqual([assistantTab, sessionA]);
-    saveLastWorkspaceSession("A");
+    saveLastWorkspaceTab({ sessionId: "A" });
     // Removing the session tab drops the last-session restore; the assistant
     // tab alone can never satisfy it (no session identity).
     saveWorkspaceSessionTabs([assistantTab]);
-    expect(loadLastWorkspaceSession()).toBeNull();
+    expect(loadLastWorkspaceTab()).toBeNull();
     window.localStorage.setItem(WORKSPACE_SESSION_TABS_STORAGE_KEY, JSON.stringify({
       version: 1,
       sessions: [{ assistant: true }],
     }));
     expect(loadWorkspaceSessionTabs()).toEqual([assistantTab]);
-    expect(loadLastWorkspaceSession()).toBeNull();
+    expect(loadLastWorkspaceTab()).toBeNull();
   });
 
   it("fails closed for unknown versions and skips malformed or duplicate identities", () => {
@@ -112,23 +112,32 @@ describe("session tab persistence", () => {
   it("restores the last active session only while its durable tab remains open", () => {
     const sessionB: SessionWorkspaceTab = { kind: "session", id: "session:B", sessionId: "B", cwd: "/y" };
     saveWorkspaceSessionTabs([sessionA, sessionB]);
-    saveLastWorkspaceSession("B");
+    saveLastWorkspaceTab({ sessionId: "B" });
 
-    expect(loadLastWorkspaceSession()).toEqual(sessionB);
+    expect(loadLastWorkspaceTab()).toEqual(sessionB);
     saveWorkspaceSessionTabs([sessionA]);
-    expect(loadLastWorkspaceSession()).toBeNull();
+    expect(loadLastWorkspaceTab()).toBeNull();
+  });
+
+  it("restores the assistant as the last location while its tab remains open", () => {
+    saveWorkspaceSessionTabs([sessionA, assistantTab]);
+    saveLastWorkspaceTab({ sessionId: "A" });
+    saveLastWorkspaceTab({ assistant: true });
+    expect(loadLastWorkspaceTab()).toEqual(assistantTab);
+    saveWorkspaceSessionTabs([sessionA]);
+    expect(loadLastWorkspaceTab()).toBeNull();
   });
 
   it("clears an intentional home and fails closed for malformed selection state", () => {
     saveWorkspaceSessionTabs([sessionA]);
-    saveLastWorkspaceSession("A");
-    saveLastWorkspaceSession(null);
-    expect(loadLastWorkspaceSession()).toBeNull();
+    saveLastWorkspaceTab({ sessionId: "A" });
+    saveLastWorkspaceTab(null);
+    expect(loadLastWorkspaceTab()).toBeNull();
 
     window.localStorage.setItem(WORKSPACE_LAST_SESSION_STORAGE_KEY, JSON.stringify({ version: 2, sessionId: "A" }));
-    expect(loadLastWorkspaceSession()).toBeNull();
+    expect(loadLastWorkspaceTab()).toBeNull();
     window.localStorage.setItem(WORKSPACE_LAST_SESSION_STORAGE_KEY, JSON.stringify({ version: 1, sessionId: "" }));
-    expect(loadLastWorkspaceSession()).toBeNull();
+    expect(loadLastWorkspaceTab()).toBeNull();
   });
 });
 

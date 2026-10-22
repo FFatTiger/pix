@@ -71,10 +71,9 @@ interface PersistedSessionTabs {
   >;
 }
 
-interface PersistedLastSession {
-  readonly version: typeof WORKSPACE_LAST_SESSION_VERSION;
-  readonly sessionId: string;
-}
+type PersistedLastTab =
+  | { readonly version: typeof WORKSPACE_LAST_SESSION_VERSION; readonly sessionId: string }
+  | { readonly version: typeof WORKSPACE_LAST_SESSION_VERSION; readonly assistant: true };
 
 function isPersistedSession(value: unknown): value is { sessionId: string; cwd?: string | undefined } {
   if (typeof value !== "object" || value === null) return false;
@@ -139,34 +138,40 @@ export function saveWorkspaceSessionTabs(tabs: readonly WorkspaceTab[]): void {
 }
 
 /**
- * Restore the last active session only when it is still one of the durable
- * open tabs. This prevents a stale/deleted selection record from inventing a
- * tab or bypassing the normal exact-session fail-closed path.
+ * Restore the last active session or assistant tab only when it is still one
+ * of the durable open tabs. This prevents a stale/deleted selection record from
+ * inventing a tab or bypassing the normal exact-session fail-closed path.
  */
-export function loadLastWorkspaceSession(): SessionWorkspaceTab | null {
+export function loadLastWorkspaceTab(): SessionWorkspaceTab | AssistantWorkspaceTab | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(WORKSPACE_LAST_SESSION_STORAGE_KEY);
     if (raw === null) return null;
-    const parsed = JSON.parse(raw) as { version?: unknown; sessionId?: unknown };
+    const parsed = JSON.parse(raw) as { version?: unknown; sessionId?: unknown; assistant?: unknown };
     if (parsed.version !== WORKSPACE_LAST_SESSION_VERSION) return null;
+    const open = loadWorkspaceSessionTabs();
+    if (isPersistedAssistant(parsed)) {
+      return open.find((tab): tab is AssistantWorkspaceTab => tab.kind === "assistant") ?? null;
+    }
     if (typeof parsed.sessionId !== "string" || parsed.sessionId.length === 0 || parsed.sessionId.length > 512) return null;
-    return loadWorkspaceSessionTabs().find((tab): tab is SessionWorkspaceTab => tab.kind === "session" && tab.sessionId === parsed.sessionId) ?? null;
+    return open.find((tab): tab is SessionWorkspaceTab => tab.kind === "session" && tab.sessionId === parsed.sessionId) ?? null;
   } catch {
     return null;
   }
 }
 
-/** Persist the active session identity; null records an intentional home. */
-export function saveLastWorkspaceSession(sessionId: string | null): void {
+/** Persist the active session or assistant tab; null records an intentional home. */
+export function saveLastWorkspaceTab(tab: { readonly sessionId: string } | { readonly assistant: true } | null): void {
   if (typeof window === "undefined") return;
   try {
-    if (sessionId === null) {
+    if (tab === null) {
       window.localStorage.removeItem(WORKSPACE_LAST_SESSION_STORAGE_KEY);
       return;
     }
-    if (sessionId.length === 0 || sessionId.length > 512) return;
-    const payload: PersistedLastSession = { version: WORKSPACE_LAST_SESSION_VERSION, sessionId };
+    if ("sessionId" in tab && (tab.sessionId.length === 0 || tab.sessionId.length > 512)) return;
+    const payload: PersistedLastTab = "sessionId" in tab
+      ? { version: WORKSPACE_LAST_SESSION_VERSION, sessionId: tab.sessionId }
+      : { version: WORKSPACE_LAST_SESSION_VERSION, assistant: true };
     const serialized = JSON.stringify(payload);
     if (window.localStorage.getItem(WORKSPACE_LAST_SESSION_STORAGE_KEY) === serialized) return;
     window.localStorage.setItem(WORKSPACE_LAST_SESSION_STORAGE_KEY, serialized);
