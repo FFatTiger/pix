@@ -2400,9 +2400,15 @@ span.linenumber {
 /* Subagent activity: status pill above the composer, content-width and
    left-aligned; the expanded card opens upward from it. */
 .subagent-activity-card {
-  /* One width for the tab's home and the card it grows into, so the card is
-     never narrower than the tab; the viewport clamp keeps both on screen. */
-  --status-card-width: min(340px, calc(100vw - 92px));
+  /* The row is the only width authority: its content box (the composer column
+     minus the floating-controls reserve its padding already carries) bounds
+     both the tab and the card. `cqi` reads exactly that content box, so the cap
+     needs neither measurement nor viewport arithmetic. */
+  container-type: inline-size;
+  --status-card-available: calc(100cqi - 20px);
+  /* The card matches the tab it grew out of, or the 340px reading width when
+     the tab is shorter — never narrower than the collapsed capsule. */
+  --status-card-width: max(340px, var(--status-tab-width, 120px));
   position: relative;
   z-index: 30;
   flex: 0 0 auto;
@@ -2427,26 +2433,16 @@ span.linenumber {
      edge: the tab when collapsed, the card when expanded. Its width animates
      in step with the panel's clip, so the joint stays curved and on the edge
      for the whole morph. `--status-tab-width` is measured from the tab, which
-     never sizes itself against this box, so there is no feedback loop. */
+     sizes to its content and the row, never to this box — no feedback loop. */
   width: var(--status-tab-width, 120px);
-  max-width: var(--status-card-width);
+  max-width: var(--status-card-available);
   transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .subagent-activity-card[data-open="true"] .status-card-shell {
   width: var(--status-card-width);
+  max-width: var(--status-card-available);
   transition: width 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-/* The tab growing out of the composer edge: rounded top corners, open bottom.
-   The collapsed capsule and the expanded panel carry this same box, so the
-   edge keeps one shape across the whole transition. */
-.status-card-panel,
-.subagent-activity-capsule {
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  border-radius: 10px 10px 0 0;
-  background: var(--bg-secondary);
 }
 
 /* Concave fillets where that edge meets the composer, so it flows out on both
@@ -2478,15 +2474,16 @@ span.linenumber {
      left: 0 because the capsule no longer indents itself — both sit on the
      shell's left edge, which the optical-alignment rule lines up with the
      composer.
-     Fixed width: the capsule caps itself at the same 340px (see
-     .subagent-activity-capsule), so the card is never narrower than the tab it
-     grows out of — no measuring, and it holds mid-morph. */
+     Width is the tab's own width (or the 340px reading width, whichever is
+     wider), clamped to the row: expanding never narrows the strip, and the
+     card only stops growing when the row runs out. */
   position: absolute;
   bottom: 0;
   left: 0;
   z-index: 40;
   display: flex;
   width: var(--status-card-width);
+  max-width: var(--status-card-available);
   max-height: min(64dvh, 32rem);
   overflow: hidden;
   flex-direction: column;
@@ -2569,16 +2566,27 @@ span.linenumber {
   cursor: pointer;
 }
 
+/* The tab growing out of the composer edge: rounded top corners, open bottom.
+   The collapsed capsule and the expanded panel carry this same box, so the
+   edge keeps one shape across the whole transition. Declared after the button
+   reset above, which zeroes the border and fill of a plain button. */
+.status-card-panel,
+.subagent-activity-capsule {
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: var(--bg-secondary);
+}
+
 .subagent-activity-capsule {
   position: relative;
   box-sizing: border-box;
   min-width: 0;
   height: 28px;
-  /* The tab never outgrows the card it expands into; what does not fit in it
-     is ellipsized by the label. It is never squeezed by the shell either: the
-     shell's width follows this tab (see --status-tab-width), so the two would
-     otherwise constrain each other. */
-  max-width: var(--status-card-width);
+  /* The tab sizes to its content and stops only at the row's available width;
+     the label ellipsizes when even that is not enough. It is never squeezed by
+     the shell, whose width follows this tab (see --status-tab-width). */
+  max-width: var(--status-card-available);
   flex: 0 0 auto;
   justify-content: flex-start;
   gap: 7px;
@@ -3341,15 +3349,6 @@ span.linenumber {
 
 .subagent-transcript .chat-minimap {
   display: none;
-}
-
-@media (max-width: 640px) {
-  .subagent-activity-card {
-    /* The card's viewport clamp already covers mobile: 16px row padding + 20px
-       tab inset on the left, twice that inset (40px) to the composer's right
-       edge. Holds the variable's mobile form in one place. */
-    --status-card-width: min(340px, calc(100vw - 92px));
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

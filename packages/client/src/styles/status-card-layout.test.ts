@@ -78,6 +78,12 @@ describe("status card composer-strip layout", () => {
     // joint stays curved mid-morph instead of going square.
     expect(rule(css, ".status-card-panel,\n.subagent-activity-capsule")).toContain("border-radius: 10px 10px 0 0");
     expect(rule(css, ".status-card-panel,\n.subagent-activity-capsule")).toContain("border-bottom: 0");
+    // The shared edge must win over the plain-button reset (`border: 0`) that
+    // appears above it in the sheet, or the tab loses its 1px border and the
+    // card's header lines up 2px off.
+    expect(css.indexOf(".status-card-panel,\n.subagent-activity-capsule {")).toBeGreaterThan(
+      css.indexOf("border: 0;\n  color: var(--text-muted);"),
+    );
     expect(rule(css, ".status-card-shell::before,\n.status-card-shell::after")).toBeDefined();
     expect(css).not.toContain(".subagent-activity-capsule::before");
     expect(css).not.toContain(".subagent-activity-capsule::after");
@@ -108,19 +114,26 @@ describe("status card composer-strip layout", () => {
     const shellRule = rule(css, ".status-card-shell");
     const panelRule = rule(css, ".status-card-panel");
 
-    // One width variable feeds both states: the tab is capped by it, the card
-    // is exactly it, so "expanded narrower than collapsed" is unrepresentable.
-    expect(cardRule).toContain("--status-card-width: min(340px, calc(100vw - 92px))");
-    expect(exactRule(css, ".subagent-activity-capsule")).toContain("max-width: var(--status-card-width)");
+    // The card follows the tab it grew out of, floored at the 340px reading
+    // width, so "expanded narrower than collapsed" is unrepresentable — and a
+    // long tab is never squeezed down to 340 either.
+    expect(cardRule).toContain("--status-card-width: max(340px, var(--status-tab-width, 120px))");
     expect(panelRule).toContain("width: var(--status-card-width)");
-    // The shell is the shape box both states draw their edge on, so it tracks
-    // whichever edge is visible; its width comes from the measured tab.
+    // The row's available width is the only upper bound; it comes from the
+    // container's own content box, so the reserve keeps both states clear of
+    // the composer's floating controls without viewport arithmetic.
+    expect(cardRule).toContain("container-type: inline-size");
+    expect(cardRule).toContain("--status-card-available: calc(100cqi - 20px)");
+    expect(panelRule).toContain("max-width: var(--status-card-available)");
+    expect(exactRule(css, ".subagent-activity-capsule")).toContain("max-width: var(--status-card-available)");
+    // The tab is content-sized and never flex-shrunk by the shell it drives.
+    expect(exactRule(css, ".subagent-activity-capsule")).toContain("flex: 0 0 auto");
     expect(shellRule).toContain("width: var(--status-tab-width, 120px)");
-    expect(shellRule).toContain("max-width: var(--status-card-width)");
+    expect(shellRule).toContain("max-width: var(--status-card-available)");
     expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-shell')).toContain(
       "width: var(--status-card-width)",
     );
-    // The label is the only thing that gives way.
+    // Only the label gives way once the row itself runs out.
     expect(rule(css, ".status-capsule-label")).toContain("min-width: 0");
     expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents,\n.status-capsule-queue")).toContain("flex: 0 0 auto");
@@ -143,17 +156,17 @@ describe("status card composer-strip layout", () => {
     // between the status tab and the composer top edge.
     expect(chatInput.indexOf('className="chat-input-attachments"')).toBeGreaterThan(chatInput.indexOf("ref={inputShellRef}"));
     // The pill itself can only shrink within the reserved row, and never past
-    // the card it expands into.
-    expect(exactRule(css, ".subagent-activity-capsule")).toContain("max-width: var(--status-card-width)");
+    // the row's available width.
+    expect(exactRule(css, ".subagent-activity-capsule")).toContain("max-width: var(--status-card-available)");
   });
 
-  it("caps the mobile card at min(340px, viewport - 92px)", () => {
+  it("caps the mobile card at the row's available width", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
-    const mobileStart = css.indexOf("@media (max-width: 640px)", css.indexOf(".subagent-transcript"));
-    expect(mobileStart).toBeGreaterThanOrEqual(0);
-    const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf(".subagent-activity-card", mobileStart)) + 1);
-    expect(rule(mobile, ".subagent-activity-card")).toContain("--status-card-width: min(340px, calc(100vw - 92px))");
+    // No separate mobile width: the row's content box already shrinks with the
+    // viewport, and both the tab and the card take their cap from it.
+    expect(css).not.toContain("min(340px, calc(100vw - 92px))");
+    expect(rule(css, ".status-card-panel")).toContain("max-width: var(--status-card-available)");
   });
 
   it("replaces the desktop pane tabs with the icon rail (mobile keeps tabs)", () => {
