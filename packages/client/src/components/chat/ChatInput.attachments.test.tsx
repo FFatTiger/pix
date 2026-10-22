@@ -406,80 +406,33 @@ describe("ChatInput pending file attachments", () => {
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
   });
 
-  it("uploads a staged file before a streaming slash follow-up", async () => {
+  it("uploads a staged file before sending while the Agent runs (no streaming branch)", async () => {
     const uploadAttachment = uploadOk();
-    const onPromptWithStreamingBehavior = vi.fn();
-    const view = renderInput({
-      uploadAttachment,
-      isStreaming: true,
-      onFollowUp: vi.fn(),
-      onPromptWithStreamingBehavior,
-    });
+    const onSend = vi.fn().mockReturnValue(true);
+    const view = renderInput({ uploadAttachment, isStreaming: true, onSend });
     pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "/skill:test" } });
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "during the run" } });
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
 
     await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(onPromptWithStreamingBehavior).toHaveBeenCalledWith(
-      "/skill:test\n\n[Attached file saved at: /store/notes.txt]",
-      "followUp",
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(
+      "during the run\n\n[Attached file saved at: /store/notes.txt]",
       undefined,
+      expect.anything(),
     ));
-  });
-
-  it("uploads a staged file before a streaming follow-up", async () => {
-    const uploadAttachment = uploadOk();
-    const onFollowUp = vi.fn();
-    const view = renderInput({
-      uploadAttachment,
-      isStreaming: true,
-      onFollowUp,
-      onSteer: vi.fn(),
-    });
-    pickFiles(view, [new File(["hello"], "notes.txt", { type: "text/plain" })]);
-    expect(await screen.findByText("notes.txt")).toBeTruthy();
-    expect(uploadAttachment).not.toHaveBeenCalled();
-
-    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
-    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(onFollowUp).toHaveBeenCalledWith("[Attached file saved at: /store/notes.txt]", undefined));
     expect(screen.queryByText("notes.txt")).toBeNull();
   });
 
-  it("queues Enter while streaming as the stored streaming-send mode, falling back to whichever queue is admitted", () => {
-    const onSteer = vi.fn();
-    const onFollowUp = vi.fn();
-    // Stored preference: steer → Enter queues a steer.
+  it("sends while streaming instead of queueing through a separate channel", () => {
+    const onSend = vi.fn().mockReturnValue(true);
     window.localStorage.setItem("pi-streaming-send-mode", "steer");
-    renderInput({ isStreaming: true, onSteer, onFollowUp });
+    renderInput({ isStreaming: true, onSend });
     const textarea = screen.getByRole("textbox");
     fireEvent.change(textarea, { target: { value: "during run" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(onSteer).toHaveBeenCalledWith("during run", undefined);
-    expect(onFollowUp).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 
-  it("queues Enter as a follow-up by default (queue preference)", () => {
-    window.localStorage.removeItem("pi-streaming-send-mode");
-    const onSteer = vi.fn();
-    const onFollowUp = vi.fn();
-    renderInput({ isStreaming: true, onSteer, onFollowUp });
-    const textarea = screen.getByRole("textbox");
-    fireEvent.change(textarea, { target: { value: "during run" } });
-    fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(onFollowUp).toHaveBeenCalledWith("during run", undefined);
-    expect(onSteer).not.toHaveBeenCalled();
-  });
-
-  it("falls back to the other queue when the preferred one is unavailable", () => {
-    window.localStorage.setItem("pi-streaming-send-mode", "steer");
-    const onFollowUp = vi.fn();
-    renderInput({ isStreaming: true, onFollowUp });
-    const textarea = screen.getByRole("textbox");
-    fireEvent.change(textarea, { target: { value: "during run" } });
-    fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(onFollowUp).toHaveBeenCalledWith("during run", undefined);
-  });
 
   it("references an in-project desktop file and uploads one outside the project", async () => {
     const uploadAttachment = uploadOk({ path: "/store/outside.txt", name: "outside.txt" });

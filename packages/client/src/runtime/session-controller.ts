@@ -91,7 +91,6 @@ import {
   type WsInterruptMessage,
   type WsResponseMessage,
   type WsSnapshotMessage,
-  type WsSubmitTurnResultMessage,
   type WsTurnStatusMessage,
 } from "@fffattiger/pix-protocol";
 import type { NegotiatedHost } from "./socket.js";
@@ -102,6 +101,7 @@ import {
   type RuntimeControllerPort,
 } from "./runtime-connection.js";
 import { type ConnectionState } from "./lifecycle.js";
+import { SendOutboxStore, type OutboxEntry } from "./send-outbox-store.js";
 import {
   createDefaultIdFactory,
   decideCommandRetry,
@@ -388,6 +388,12 @@ export interface SessionControllerOptions {
   readonly detachAckTimeoutMs?: number;
   /** Bounded lifetime for a side-chat command admission. */
   readonly sideChatCommandTimeoutMs?: number;
+  /**
+   * Durable send outbox (the ONE owner of un-delivered sends). Injected by the
+   * provider so tests can supply a deterministic store; absent means a fresh
+   * in-memory outbox for this controller.
+   */
+  readonly outbox?: SendOutboxStore;
 }
 
 /** Per-attempt transport ownership for a logical attach. */
@@ -444,6 +450,8 @@ interface SideChatCommandPending {
 interface PromptTransaction {
   readonly optimisticId: string;
   readonly sessionId: string;
+  /** Send identity that owns this bubble (see the send outbox). */
+  readonly operationId: string;
   phase: "activating" | "dispatching";
 }
 
@@ -462,6 +470,12 @@ interface PromptTransaction {
 export interface PromptActivationSettings {
   readonly model?: { readonly provider: string; readonly modelId: string } | null;
   readonly thinkingLevel?: ThinkingLevel | null;
+  /**
+   * Delivery preference while the Agent is running. It rides the SAME send:
+   * the composer states the user's preference from the「运行中按 Enter」
+   * setting and never decides whether the Agent is busy.
+   */
+  readonly whenBusy?: "steer" | "follow_up";
 }
 
 /**
@@ -601,81 +615,30 @@ interface ReadPending {
  *    epoch change after possible delivery) — the bubble + staging are retained.
  */
 export type TurnDelivery = "not_delivered" | "in_flight" | "accepted" | "uncertain";
-
 /**
- * Phase 3 single PendingTurn slot. One atomic prompt admission per connection;
- * never shares {@link CommandPending} (a long accepted turn must NOT occupy the
- * ordinary mutation command slot). Correlated strictly by (envelopeId,
- * generation, sessionId, operationId, turnId, epoch, status revision).
+ * Phase 3 send-tracking slot. It no longer represents an ATTEMPT (the outbox
+ * owns delivery): once the authority accepts a message there is nothing left to
+ * guess, so this only follows the accepted turn until terminal. Never shares
+ * {@link CommandPending} (a long accepted turn must NOT occupy the ordinary
+ * mutation command slot). Correlated strictly by (sessionId, operationId,
+ * turnId, status revision).
  */
-type SubmitTurnFenceSource = "explicit" | "attached" | "created" | "none";
-
-/**
- * Re-send fence for a repaired logical turn: the epoch (and optionally the
- * authoritative revision) the next frame must carry, or `"drop"` to send
- * unfenced (a stale attached fence proved not active).
- */
-type ResendFence = { epoch: string; revision?: number } | "drop";
-
 interface TurnPending {
   readonly operationId: string;
   readonly sessionId: string;
   /** LC-02 presentation provenance captured at send start (see {@link PresentationProvenance}). */
   provenance: PresentationProvenance | null;
-  /** Stable logical wire payload. Revision repair replaces ONLY
-   * expectedRevision; reconnect resends the current request unchanged. */
-  request: SubmitTurnRequest;
-  /** Authority source of the original admission fence. */
-  fenceSource: SubmitTurnFenceSource;
-  /** The authority-fence race was already repaired once for this logical turn. */
-  fenceRepaired: boolean;
-  /** The original attached fence was deliberately dropped (stale epoch); the
-   *  next attempt must stay unfenced instead of re-arming it from the current
-   *  attached cursor. */
-  fenceDropped: boolean;
-  /**
-   * ONE re-send budget for this logical turn, shared by every resend shape
-   * (transport recovery → stale-attached fence drop → authority revision
-   * repair → uncertain reconciliation). Bounded by
-   * {@link SUBMIT_MAX_RESENDS}: the longest reachable chain is one pass of
-   * each of those, so a fourth resend can only come from a bug.
-   */
-  resendCount: number;
-  /** ONE deadline for the whole logical send, armed at the first failure or
-   *  the first re-send and cleared on any terminal settle. A re-send in flight
-   *  is bounded by it — there is no second watchdog. */
-  resendDeadline: number | null;
-  /** The single deadline timer: settles an unresolved in-flight re-send when
-   *  {@link resendDeadline} passes. */
-  resendTimer: unknown | null;
-  /** Why the last re-send happened: a `reconcile` is never repeated, the other
-   *  two are bounded by {@link SUBMIT_MAX_RESENDS} and share the deadline. */
-  resendReason: "transport" | "fence" | "reconcile" | null;
-  /** True once any attempt for this operation passed the send gate and was
-   * registered on the transport: from then on a failure is UNCERTAIN delivery
-   * (bytes may be in flight or already admitted server-side), never proven
-   * pre-wire non-delivery. */
-  wireSeen: boolean;
-  /** Monotonic send-attempt generation for this logical pending; late waiters must match. */
-  dispatchRevision: number;
-  /** Transport generation of the current wire attempt, or null until this logical operation has touched the wire since the last proven not_delivered. */
-  wireGeneration: number | null;
-  readonly optimisticId: string;
-  /** Optimistic bubble + running-overlay owner (single-flight prompt transaction). */
-  readonly tx: PromptTransaction;
-  /** Phase 5A authority identity for the optimistic bubble (null until the authority reports it). */
-  userEntryId: string | null;
-  /** Phase 5A authority leaf after turn terminal (null until terminal). */
-  finalLeafId: string | null;
-  attempt: RuntimeAttemptHandle | null;
-  delivery: TurnDelivery;
-  /** Expected epoch when a fence was sent, then the accepted admission epoch. */
+  /** Authority epoch of the accepted admission. */
   epoch: string | null;
   turnId: string | null;
   statusRevision: number;
+  /** Authority identities that consume the optimistic bubble by exact id. */
+  userEntryId: string | null;
+  finalLeafId: string | null;
+  /** The speculative bubble this accepted turn owns (null once committed). */
+  optimisticId: string | null;
+  attempt: RuntimeAttemptHandle | null;
   terminal: boolean;
-  resolve(value: unknown): void;
-  reject(error: unknown): void;
 }
 
 /** Terminal turn signal published to the UI for committed/terminal catalog refresh. */
@@ -711,19 +674,6 @@ export interface TurnTerminalInfo {
 }
 
 
-/** Rejections no reconnect can change: the user's own input, a missing
- * capability, or a session that does not exist. Everything else — transport
- * loss, a stale epoch, a conflict — recovers once. */
-const USER_SEND_REJECTION_CODES: ReadonlySet<string> = new Set([
-  "invalid_input",
-  "invalid_request",
-  "invalid_command",
-  "unsupported_capability",
-  "unauthorized",
-  "forbidden",
-  "not_found",
-]);
-
 /** Command-lane error codes whose outcome is UNRESOLVED (the Host/sessiond RPC
  * failed after possible dispatch): a steer / follow_up answering with one of
  * these may already be queued server-side, so it is NEVER a proven
@@ -734,15 +684,17 @@ const QUEUED_TURN_UNCERTAIN_CODES: ReadonlySet<string> = new Set([
   "worker_unavailable",
 ]);
 
-function isUserSendRejection(error: ProtocolError): boolean {
-  return USER_SEND_REJECTION_CODES.has(error.code);
-}
-
-/** Diagnostic phase for a settled send: a `phase: "uncertain"` rejection had
- *  bytes on the wire or an unresolved admission, everything else is a proven
- *  pre-dispatch failure. */
-function sendDiagnosticPhase(error: ProtocolError): "activation" | "dispatch" {
-  return (error as { phase?: unknown }).phase === "uncertain" ? "dispatch" : "activation";
+/** Bounded wait for a usable transport on ONE connection attempt. */
+const OUTBOX_WIRE_WAIT_MS = 20_000;
+/** Backoff between transient delivery failures (never a give-up budget). */
+const OUTBOX_RETRY_BACKOFF_MS = 2_000;
+/**
+ * The ONLY send rejections that are final. A send the authority refuses for any
+ * other reason stays in the outbox and is resent with the same operationId, so
+ * the user never sees an error for a message that is still on its way.
+ */
+function isFinalSendRejection(error: ProtocolError): boolean {
+  return error.code === "invalid_input" || error.code === "not_found";
 }
 
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
@@ -799,10 +751,6 @@ export class SessionController implements RuntimeControllerPort {
   private lastEventId = 0;
   /** False for the finite old-daemon create result that omitted lastEventId. */
   private authorityCursorKnown = false;
-  /** Created authority remains a submit fence until accepted/stopped. */
-  private createdFenceAvailable = false;
-  /** Create-completion cursor stays independent of later observation snapshots. */
-  private createdFenceRevision: number | null = null;
   private snapshot: RuntimeSnapshot | null = null;
   /**
    * Authoritative-settings eligibility (admitted snapshot): the history-layer
@@ -908,6 +856,19 @@ export class SessionController implements RuntimeControllerPort {
 
   private readonly listeners = new Set<() => void>();
   private view: ControllerView = INITIAL_VIEW;
+  /**
+   * The ONE owner of un-delivered sends (see `send-outbox-store.ts`). A send is
+   * appended here BEFORE anything touches the wire and removed only when the
+   * authority accepted it (or proved it never will). Persisted, so a page killed
+   * mid-send resumes delivering the same `operationId` on reload.
+   */
+  private readonly outbox: SendOutboxStore;
+  /** Transport subscription that drives redelivery on every reconnect. */
+  private readonly outboxUnsubscribe: () => void;
+  /** The outbox entry currently being delivered (at most one, in order). */
+  private delivering: OutboxEntry | null = null;
+  /** Retry timer for the next delivery attempt (transient failures only). */
+  private outboxRetryTimer: unknown = null;
 
   constructor(readonly sessionId: string, runtimeConnection: RuntimeConnection, options: SessionControllerOptions = {}) {
     if (typeof sessionId !== "string" || sessionId.length === 0) throw new Error("SessionController sessionId must be non-empty");
@@ -926,7 +887,12 @@ export class SessionController implements RuntimeControllerPort {
     this.capturePresentationProvenance = options.capturePresentationProvenance ?? null;
     this.consumeCreatedSubmitProvenance = options.consumeCreatedSubmitProvenance ?? null;
     this.isPresentationCurrent = options.isPresentationCurrent ?? null;
+    this.outbox = options.outbox ?? new SendOutboxStore(undefined);
+    this.outbox.load();
+    this.outboxUnsubscribe = runtimeConnection.subscribe(() => this.onTransportForOutbox());
     if (options.initialAuthority !== undefined) this.installCreatedAuthority(options.initialAuthority);
+    // A reloaded page resumes its persisted sends for THIS session.
+    this.scheduleOutboxDrain();
     this.notify();
   }
 
@@ -942,8 +908,6 @@ export class SessionController implements RuntimeControllerPort {
     this.epoch = result.epoch;
     this.lastEventId = result.lastEventId ?? 0;
     this.authorityCursorKnown = result.lastEventId !== undefined;
-    this.createdFenceAvailable = true;
-    this.createdFenceRevision = result.lastEventId ?? null;
     this.snapshot = result.snapshot === undefined ? null : structuredClone(result.snapshot);
   }
 
@@ -963,6 +927,14 @@ export class SessionController implements RuntimeControllerPort {
   /** Idempotent controller-local teardown. NEVER runtime.stop and NEVER closes the shared connection. */
   dispose(): void {
     const error: ProtocolError = { code: "unavailable", message: "runtime controller disposed", retryable: false };
+    this.outboxUnsubscribe();
+    if (this.outboxRetryTimer !== null) {
+      this.clearTimeoutFn(this.outboxRetryTimer);
+      this.outboxRetryTimer = null;
+    }
+    // Pending sends STAY in the outbox: disposal must never drop the user's
+    // message. Only the in-flight attempt is abandoned (it is retried later).
+    this.delivering = null;
     this.failAllPending(error);
     this.binding.unbind();
     this.connection = "stopped";
@@ -1176,8 +1148,6 @@ export class SessionController implements RuntimeControllerPort {
       this.intendedSession = null;
       // A confirmed stop closes created submit-fence authority. Retained
       // snapshot/cursor state is local only and is never used to resurrect it.
-      this.createdFenceAvailable = false;
-      this.createdFenceRevision = null;
       // Protocol v2: stop clears the history layer.
       this.clearHistoryLayer();
       this.rejectAttach({ code: "interrupted", message: "stopped", retryable: false });
@@ -1435,7 +1405,7 @@ export class SessionController implements RuntimeControllerPort {
    * optimistic bubble, set the speculative running overlay and return the
    * transaction (phase "activating").
    */
-  private beginPromptTransaction(sessionId: string, message: string): PromptTransaction | null {
+  private beginPromptTransaction(sessionId: string, message: string, operationId: string): PromptTransaction | null {
     if (this.promptTransaction && this.promptTransaction.sessionId !== sessionId) {
       // Supersede the old session's transaction (owner-scoped; its dispatch
       // promise, if still pending, no-ops when it later settles because this is
@@ -1456,7 +1426,8 @@ export class SessionController implements RuntimeControllerPort {
       }
     }
     const optimisticId = this.appendOptimisticUserEntry(sessionId, message);
-    this.promptTransaction = { optimisticId, sessionId, phase: "activating" };
+    this.promptTransaction = { optimisticId, sessionId, operationId, phase: "activating" };
+    this.bindOptimisticIdentity(optimisticId, { operationId, turnId: null, userEntryId: null, finalLeafId: null });
     if (!this.optimisticPromptRunning) this.optimisticPromptRunning = true;
     this.optimisticPromptSessionId = sessionId;
     this.notify();
@@ -1485,51 +1456,12 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
-   * Dispatch the prompt command (phase → "dispatching") and settle the
-   * transaction on its outcome:
-   *  - accepted → keep the bubble (the real message_end consumes it), clear the
-   *    speculative overlay (authoritative state takes over);
-   *  - definite rejection → remove the bubble + clear the overlay (non-delivery);
-   *  - uncertain (retryable) rejection → KEEP the bubble (the turn may have
-   *    been dispatched/delivered), clear the speculative overlay (authoritative
-   *    events take over if the turn is actually running).
+   * Tag an UNRESOLVED-delivery rejection on a control path that cannot retry
+   * itself (steer / follow-up): the caller must never treat it as proven
+   * non-delivery.
    */
-  private dispatchPrompt(tx: PromptTransaction, message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
-    tx.phase = "dispatching";
-    const imagePayload = images === undefined || images.length === 0
-      ? {}
-      : { images: [...images] as ImageAttachment[] };
-    const sendP = this.sendCommand({ commandId: this.id(), type: "prompt", message, ...imagePayload });
-    return sendP.then(
-      // Accepted is transport admission, not authoritative running state.
-      // Keep the UI-first running marker until a real event takes ownership so
-      // the sidebar/tab/project indicators never blink off between ack/start.
-      // Exception — Pi 1.0 explicit "handled" receipt: the extension command
-      // consumed the input (no assistant reply, no user entry), so this
-      // transaction's own bubble is removed by receipt, not by inference.
-      (value) => {
-        const disposition = value !== null && typeof value === "object"
-          && (value as { result?: { ok?: unknown; disposition?: unknown } }).result?.ok === true
-          ? (value as { result: { disposition?: unknown } }).result.disposition
-          : undefined;
-        this.settlePromptTransaction(tx, disposition === "handled"
-          ? { removeBubble: true }
-          : { removeBubble: false, clearRunning: false });
-        return value;
-      },
-      (cause: unknown) => {
-        // A command error after dispatch cannot prove the user entry was not
-        // committed. Keep the optimistic entry until authority reconciles it.
-        const beforeWire = cause !== null && typeof cause === "object" && (cause as { phase?: unknown }).phase === "activation";
-        this.settlePromptTransaction(tx, { removeBubble: beforeWire });
-        throw cause;
-      },
-    );
-  }
-
-  /** Fixed error for a second concurrent prompt submit (single-flight). */
-  private promptBusyError(): ProtocolError {
-    return { code: "session_busy", message: "a prompt is already being sent", retryable: false };
+  private uncertainTagged(error: ProtocolError): ProtocolError & { readonly phase: "uncertain" } {
+    return { ...error, phase: "uncertain" as const };
   }
 
   /**
@@ -1538,8 +1470,7 @@ export class SessionController implements RuntimeControllerPort {
    * otherwise collapse them to `{ phase }`; malformed/raw causes are projected
    * to fixed sanitized fallback fields.
    */
-  private activationFailure(cause: unknown): ProtocolError & { readonly phase: "activation" } {
-    if (cause !== null && typeof cause === "object") {
+  private activationFailure(cause: unknown): ProtocolError & { readonly phase: "activation" } {    if (cause !== null && typeof cause === "object") {
       const candidate = cause as { code?: unknown; message?: unknown; retryable?: unknown; details?: unknown };
       if (typeof candidate.code === "string" && typeof candidate.message === "string" && typeof candidate.retryable === "boolean") {
         return {
@@ -1657,7 +1588,17 @@ export class SessionController implements RuntimeControllerPort {
     this.notify();
   }
 
-
+  /**
+   * Send one user message. UNCONDITIONAL and idempotent: it always succeeds
+   * locally (the message appears immediately) and the outbox guarantees exactly
+   * one delivery. The returned promise settles only when the authority accepted
+   * the message, or proved it never will (`invalid_input` / `not_found`) — the
+   * two cases where the composer restores the draft.
+   *
+   * There is deliberately NO busy check, NO epoch fence, NO retry budget and NO
+   * "unconfirmed" state: those were the guesses that produced six rounds of
+   * false "message not sent".
+   */
   submitTurn(input: {
     sessionId: string;
     prompt: string;
@@ -1666,11 +1607,17 @@ export class SessionController implements RuntimeControllerPort {
       model?: { provider: string; modelId: string } | null;
       thinkingLevel?: ThinkingLevel | null;
     };
+    /** Queue policy chosen by the user while the Agent is running. */
+    whenBusy?: "steer" | "follow_up";
+    /**
+     * Legacy fence hints kept in the signature for existing callers (and cached
+     * clients on the wire). Ignored here AND at the authority: an epoch guess
+     * must never decide whether a message is sent.
+     */
     expectedEpoch?: string;
     expectedRevision?: number;
   }): Promise<unknown> {
     const sessionId = input.sessionId;
-    if (sessionId !== this.sessionId) return Promise.reject(this.activationFailure(this.identityMismatchError(sessionId)));
     if (typeof sessionId !== "string" || sessionId.length === 0) {
       return Promise.reject(this.activationFailure({
         code: "invalid_input",
@@ -1678,6 +1625,7 @@ export class SessionController implements RuntimeControllerPort {
         retryable: false,
       } satisfies ProtocolError));
     }
+    if (sessionId !== this.sessionId) return Promise.reject(this.activationFailure(this.identityMismatchError(sessionId)));
     if (typeof input.prompt !== "string" || input.prompt.trim().length === 0) {
       return Promise.reject(this.activationFailure({
         code: "invalid_input",
@@ -1685,157 +1633,288 @@ export class SessionController implements RuntimeControllerPort {
         retryable: false,
       } satisfies ProtocolError));
     }
-    // Single PendingTurn: a second submit while one is active (in_flight /
-    // accepted / uncertain, not yet terminal) is `session_busy` BEFORE any
-    // speculative state is touched.
-    if (this.pendingTurn) return Promise.reject(this.activationFailure(this.promptBusyError()));
-    // LC-02: capture AFTER the busy/identity rejects and BEFORE any
-    // speculative state or the finite old-v2 cursor shim — a late admission
-    // may only request foreground observation while this token is still current.
-    const provenance = this.captureProvenance();
-    // Finite mixed-build Protocol-v2 compatibility: an older daemon may
-    // advertise submit-turn but omit create.lastEventId. The session is live,
-    // so submitting without a fence would deterministically conflict. Attach
-    // once to acquire the exact cursor, then retry this same local intent. This
-    // pre-admission attach is removed with the created-seed facade when Phase 7
-    // build fencing excludes those daemons; never guess cursor zero.
-    if (
-      input.expectedEpoch === undefined
-      && this.createdFenceAvailable
-      && !this.authorityCursorKnown
-      && !(this.attached && this.sessionId === sessionId && this.epoch !== null)
-    ) {
-      return this.transitionTo(sessionId, provenance).then(
-        () => this.dispatchSubmitTurn(input, provenance),
-        (cause: unknown) => Promise.reject(this.activationFailure(cause)),
-      );
-    }
-    return this.dispatchSubmitTurn(input, provenance);
-  }
-
-  private dispatchSubmitTurn(
-    input: {
-      sessionId: string;
-      prompt: string;
-      images?: readonly ImageAttachment[];
-      activationOverrides?: {
-        model?: { provider: string; modelId: string } | null;
-        thinkingLevel?: ThinkingLevel | null;
-      };
-      expectedEpoch?: string;
-      expectedRevision?: number;
-    },
-    provenance: PresentationProvenance | null,
-  ): Promise<unknown> {
-    const sessionId = input.sessionId;
-    // Resolve the epoch fence BEFORE any speculative state: explicit caller
-    // fence → currently attached live session → exact created-session seed. A
-    // revision without an epoch is rejected here (Protocol schema invariant),
-    // never touching a transaction.
-    const fence = this.resolveSubmitTurnFence(sessionId, input.expectedEpoch, input.expectedRevision);
-    if (fence.error !== null) return Promise.reject(this.activationFailure(fence.error));
-    const expectedEpoch = fence.epoch;
-    const expectedRevision = fence.revision;
-    const tx = this.beginPromptTransaction(sessionId, input.prompt);
-    if (!tx) return Promise.reject(this.activationFailure(this.promptBusyError()));
-    // Keep `activating` until sendSubmitTurn actually touches the wire.
-    const overrides = input.activationOverrides;
-    const activationOverrides = overrides === undefined || (overrides.model === undefined && overrides.thinkingLevel === undefined)
-      ? undefined
-      : {
-          ...(overrides.model === undefined || overrides.model === null ? {} : { model: { provider: overrides.model.provider, modelId: overrides.model.modelId } }),
-          ...(overrides.thinkingLevel === undefined || overrides.thinkingLevel === null ? {} : { thinkingLevel: overrides.thinkingLevel }),
-        };
-    const operationId = `op:${this.id()}`;
-    const request: SubmitTurnRequest = {
+    return this.enqueueSend({
       sessionId,
       prompt: input.prompt,
-      ...(input.images === undefined || input.images.length === 0 ? {} : { images: [...input.images] as ImageAttachment[] }),
-      ...(activationOverrides === undefined ? {} : { activationOverrides }),
-      ...(expectedEpoch === undefined ? {} : { expectedEpoch }),
-      ...(expectedRevision === undefined ? {} : { expectedRevision }),
-      operationId,
+      ...(input.images === undefined ? {} : { images: input.images }),
+      ...(input.activationOverrides === undefined ? {} : { activationOverrides: input.activationOverrides }),
+      whenBusy: input.whenBusy ?? "follow_up",
+    });
+  }
+
+  // --- send outbox -------------------------------------------------------
+
+  /**
+   * Enqueue one send intent, show its bubble immediately, and hand delivery to
+   * the outbox. The returned promise resolves on acceptance and rejects ONLY on
+   * a proven-final rejection (`invalid_input` / `not_found`).
+   *
+   * A second send while one is still being delivered is not an error: it is
+   * appended and delivered next, in order.
+   */
+  private enqueueSend(input: {
+    sessionId: string;
+    prompt: string;
+    images?: readonly ImageAttachment[];
+    activationOverrides?: {
+      model?: { provider: string; modelId: string } | null;
+      thinkingLevel?: ThinkingLevel | null;
     };
-    return new Promise<unknown>((resolve, reject) => {
-      this.pendingTurn = {
-        operationId,
-        sessionId,
-        request,
-        provenance,
-        fenceSource: fence.source,
-        fenceRepaired: false,
-        fenceDropped: false,
-        resendCount: 0,
-        resendDeadline: null,
-        resendTimer: null,
-        resendReason: null,
-        wireSeen: false,
-        dispatchRevision: 0,
-        wireGeneration: null,
-        optimisticId: tx.optimisticId,
-        tx,
-        userEntryId: null,
-        finalLeafId: null,
-        attempt: null,
-        delivery: "in_flight",
-        epoch: expectedEpoch ?? null,
-        turnId: null,
-        statusRevision: -1,
-        terminal: false,
-        resolve,
-        reject,
-      };
-      // Phase 5A identity optimistic commit: bind the bubble to the operation
-      // identity NOW — later authority pushes only refine it, and removal is by
-      // exact identity (never text/FIFO).
-      this.bindOptimisticIdentity(tx.optimisticId, {
-        operationId,
-        turnId: null,
-        userEntryId: null,
-        finalLeafId: null,
-      });
-      this.notify();
-      this.sendSubmitTurn();
+    whenBusy: "steer" | "follow_up";
+  }): Promise<unknown> {
+    const overrides = input.activationOverrides;
+    const model = overrides?.model;
+    const thinkingLevel = overrides?.thinkingLevel;
+    const activationOverrides = (model === undefined || model === null) && (thinkingLevel === undefined || thinkingLevel === null)
+      ? undefined
+      : {
+          ...(model === undefined || model === null ? {} : { model: { provider: model.provider, modelId: model.modelId } }),
+          ...(thinkingLevel === undefined || thinkingLevel === null ? {} : { thinkingLevel }),
+        };
+    const entry = this.outbox.enqueue({
+      operationId: `op:${this.id()}`,
+      sessionId: input.sessionId,
+      prompt: input.prompt,
+      ...(input.images === undefined || input.images.length === 0 ? {} : { images: [...input.images] }),
+      ...(activationOverrides === undefined ? {} : { activationOverrides }),
+      whenBusy: input.whenBusy,
+    });
+    // The bubble is the send receipt: it exists before anything touches the
+    // wire, so the user never waits to see their own message.
+    this.beginPromptTransaction(input.sessionId, input.prompt, entry.operationId);
+    const settled = new Promise<unknown>((resolve, reject) => {
+      this.outboxSettlements.set(entry.operationId, { resolve, reject });
+    });
+    this.notify();
+    this.scheduleOutboxDrain();
+    return settled;
+  }
+
+  /** Promise settle hooks for queued sends, keyed by operationId. */
+  private readonly outboxSettlements = new Map<string, { resolve(value: unknown): void; reject(error: unknown): void }>();
+
+  /**
+   * Deliver the oldest un-delivered send of this session, in order. Exactly one
+   * delivery is in flight; a failure never settles a send, it only schedules the
+   * next attempt on the next transport change (or a bounded backoff).
+   */
+  private scheduleOutboxDrain(): void {
+    if (this.delivering !== null) return;
+    const entry = this.outbox.listFor(this.sessionId)[0];
+    if (entry === undefined) return;
+    this.delivering = entry;
+    this.startOutboxDelivery(entry);
+  }
+
+  private startOutboxDelivery(entry: OutboxEntry): void {
+    if (this.delivering?.operationId !== entry.operationId) return;
+    let settled = false;
+    void this.waitForOutboxWire().then(
+      () => {
+        if (settled) return;
+        settled = true;
+        if (this.delivering?.operationId !== entry.operationId) return;
+        if (!this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE)) {
+          // No atomic submit seam: the finite legacy prompt command still sends
+          // through the SAME outbox (identity, ordering, retry unchanged).
+          this.sendLegacyOutboxEntry(entry);
+          return;
+        }
+        this.sendOutboxEntry(entry);
+      },
+      () => {
+        // The transport is not usable right now. Nothing is lost: the entry
+        // stays queued and the next transport change retries it.
+        settled = true;
+        if (this.delivering?.operationId !== entry.operationId) return;
+        this.delivering = null;
+      },
+    );
+  }
+
+  /**
+   * Bounded wait for a usable transport. The bound belongs to ONE connection
+   * attempt, not to the message: a timed-out wait keeps the message queued.
+   */
+  private waitForOutboxWire(): Promise<void> {
+    return (async () => {
+      if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
+      await this.whenSendable(OUTBOX_WIRE_WAIT_MS);
+    })();
+  }
+
+  private sendOutboxEntry(entry: OutboxEntry): void {
+    const request: SubmitTurnRequest = {
+      sessionId: entry.sessionId,
+      prompt: entry.prompt,
+      ...(entry.images === undefined ? {} : { images: [...entry.images] as ImageAttachment[] }),
+      ...(entry.activationOverrides === undefined ? {} : { activationOverrides: entry.activationOverrides }),
+      operationId: entry.operationId,
+      whenBusy: entry.whenBusy,
+    };
+    // A send restored from storage after a reload has no live transaction yet:
+    // re-open one so its bubble is visible again (it was on screen before the
+    // page died, and it must stay until the authority commits it).
+    this.ensureOutboxTransaction(entry);
+    if (this.promptTransaction !== null) this.promptTransaction.phase = "dispatching";
+    this.binding.sendAttempt({
+      buildMessage: (id) => ({ type: "submit_turn", id, payload: request }),
+      expectation: { kind: "submit_turn", sessionId: entry.sessionId, operationId: entry.operationId },
+      disconnectPolicy: "logical_retry",
+      onSent: () => undefined,
+      onFrame: (frame) => {
+        if (frame.type !== "submit_turn_result" || this.delivering?.operationId !== entry.operationId) return;
+        this.handleOutboxAdmission(entry, frame.payload);
+      },
+      onSendFailure: () => {
+        // The authority may or may not have received it. Both outcomes are safe
+        // because the resend carries the SAME operationId and the authority
+        // dedupes on its durable receipt — so nothing surfaces to the user.
+        if (this.delivering?.operationId !== entry.operationId) return;
+        this.delivering = null;
+        this.scheduleOutboxRetry();
+      },
+      onDisconnect: () => {
+        if (this.delivering?.operationId !== entry.operationId) return;
+        this.delivering = null;
+        // Reconnecting re-triggers the drain from the transport subscription.
+      },
     });
   }
 
   /**
-   * Phase 3/4A.0 submit-turn epoch fence resolution.
-   * Priority (never guesses an epoch):
-   *  1. explicit caller fence (input.expectedEpoch / expectedRevision);
-   *  2. the currently attached live session (authoritative epoch + lastEventId);
-   *  3. the EXACT created-session seed (authoritative create-result epoch +
-   *     exact create-completion cursor; not a reservation, and bounded repair
-   *     handles later journal advance) — never used for another session.
-   * A revision without an epoch is an invalid fence (Protocol schema).
+   * Settle one admission frame for the in-flight send.
+   *
+   * accepted / duplicate → delivered (possibly queued behind the running turn):
+   * leave the outbox and follow the turn to terminal. `invalid_input` /
+   * `not_found` → the ONLY proven-final outcomes, so give up and let the
+   * composer restore the draft. Anything else stays silent and is resent with
+   * the same operationId.
    */
-  private resolveSubmitTurnFence(
-    sessionId: string,
-    explicitEpoch: string | undefined,
-    explicitRevision: number | undefined,
-  ): { epoch: string | undefined; revision: number | undefined; source: SubmitTurnFenceSource; error: ProtocolError | null } {
-    if (explicitRevision !== undefined && explicitEpoch === undefined) {
-      return {
-        epoch: undefined,
-        revision: undefined,
-        source: "explicit",
-        error: {
-          code: "invalid_input",
-          message: "expectedRevision requires expectedEpoch",
-          retryable: false,
-        } satisfies ProtocolError,
-      };
+  private handleOutboxAdmission(entry: OutboxEntry, admission: SubmitTurnAdmission): void {
+    if (admission.status === "accepted" || admission.status === "duplicate") {
+      this.outbox.dequeue(entry.operationId);
+      this.delivering = null;
+      const settlement = this.outboxSettlements.get(entry.operationId);
+      this.outboxSettlements.delete(entry.operationId);
+      settlement?.resolve(undefined);
+      if (this.promptTransaction !== null && this.promptTransaction.operationId === entry.operationId) {
+        this.settlePromptTransaction(this.promptTransaction, { removeBubble: false, clearRunning: false });
+      }
+      this.adoptSentTurn(entry, admission);
+      this.notify();
+      this.scheduleOutboxDrain();
+      return;
     }
-    if (explicitEpoch !== undefined) {
-      return { epoch: explicitEpoch, revision: explicitRevision, source: "explicit", error: null };
+    if (!isFinalSendRejection(admission.error)) {
+      this.delivering = null;
+      this.scheduleOutboxRetry();
+      return;
     }
-    if (this.attached && this.sessionId === sessionId && this.epoch !== null) {
-      return { epoch: this.epoch, revision: this.attachedFenceRevision ?? this.lastEventId, source: "attached", error: null };
+    // Proven final: this message will never be accepted.
+    this.outbox.discard(entry.operationId);
+    this.delivering = null;
+    this.removeOptimisticForOperation(entry.operationId);
+    if (this.promptTransaction !== null && this.promptTransaction.operationId === entry.operationId) {
+      this.settlePromptTransaction(this.promptTransaction, { removeBubble: true });
     }
-    if (this.createdFenceAvailable && this.createdFenceRevision !== null && this.epoch !== null) {
-      return { epoch: this.epoch, revision: this.createdFenceRevision, source: "created", error: null };
-    }
-    return { epoch: undefined, revision: undefined, source: "none", error: null };
+    const settlement = this.outboxSettlements.get(entry.operationId);
+    this.outboxSettlements.delete(entry.operationId);
+    settlement?.reject(this.activationFailure(admission.error));
+    this.notify();
+    this.scheduleOutboxDrain();
+  }
+
+  /** Bounded backoff for a transient delivery failure; never a give-up budget. */
+  private scheduleOutboxRetry(): void {
+    if (this.outboxRetryTimer !== null) return;
+    this.outboxRetryTimer = this.setTimeoutFn(() => {
+      this.outboxRetryTimer = null;
+      this.scheduleOutboxDrain();
+    }, OUTBOX_RETRY_BACKOFF_MS);
+  }
+
+  /** Transport changes are the retry trigger — never a busy poll. */
+  private onTransportForOutbox(): void {
+    if (this.delivering !== null) return;
+    this.scheduleOutboxDrain();
+  }
+
+  /** Remove the speculative bubble owned by one operation (identity-only). */
+  private removeOptimisticForOperation(operationId: string): void {
+    this.optimisticUserEntries = this.optimisticUserEntries.filter(
+      (candidate) => candidate.identity?.operationId !== operationId,
+    );
+  }
+
+  /**
+   * Make sure the send has its bubble/transaction, re-creating it for an entry
+   * restored from storage after a reload. Idempotent for the live case.
+   */
+  private ensureOutboxTransaction(entry: OutboxEntry): void {
+    if (this.promptTransaction?.operationId === entry.operationId) return;
+    if (this.promptTransaction !== null) return;
+    if (this.optimisticUserEntries.some((candidate) => candidate.identity?.operationId === entry.operationId)) return;
+    this.beginPromptTransaction(entry.sessionId, entry.prompt, entry.operationId);
+  }
+
+  /**
+   * FINITE Protocol-v2 shim: a daemon without the atomic submit seam sends
+   * through the ordinary prompt command. Identity, ordering and retry are still
+   * the outbox's, so the user-visible contract does not change. Removal
+   * condition: Protocol v3 minimum (same window as `runtime.submit-turn.v1`).
+   */
+  private sendLegacyOutboxEntry(entry: OutboxEntry): void {
+    const finish = (): void => {
+      this.delivering = null;
+      this.scheduleOutboxDrain();
+    };
+    const tx = this.promptTransaction?.operationId === entry.operationId
+      ? this.promptTransaction
+      : this.beginPromptTransaction(entry.sessionId, entry.prompt, entry.operationId);
+    if (tx === null) { finish(); return; }
+    tx.phase = "dispatching";
+    const commandId = this.id();
+    const command: RuntimeCommand = {
+      commandId,
+      type: "prompt",
+      message: entry.prompt,
+      ...(entry.images === undefined ? {} : { images: [...entry.images] as ImageAttachment[] }),
+    };
+    this.binding.sendAttempt({
+      buildMessage: (id) => ({ type: "command", id, payload: this.withEpoch({ sessionId: entry.sessionId, command }) }),
+      expectation: { kind: "command", sessionId: entry.sessionId, commandId, resultType: "prompt" },
+      disconnectPolicy: "logical_retry",
+      onSent: () => undefined,
+      onFrame: (frame) => {
+        if (frame.type !== "response" || frame.id !== commandId) return;
+        const payload = frame.payload;
+        if (payload.ok) {
+          this.outbox.dequeue(entry.operationId);
+          const settlement = this.outboxSettlements.get(entry.operationId);
+          this.outboxSettlements.delete(entry.operationId);
+          settlement?.resolve(payload.result);
+          this.settlePromptTransaction(tx, { removeBubble: false, clearRunning: false });
+          finish();
+          return;
+        }
+        if (isFinalSendRejection(payload.error)) {
+          this.outbox.discard(entry.operationId);
+          this.removeOptimisticForOperation(entry.operationId);
+          this.settlePromptTransaction(tx, { removeBubble: true });
+          const settlement = this.outboxSettlements.get(entry.operationId);
+          this.outboxSettlements.delete(entry.operationId);
+          settlement?.reject(this.activationFailure(payload.error));
+          finish();
+          this.notify();
+          return;
+        }
+        finish();
+        this.scheduleOutboxRetry();
+      },
+      onSendFailure: () => { finish(); this.scheduleOutboxRetry(); },
+      onDisconnect: () => { finish(); },
+    });
   }
 
   /** Subscribe to terminal turn status (committed/terminal catalog refresh). */
@@ -1845,35 +1924,25 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
-   * Send a prompt (ordinary command) with optional images. Phase 3: when the
-   * atomic submit-turn seam is negotiated this routes through
-   * {@link submitTurn} (single PendingTurn, independent of the ordinary command
-   * slot); otherwise it uses the explicit finite legacy command-envelope path.
-   * Requires the runtime already attached to the target session (activation is
-   * {@link sendPromptToSession}'s job).
+   * Send a prompt (ordinary command) with optional images. Requires the runtime
+   * already attached to the target session (activation is
+   * {@link sendPromptToSession}'s job). Delivery, ordering and retry belong to
+   * the outbox, so this never fails for a transient reason.
    */
   sendPrompt(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
     if (!this.sessionId) return Promise.reject(this.activationFailure(this.notAttachedError()));
-    if (this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE)) {
-      return this.submitTurn({
-        sessionId: this.sessionId,
-        prompt: message,
-        ...(images === undefined ? {} : { images }),
-      });
-    }
-    const tx = this.beginPromptTransaction(this.sessionId, message);
-    if (!tx) return Promise.reject(this.activationFailure(this.promptBusyError()));
-    return this.dispatchPrompt(tx, message, images);
+    return this.submitTurn({
+      sessionId: this.sessionId,
+      prompt: message,
+      ...(images === undefined ? {} : { images }),
+    });
   }
 
   /**
-   * Activation-then-send — the SINGLE activation state machine. Phase 3: when
-   * the atomic submit-turn seam is negotiated, the submit to `sessionId` is
-   * admitted by the authority WITHOUT first detaching a different attached
-   * session (A→B: A stays intact until B's admission); only after acceptance
-   * does the store transition its attach to the target. Without the negotiated
-   * seam it delegates to {@link legacySubmitTurnV2} (the Protocol-v2
-   * transition → staged settings → dispatch chain). NEVER creates a session.
+   * Activation-then-send: ONE entry point for sending into an exact session.
+   * The admission itself is the activation intent on the negotiated seam (the
+   * authority starts the Worker when needed and A→B never detaches A before B
+   * is accepted). NEVER creates a session.
    */
   sendPromptToSession(
     sessionId: string,
@@ -1881,7 +1950,6 @@ export class SessionController implements RuntimeControllerPort {
     images?: readonly ImageAttachment[],
     activationSettings?: PromptActivationSettings,
   ): Promise<unknown> {
-    if (sessionId !== this.sessionId) return Promise.reject(this.activationFailure(this.identityMismatchError(sessionId)));
     if (!sessionId) {
       return Promise.reject(this.activationFailure({
         code: "invalid_input",
@@ -1889,115 +1957,17 @@ export class SessionController implements RuntimeControllerPort {
         retryable: false,
       } satisfies ProtocolError));
     }
-    if (this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE)) {
-      return this.submitTurn({
-        sessionId,
-        prompt: message,
-        ...(images === undefined ? {} : { images }),
-        activationOverrides: {
-          ...(activationSettings?.model === undefined || activationSettings.model === null ? {} : { model: activationSettings.model }),
-          ...(activationSettings?.thinkingLevel === undefined || activationSettings.thinkingLevel === null ? {} : { thinkingLevel: activationSettings.thinkingLevel }),
-        },
-      });
-    }
-    return this.legacySubmitTurnV2(sessionId, message, images, activationSettings);
-  }
-
-  /**
-   * Protocol-v2 compatibility submit (the finite legacy shim). Used ONLY when
-   * `runtime.submit-turn.v1` was not negotiated (old Host/sessiond/daemon).
-   * Preserves the old contract: transitionTo → applyStagedActivationSettings →
-   * dispatchPrompt, with the prompt command riding the ordinary command slot.
-   * Removal condition: Protocol v3 minimum + Phase 7 build contract rejecting
-   * daemons/Workers without the submit feature.
-   */
-  private legacySubmitTurnV2(
-    sessionId: string,
-    message: string,
-    images?: readonly ImageAttachment[],
-    activationSettings?: PromptActivationSettings,
-  ): Promise<unknown> {
-    // LC-02: the legacy chain's observation request happens at send start, but
-    // it carries the same captured provenance for uniform gating.
-    const provenance = this.captureProvenance();
-    const tx = this.beginPromptTransaction(sessionId, message);
-    if (!tx) return Promise.reject(this.activationFailure(this.promptBusyError()));
-    return this.transitionTo(sessionId, provenance).then(
-      () => this.applyStagedActivationSettings(tx, activationSettings).then(
-        () => this.dispatchPrompt(tx, message, images),
-      ),
-      (cause: unknown) => {
-        // Activation-phase failure: the prompt was NEVER dispatched — proven
-        // non-delivery. Remove the phantom bubble + overlay and reject tagged
-        // `phase: "activation"` so the Composer restores/retains the draft.
-        this.settlePromptTransaction(tx, { removeBubble: true });
-        throw this.activationFailure(cause);
+    if (sessionId !== this.sessionId) return Promise.reject(this.activationFailure(this.identityMismatchError(sessionId)));
+    return this.submitTurn({
+      sessionId,
+      prompt: message,
+      ...(images === undefined ? {} : { images }),
+      ...(activationSettings?.whenBusy === undefined ? {} : { whenBusy: activationSettings.whenBusy }),
+      activationOverrides: {
+        ...(activationSettings?.model === undefined || activationSettings.model === null ? {} : { model: activationSettings.model }),
+        ...(activationSettings?.thinkingLevel === undefined || activationSettings.thinkingLevel === null ? {} : { thinkingLevel: activationSettings.thinkingLevel }),
       },
-    );
-  }
-
-  /**
-   * Apply staged activation settings (model, then thinking level) in
-   * deterministic order AFTER the transition succeeded and BEFORE the prompt
-   * command is dispatched. Each setting runs over the SINGLE ordinary-command
-   * slot (setModel resolves and frees the slot before setThinkingLevel sends,
-   * and only then does the prompt dispatch), so the order is exact and there is
-   * no parallel control race. The transaction stays in the `activating` phase
-   * throughout — no prompt command is on the wire, so ANY settings failure is
-   * PROVEN non-delivery: the phantom bubble/overlay are removed and the
-   * rejection is tagged `phase: "activation"` (the Composer then restores the
-   * draft and PRESERVES the staged settings so the user's intent is not lost).
-   */
-  private applyStagedActivationSettings(
-    tx: PromptTransaction,
-    settings: PromptActivationSettings | undefined,
-  ): Promise<void> {
-    const model = settings?.model;
-    const thinking = settings?.thinkingLevel;
-    if (!model && !thinking) return Promise.resolve();
-    return (async () => {
-      if (model) {
-        try {
-          await this.setModel(model.provider, model.modelId);
-        } catch (cause: unknown) {
-          this.settlePromptTransaction(tx, { removeBubble: true });
-          throw this.activationFailure(cause);
-        }
-      }
-      if (thinking) {
-        try {
-          await this.setThinkingLevel(thinking);
-        } catch (cause: unknown) {
-          this.settlePromptTransaction(tx, { removeBubble: true });
-          throw this.activationFailure(cause);
-        }
-      }
-      // The set_model / set_thinking_level commands converge the worker but do
-      // NOT rewrite the client snapshot. Without a refresh the Composer keeps
-      // showing the pre-activation model/thinking until a page reload. Pull the
-      // authoritative snapshot so the selectors reflect what was just applied.
-      try {
-        await this.fetchSnapshot();
-      } catch {
-        // Snapshot refresh is best-effort here; the prompt still dispatches.
-      }
-    })();
-  }
-
-  /**
-   * Transition to the exact `sessionId` as the attached/authoritative session:
-   *  - already attached → resolve immediately (send directly);
-   *  - attached to a DIFFERENT session → detach it (single-flight per source
-   *    session — coalesces with the shell's fail-closed selection detach so no
-   *    duplicate detach frames), then open the selected session;
-   *  - absent / stale / stopped / in-flight attach → open the selected session
-   *    (openSession resets sessionStopped, supersedes any in-flight attach
-   *    identity-scoped, and NEVER creates — `not_found` rejects).
-   */
-  private transitionTo(sessionId: string, provenance: PresentationProvenance | null = null): Promise<void> {
-    if (sessionId !== this.sessionId) return Promise.reject(this.identityMismatchError(sessionId));
-    if (this.attached) return Promise.resolve();
-    return this.requestObservation(sessionId, { intent: "activation", provenance });
+    });
   }
 
   // --- D2-P8 extension-UI final response -------------------------------------
@@ -2950,111 +2920,6 @@ export class SessionController implements RuntimeControllerPort {
     }
   }
 
-  onTurnStatus(message: WsTurnStatusMessage, generation: number): void {
-    const pending = this.pendingTurn;
-    if (!pending || pending.terminal) return;
-    if (generation !== this.runtimeConnection.currentGeneration || generation !== pending.wireGeneration) return;
-    const status = message.payload;
-    if (status.sessionId !== pending.sessionId || status.operationId !== pending.operationId) return;
-    if (pending.turnId !== null && status.turnId !== pending.turnId) return;
-    if (pending.epoch !== null && status.epoch !== pending.epoch) return;
-    if (status.revision <= pending.statusRevision) return;
-    pending.turnId = status.turnId;
-    pending.epoch = status.epoch;
-    pending.statusRevision = status.revision;
-    // Phase 5A identity optimistic commit: the authority's user-entry / final
-    // leaf identities bind to this exact operation's bubble (first answer wins;
-    // never a different operation's identity).
-    if (status.userEntryId !== undefined && pending.userEntryId === null) {
-      pending.userEntryId = status.userEntryId;
-      this.updateOptimisticIdentity(pending.optimisticId, { userEntryId: status.userEntryId });
-    }
-    if (status.finalLeafId !== undefined && pending.finalLeafId === null) {
-      pending.finalLeafId = status.finalLeafId;
-      this.updateOptimisticIdentity(pending.optimisticId, { finalLeafId: status.finalLeafId });
-    }
-    if (pending.delivery === "in_flight" && (pending.userEntryId !== null || status.disposition === "handled" || status.state === "completed")) {
-      // A correlated authority status is stronger than a lost or contradictory
-      // admission receipt: the user entry already exists (or was handled).
-      pending.delivery = "accepted";
-      this.clearResendDeadline(pending);
-      pending.resolve(status.disposition === "handled" ? { result: { ok: true, disposition: "handled" } } : undefined);
-      this.settlePromptTransaction(pending.tx, { removeBubble: status.disposition === "handled", clearRunning: false });
-    } else if (pending.delivery === "in_flight" && status.state === "failed") {
-      pending.reject(this.uncertainTagged(status.error ?? { code: "unavailable", message: "turn failed before admission receipt", retryable: false }));
-      this.settlePromptTransaction(pending.tx, { removeBubble: false });
-    }
-    if (status.state === "completed" || status.state === "failed") {
-      const authority = message.authority;
-      if (authority !== undefined
-        && authority.sessionId === this.sessionId && authority.snapshot.sessionId === this.sessionId
-        && authority.epoch === status.epoch && (this.epoch === null || this.epoch === authority.epoch)
-        && (!this.authorityCursorKnown || authority.lastEventId >= this.lastEventId)
-        // An observing controller consumes the queued events first. Advancing
-        // its cursor here could discard message_end before the FIFO snapshot.
-        && (!this.attached || authority.lastEventId === this.lastEventId)) {
-        this.epoch = authority.epoch;
-        this.lastEventId = authority.lastEventId;
-        this.authorityCursorKnown = true;
-        this.snapshot = structuredClone(authority.snapshot);
-        this.settleSnapshotCapabilityLoss();
-      }
-      pending.terminal = true;
-      this.clearResendDeadline(pending);
-      // Release only this turn's speculative overlay. The refreshed snapshot
-      // remains authoritative, including a genuinely running external stream.
-      if (this.optimisticPromptSessionId === pending.sessionId) {
-        this.optimisticPromptRunning = false;
-        this.optimisticPromptSessionId = null;
-      }
-      // A brand-new session can receive its first committed events before the
-      // observation snapshot establishes a history anchor. The terminal status
-      // carries the exact final JSONL leaf: pin it without clearing the live
-      // tail, so the HTTP history query can converge while the already-rendered
-      // first turn remains visible. Clearing here caused turn 1 to disappear
-      // as soon as turn 2 triggered a late snapshot/reattach.
-      const terminalLeafId = status.finalLeafId ?? pending.finalLeafId;
-      if (terminalLeafId !== null && this.historyAnchorLeafId === null) {
-        this.establishHistoryAnchorPreservingLiveTail(terminalLeafId);
-      } else if (terminalLeafId === null && this.admittedSnapshot?.operationId === pending.operationId
-        && this.admittedSnapshot.epoch === status.epoch) {
-        // No final leaf is a bounded terminal outcome only after the exact
-        // observation attempt settles; keep the bridge during its gap.
-        this.admittedSnapshot = { ...this.admittedSnapshot, terminalWithoutFinalLeaf: true };
-      }
-      pending.attempt?.cancel();
-      this.binding.unregisterTurn(pending.operationId);
-      this.pendingTurn = null;
-      this.expireTerminalAdmitted(pending.operationId, status.epoch);
-      // Pi 1.0 explicit receipt: a terminal "handled" turn owes NO assistant
-      // reply and NO user transcript entry — remove THIS operation's optimistic
-      // bubble by its own identity. Never infer handled from a missing
-      // userEntryId (a failed/legacy turn may still commit an entry later).
-      if (status.disposition === "handled") {
-        this.optimisticUserEntries = this.optimisticUserEntries.filter(
-          (candidate) => candidate.entry.entryId !== pending.optimisticId,
-        );
-      }
-      this.publishTurnTerminal({
-        sessionId: status.sessionId,
-        operationId: status.operationId,
-        turnId: status.turnId,
-        state: status.state,
-        ...(status.disposition === undefined ? {} : { disposition: status.disposition }),
-        ...(status.error === undefined ? {} : { error: status.error }),
-        ...(status.userEntryId === undefined ? {} : { userEntryId: status.userEntryId }),
-      });
-      // Phase 5A: the exact turn reached terminal — a deferred leaf-fence
-      // rebase (committed session_changed that arrived mid-turn) applies NOW,
-      // FORCED: the terminal status is authoritative, so this session's
-      // optimistic running overlay is released first even if a stale snapshot
-      // still claims isPromptRunning/isStreaming. (Teardown paths keep the
-      // non-forced guards — the server may still be running the turn.)
-      this.flushPendingLeafRebase(true);
-    }
-    this.notify();
-  }
-
   onUnavailable(message: Extract<WsHostMessage, { type: "runtime_unavailable" }>, _generation: number): void {
     this.setError(message.payload.error);
   }
@@ -3102,54 +2967,129 @@ export class SessionController implements RuntimeControllerPort {
     this.expireTerminalAdmittedIfSettled();
   }
 
-  private handleSubmitTurnAdmission(message: WsSubmitTurnResultMessage): void {
+
+  /**
+   * Follow the status of the ACCEPTED turn. Delivery is already guaranteed —
+   * this only refines the bubble's authority identity (so the committed entry
+   * consumes it by exact id) and refreshes the catalog at terminal.
+   *
+   * There is no delivery verdict here: an accepted message is delivered, and a
+   * failed turn still committed the user's message.
+   */
+  onTurnStatus(message: WsTurnStatusMessage, generation: number): void {
     const pending = this.pendingTurn;
-    if (!pending) return;
-    const admission = message.payload;
-    if (admission.status === "accepted" || admission.status === "duplicate") this.acceptTurn(pending, admission);
-    else this.rejectTurn(pending, admission);
+    if (!pending || pending.terminal) return;
+    if (generation !== this.runtimeConnection.currentGeneration) return;
+    const status = message.payload;
+    if (status.sessionId !== pending.sessionId || status.operationId !== pending.operationId) return;
+    if (pending.turnId !== null && status.turnId !== pending.turnId) return;
+    if (pending.epoch !== null && status.epoch !== pending.epoch) return;
+    if (status.revision <= pending.statusRevision) return;
+    pending.turnId = status.turnId;
+    pending.epoch = status.epoch;
+    pending.statusRevision = status.revision;
+    // Authority identity for the bubble: first answer wins, never another
+    // operation's identity.
+    if (status.userEntryId !== undefined && pending.userEntryId === null) {
+      pending.userEntryId = status.userEntryId;
+      if (pending.optimisticId !== null) {
+        this.updateOptimisticIdentity(pending.optimisticId, { userEntryId: status.userEntryId });
+      }
+    }
+    if (status.finalLeafId !== undefined && pending.finalLeafId === null) {
+      pending.finalLeafId = status.finalLeafId;
+      if (pending.optimisticId !== null) {
+        this.updateOptimisticIdentity(pending.optimisticId, { finalLeafId: status.finalLeafId });
+      }
+    }
+    if (status.state === "completed" || status.state === "failed") {
+      const authority = message.authority;
+      if (authority !== undefined
+        && authority.sessionId === this.sessionId && authority.snapshot.sessionId === this.sessionId
+        && authority.epoch === status.epoch && (this.epoch === null || this.epoch === authority.epoch)
+        && (!this.authorityCursorKnown || authority.lastEventId >= this.lastEventId)
+        // An observing controller consumes the queued events first. Advancing
+        // its cursor here could discard message_end before the FIFO snapshot.
+        && (!this.attached || authority.lastEventId === this.lastEventId)) {
+        this.epoch = authority.epoch;
+        this.lastEventId = authority.lastEventId;
+        this.authorityCursorKnown = true;
+        this.snapshot = structuredClone(authority.snapshot);
+        this.settleSnapshotCapabilityLoss();
+      }
+      pending.terminal = true;
+      // Release only this turn's speculative overlay. The refreshed snapshot
+      // remains authoritative, including a genuinely running external stream.
+      if (this.optimisticPromptSessionId === pending.sessionId) {
+        this.optimisticPromptRunning = false;
+        this.optimisticPromptSessionId = null;
+      }
+      // A brand-new session can receive its first committed events before the
+      // observation snapshot establishes a history anchor. The terminal status
+      // carries the exact final JSONL leaf: pin it without clearing the live
+      // tail, so the HTTP history query can converge while the already-rendered
+      // first turn remains visible.
+      const terminalLeafId = status.finalLeafId ?? pending.finalLeafId;
+      if (terminalLeafId !== null && this.historyAnchorLeafId === null) {
+        this.establishHistoryAnchorPreservingLiveTail(terminalLeafId);
+      } else if (terminalLeafId === null && this.admittedSnapshot?.operationId === pending.operationId
+        && this.admittedSnapshot.epoch === status.epoch) {
+        // No final leaf is a bounded terminal outcome only after the exact
+        // observation attempt settles; keep the bridge during its gap.
+        this.admittedSnapshot = { ...this.admittedSnapshot, terminalWithoutFinalLeaf: true };
+      }
+      pending.attempt?.cancel();
+      this.binding.unregisterTurn(pending.operationId);
+      this.pendingTurn = null;
+      this.expireTerminalAdmitted(pending.operationId, status.epoch);
+      // Pi 1.0 explicit receipt: a terminal "handled" turn owes NO assistant
+      // reply and NO user transcript entry — remove THIS operation's bubble by
+      // its own identity. Never infer handled from a missing userEntryId.
+      if (status.disposition === "handled" && pending.optimisticId !== null) {
+        this.removeOptimisticEntry(pending.optimisticId);
+      }
+      this.publishTurnTerminal({
+        sessionId: status.sessionId,
+        operationId: status.operationId,
+        turnId: status.turnId,
+        state: status.state,
+        ...(status.disposition === undefined ? {} : { disposition: status.disposition }),
+        ...(status.error === undefined ? {} : { error: status.error }),
+        ...(status.userEntryId === undefined ? {} : { userEntryId: status.userEntryId }),
+      });
+      // The exact turn reached terminal — a deferred leaf-fence rebase applies
+      // NOW, forced (the terminal status is authoritative).
+      this.flushPendingLeafRebase(true);
+    }
+    this.notify();
   }
 
   /**
-   * Accept an admitted turn (accepted or duplicate-accepted). Retains the
-   * optimistic bubble (until authority correlation) and the speculative running
-   * overlay (until a real event proves the turn); resolves the caller promise
-   * so the Composer clears staged settings. Only AFTER admission does the store
-   * transition its attach to the target session (A→B: A is never detached
-   * before B's admission).
+   * Adopt an ACCEPTED send as the tracked turn. From here the message is the
+   * authority's responsibility; this only follows its status so the UI can
+   * reconcile the bubble and refresh the catalog at terminal.
    */
-  private acceptTurn(
-    pending: TurnPending,
-    admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>,
-  ): void {
-    pending.delivery = "accepted";
-    this.clearResendDeadline(pending);
-    pending.turnId = admission.turnId === undefined ? null : admission.turnId;
-    pending.epoch = admission.epoch;
-    pending.statusRevision = admission.turnStatus.revision;
-    this.settlePromptTransaction(pending.tx, { removeBubble: false, clearRunning: false });
-    // Phase 5A: refine the bubble's authority identity with the admitted turnId
-    // (and any user/final-leaf identity the admission status already carries).
-    if (pending.turnId !== null) {
-      this.updateOptimisticIdentity(pending.optimisticId, { turnId: pending.turnId });
+  private adoptSentTurn(entry: OutboxEntry, admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>): void {
+    const tx = this.promptTransaction;
+    const optimisticId = tx !== null && tx.operationId === entry.operationId ? tx.optimisticId : null;
+    const provenance = this.captureProvenance();
+    if (this.pendingTurn !== null) {
+      // A previous accepted turn is still tracked (this send may have been
+      // queued behind it). Its bubble is consumed by its own committed entry,
+      // so drop the stale tracker instead of leaking it.
+      this.pendingTurn.attempt?.cancel();
+      this.binding.unregisterTurn(this.pendingTurn.operationId);
+      this.pendingTurn = null;
     }
-    if (admission.turnStatus.userEntryId !== undefined) {
-      pending.userEntryId = admission.turnStatus.userEntryId;
-      this.updateOptimisticIdentity(pending.optimisticId, { userEntryId: admission.turnStatus.userEntryId });
+    if (optimisticId !== null) {
+      this.bindOptimisticIdentity(optimisticId, {
+        operationId: entry.operationId,
+        turnId: admission.turnId ?? null,
+        userEntryId: admission.turnStatus.userEntryId ?? null,
+        finalLeafId: null,
+      });
     }
-    // An ordinary accepted admission is captured before prompt execution; its
-    // snapshot leaf is the pre-turn parent, never a final leaf. Accept a
-    // finalLeafId only from a duplicate subscription that has already advanced
-    // beyond admitted (finite mixed-build defense against older Workers that
-    // mislabeled the pre-turn leaf on the admitted status).
-    if (admission.turnStatus.state !== "admitted" && admission.turnStatus.finalLeafId !== undefined) {
-      pending.finalLeafId = admission.turnStatus.finalLeafId;
-      this.updateOptimisticIdentity(pending.optimisticId, { finalLeafId: admission.turnStatus.finalLeafId });
-    }
-    // Accepted admission consumes only the one-shot created submit fence and
-    // becomes retained exact authority before the public promise resolves.
-    this.createdFenceAvailable = false;
-    this.createdFenceRevision = null;
+    // Accepted admission consumes the one-shot created submit fence.
     const keepAheadSameEpoch = this.authorityCursorKnown
       && this.epoch === admission.epoch
       && this.lastEventId > admission.revision
@@ -3161,504 +3101,69 @@ export class SessionController implements RuntimeControllerPort {
     this.authorityCursorKnown = true;
     if (admission.snapshot !== undefined) {
       if (!keepAheadSameEpoch) this.snapshot = structuredClone(admission.snapshot);
-      // Authoritative-settings eligibility: the accepted admission's snapshot
-      // is installed BEFORE the public promise resolves, so the Composer can
-      // surface its model/thinking from the moment `.then` runs (no transient
-      // persisted baseline). Valid until a history-layer transition or a later
-      // presentation reselect supersedes it (see computeAdmittedSnapshotEligible).
+      // Authoritative-settings eligibility: installed BEFORE the send settles
+      // so the composer can surface the admitted model/thinking immediately.
       this.admittedSnapshot = {
         historyGeneration: this.historyGeneration,
-        provenance: pending.provenance,
-        operationId: pending.operationId,
+        provenance,
+        operationId: entry.operationId,
         epoch: admission.epoch,
         terminalWithoutFinalLeaf: false,
       };
-      // The admission snapshot is captured before driver.prompt() starts, so
-      // its leaf is the exact parent of this turn's future user entry. A fresh
-      // exact controller may have appended optimism before it had any history
-      // or snapshot; repair only that unknown (null) base. This lets a
-      // persisted-only commit reconcile after reconnect/rebase without text
-      // guessing, while never overwriting an already-known base.
+      // The admission snapshot is captured before the prompt starts, so its
+      // leaf is the exact parent of this turn's future user entry. Repair only
+      // the unknown (null) base of THIS operation's bubble.
       const admissionBase = admission.snapshot.state.leafId;
-      if (admissionBase !== undefined) {
+      if (admissionBase !== undefined && optimisticId !== null) {
         this.optimisticUserEntries = this.optimisticUserEntries.map((candidate) =>
-          candidate.entry.entryId === pending.optimisticId && candidate.baseEntryId === null
+          candidate.entry.entryId === optimisticId && candidate.baseEntryId === null
             ? { ...candidate, baseEntryId: admissionBase }
             : candidate,
         );
       }
     }
-    if (pending.resendCount > 0) this.reportSendDiagnostic("send_recovered", pending, { code: "unavailable", message: "recovered", retryable: true });
-    pending.resolve(admission);
-    this.notify();
+    this.pendingTurn = {
+      operationId: entry.operationId,
+      sessionId: entry.sessionId,
+      provenance,
+      epoch: admission.epoch,
+      turnId: admission.turnId ?? null,
+      statusRevision: admission.turnStatus.revision,
+      userEntryId: admission.turnStatus.userEntryId ?? null,
+      finalLeafId: null,
+      optimisticId,
+      attempt: null,
+      terminal: false,
+    };
     if (!this.attached) {
-      // Only the compatibility coordinator may replace the Browser's one
-      // observation attachment. The exact controller never takes it over.
       // LC-02: the request carries the SEND-START provenance — a late admission
       // for a superseded presentation completes in the background and never
       // steals the foreground lease. An observation failure here NEVER
-      // resubmits the turn or starts a new Worker; it surfaces as a structured
-      // error on this exact controller (no silent catch, no retry).
-      void this.requestObservation(pending.sessionId, { intent: "post-admission", provenance: pending.provenance }).then(
-        () => { this.expireTerminalAdmitted(pending.operationId, pending.epoch ?? admission.epoch); },
+      // resubmits the message or starts a new Worker.
+      void this.requestObservation(entry.sessionId, { intent: "post-admission", provenance }).then(
+        () => { this.expireTerminalAdmitted(entry.operationId, admission.epoch); },
         (error: unknown) => {
           this.setError(this.protocolErrorFrom(error, "post-admission observation failed"));
-          this.expireTerminalAdmitted(pending.operationId, pending.epoch ?? admission.epoch);
+          this.expireTerminalAdmitted(entry.operationId, admission.epoch);
         },
       );
     }
   }
 
   /**
-   * Settle a rejected admission. `not_delivered` → the authority PROVED
-   * non-delivery, so a repairable fence race gets its one re-send (see
-   * {@link submitTurnFenceRepair}) and anything else settles as activation
-   * (bubble removed, draft restored, staged settings preserved). `uncertain` →
-   * the turn may have been delivered: reconcile once by re-sending the SAME
-   * operationId (the authority's idempotent admission answers duplicate /
-   * accepted when it landed, or admits / proves not_delivered when it did
-   * not); a second uncertainty or an exhausted budget settles uncertain-tagged
-   * with the bubble kept.
-   */
-  private rejectTurn(pending: TurnPending, admission: Extract<SubmitTurnAdmission, { status: "rejected" }>): void {
-    if (pending.userEntryId !== null) return;
-    pending.delivery = admission.delivery;
-    if (admission.delivery === "not_delivered") {
-      const fence = this.submitTurnFenceRepair(pending, admission);
-      if (fence !== null && this.resendTurn(pending, fence, "fence")) return;
-      // Not repairable, or the shared re-send budget is spent: the authority
-      // PROVED this frame was not delivered — record that proof so the single
-      // settle judgment ({@link settleTurnPending}) sees a pre-wire outcome.
-      pending.wireSeen = false;
-    } else if (pending.resendReason !== "reconcile") {
-      // One reconciliation re-send per logical turn. A reconcile that answers
-      // uncertain again has not made delivery any more likely, so it settles.
-      if (this.resendTurn(pending, undefined, "reconcile")) return;
-    }
-    this.settleTurnPending(pending, admission.error);
-  }
-
-  /**
-   * Structural qualification of a bounded fence repair. Returns the fence the
-   * re-send must carry, or null when this rejection is not a repairable fence
-   * race. Qualification is structural (codes + fence source + epoch/revision
-   * identity), never human error-message text:
-   *  - stale-attached: an idle-lost observation sent an attached epoch that is
-   *    no longer active (`epoch_changed`). Drop the fence and re-send unfenced.
-   *  - authority revision: created-seed conflict, an unfenced live-worker
-   *    conflict / epoch_changed, or an attached-source conflict from a
-   *    concurrent ordinary command (set_model / auto-title / queue writes)
-   *    that advanced the journal between fence capture and admission. All three
-   *    re-arm the fence from the exact cursor the authority returned.
-   * A repaired fence is recorded on the pending, so a second race on it fails
-   * closed instead of repairing again.
-   */
-  private submitTurnFenceRepair(
-    pending: TurnPending,
-    admission: Extract<SubmitTurnAdmission, { status: "rejected" }>,
-  ): ResendFence | null {
-    const submittedEpoch = pending.request.expectedEpoch ?? null;
-    const submittedRevision = pending.request.expectedRevision ?? null;
-    const originalFenceSource = pending.fenceSource;
-    const currentFenceSource: SubmitTurnFenceSource =
-      submittedEpoch === null && submittedRevision === null ? "none" : originalFenceSource;
-
-    if (
-      admission.error.code === "epoch_changed"
-      && originalFenceSource === "attached"
-      && currentFenceSource === "attached"
-      && submittedEpoch !== null
-    ) {
-      return "drop";
-    }
-
-    // One fence repair per logical turn: a second race on a repaired fence proves
-    // the repair cannot converge, so it settles instead of looping.
-    if (admission.error.code === "conflict" && currentFenceSource === "attached" && submittedEpoch !== null) {
-      if (
-        admission.epoch === undefined
-        || admission.revision === undefined
-        || admission.epoch !== submittedEpoch
-      ) return null;
-      // The authority returns the journal head; the attached event lane replays
-      // the same events, so no local cursor reconciliation is needed here.
-      return pending.fenceRepaired ? null : { epoch: admission.epoch, revision: admission.revision };
-    }
-
-    const authorityRepairable =
-      admission.error.code === "conflict"
-      || (admission.error.code === "epoch_changed" && currentFenceSource === "none");
-    if (!authorityRepairable || admission.epoch === undefined || admission.revision === undefined) return null;
-
-    if (currentFenceSource === "created") {
-      if (
-        submittedEpoch === null
-        || submittedRevision === null
-        || admission.epoch !== submittedEpoch
-        || admission.revision <= submittedRevision
-        || !this.advanceCreatedAuthority(submittedEpoch, admission.revision)
-      ) return null;
-    } else if (currentFenceSource === "none") {
-      // A detached Browser may target an already-live idle Worker without
-      // having observed its epoch/revision. sessiond proves the attempt was NOT
-      // delivered and returns its exact current fence; retry the SAME operation
-      // with that fence. This preserves atomic submit — no pre-send
-      // attachment/Worker takeover is introduced.
-      if (submittedEpoch !== null || submittedRevision !== null) return null;
-    } else {
-      return null;
-    }
-    // The created-seed cursor above is advanced even when the repair itself is
-    // already spent: the authority's revision is real progress either way.
-    return pending.fenceRepaired ? null : { epoch: admission.epoch, revision: admission.revision };
-  }
-
-  private advanceCreatedAuthority(expectedEpoch: string, authorityRevision: number): boolean {
-    if (!this.createdFenceAvailable || this.epoch !== expectedEpoch || this.createdFenceRevision === null) return false;
-    if (authorityRevision <= this.createdFenceRevision) return false;
-    this.createdFenceRevision = authorityRevision;
-    if (!this.authorityCursorKnown || authorityRevision > this.lastEventId) this.lastEventId = authorityRevision;
-    this.authorityCursorKnown = true;
-    return true;
-  }
-
-  /** Tag an UNRESOLVED-delivery rejection: the Composer must NEVER treat it as
-   *  proven non-delivery (no draft restore, no "not sent" copy) — the turn
-   *  may be admitted and running server-side. */
-  private uncertainTagged(error: ProtocolError): ProtocolError & { readonly phase: "uncertain" } {
-    return { ...error, phase: "uncertain" as const };
-  }
-
-  /** True only for this exact pending object at this exact dispatch revision. */
-  private isCurrentSubmitDispatch(pending: TurnPending, revision: number): boolean {
-    return this.pendingTurn === pending && pending.dispatchRevision === revision;
-  }
-
-  /**
-   * ONE settle judgment for the pending turn, driven by delivery evidence:
-   *  - `wireSeen` (any attempt for this operation passed the send gate): the
-   *    bytes may be in flight or already admitted server-side, so the settle is
-   *    UNCERTAIN — the optimistic bubble is kept and the Composer shows
-   *    "unconfirmed"; a draft restore here could duplicate the turn;
-   *  - otherwise delivery is PROVEN pre-wire, so the settle is tagged
-   *    `phase: "activation"`: the bubble is removed and the Composer restores
-   *    the draft.
-   * Every settle point routes through here (before-wire failure, rejected
-   * admission, the shared deadline, lifecycle teardown, epoch change,
-   * exhausted re-send budget), so the judgment can never diverge per caller.
-   */
-  private settleTurnPending(pending: TurnPending, cause: unknown, surface = true): void {
-    if (this.pendingTurn !== pending) return;
-    const error = pending.wireSeen
-      ? this.uncertainTagged(this.protocolErrorFrom(cause, "turn delivery could not be confirmed"))
-      : this.activationFailure(cause);
-    this.reportSendDiagnostic(pending.resendCount > 0 ? "send_recovery_failed" : "send_failure", pending, error);
-    this.clearResendDeadline(pending);
-    pending.attempt?.cancel();
-    pending.attempt = null;
-    this.binding.unregisterTurn(pending.operationId);
-    this.pendingTurn = null;
-    this.settlePromptTransaction(pending.tx, { removeBubble: !pending.wireSeen });
-    this.notify();
-    pending.reject(error);
-    // Lifecycle teardown (stop / switch / dispose) and the deadline settle only
-    // the caller; the Composer owns that copy, so no controller error banner.
-    if (surface) this.setError(error);
-  }
-
-  /**
-   * A transport failure on a send that has not been admitted yet. At most one
-   * silent transport recovery (reconnect + re-send the SAME operationId) is
-   * attempted through {@link resendTurn}; user-side rejections, a gate timeout
-   * (that already waited the whole budget) and an exhausted budget settle
-   * instead.
-   */
-  private failSubmitTurnBeforeWire(pending: TurnPending, cause: unknown): void {
-    if (this.pendingTurn !== pending) return;
-    if (this.resendBeforeWire(pending, cause)) return;
-    this.settleTurnPending(pending, cause);
-  }
-
-  /**
-   * The ONE silent transport recovery: force a reconnect and re-send the SAME
-   * operationId, so it stays a single-attempt-per-socket shape instead of the
-   * controller duplicating the send logic. A user-side rejection, a gate timeout
-   * (that already waited the whole budget) and an already-re-sent turn surface
-   * instead.
-   */
-  private resendBeforeWire(pending: TurnPending, cause: unknown): boolean {
-    const error = this.protocolErrorFrom(cause, "submit transport failed");
-    if (isUserSendRejection(error) || error.code === "timeout") return false;
-    // The transport retry is the FIRST shape in the chain, so anything already
-    // re-sent proves it is spent.
-    if (pending.resendCount > 0) return false;
-    if (!this.resendTurn(pending, undefined, "transport")) return false;
-    this.reportSendDiagnostic("send_failure", pending, error);
-    const state = this.runtimeConnection.connectionState;
-    if (state !== "unavailable" && state !== "reconnecting" && state !== "connecting" && state !== "handshaking") {
-      this.runtimeConnection.recoverTransport("submit turn recovery");
-    }
-    if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
-    return true;
-  }
-
-  /**
-   * THE re-send function. Every re-send shape goes through it — transport
-   * recovery, stale-attached fence drop, authority revision repair, uncertain
-   * reconciliation, and same-epoch reconnect — so the budget, the deadline and
-   * the wire bookkeeping exist once:
-   *  - check {@link SUBMIT_MAX_RESENDS} before the busy work and count only a
-   *    re-send that actually happens ("one quiet try, then surface");
-   *  - arm the single deadline on the first re-send (already armed by the
-   *    pre-wire gate before it) and refuse once it has passed;
-   *  - apply the fence: `"drop"` sends unfenced, an object re-arms
-   *    expectedEpoch/expectedRevision, `undefined` keeps the current request;
-   *  - clear `wireSeen` only for a fence repair, where the authority itself
-   *    proved the previous frame was never delivered;
-   *  - bump `dispatchRevision` and hand off to {@link sendTurnAttempt}.
-   */
-  private resendTurn(
-    pending: TurnPending,
-    fence: ResendFence | undefined,
-    reason: "transport" | "fence" | "reconcile",
-  ): boolean {
-    if (this.pendingTurn !== pending) return false;
-    if (pending.resendCount >= SUBMIT_MAX_RESENDS) return false;
-    const now = Date.now();
-    const deadline = pending.resendDeadline ?? now + SUBMIT_RECOVERY_BUDGET_MS;
-    if (now >= deadline) return false;
-
-    pending.resendCount += 1;
-    pending.resendReason = reason;
-    // A fence repair is the authority PROVING the previous frame was not
-    // delivered, so the attempt starts over as pre-wire; a transport throw or an
-    // uncertain admission leaves the wire proof standing.
-    if (reason === "fence") pending.wireSeen = false;
-    if (fence === "drop") {
-      pending.fenceDropped = true;
-      pending.fenceSource = "none";
-      pending.epoch = null;
-      const { expectedEpoch: _expectedEpoch, expectedRevision: _expectedRevision, ...unfenced } = pending.request;
-      pending.request = unfenced;
-    } else if (fence !== undefined) {
-      pending.fenceRepaired = true;
-      pending.epoch = fence.epoch;
-      pending.request = {
-        ...pending.request,
-        expectedEpoch: fence.epoch,
-        ...(fence.revision === undefined ? {} : { expectedRevision: fence.revision }),
-      };
-    }
-    pending.delivery = "in_flight";
-    pending.wireGeneration = null;
-    this.armResendDeadline(pending);
-    // Fresh Browser envelope/current generation; operationId, prompt, images,
-    // overrides and their authority fingerprint remain unchanged.
-    this.sendSubmitTurn();
-    return true;
-  }
-
-  /**
-   * Arm the ONE deadline for this logical turn: the send budget is fixed by the
-   * pre-wire gate (or by the first re-send) and its timer settles a re-send that
-   * never comes back on the wire (an attempt waiting for a reconnect that never
-   * arrives). The timer is installed only once; a first send that never failed
-   * gets no client-side settle timeout of its own. Any terminal settle clears it.
-   */
-  private armResendDeadline(pending: TurnPending): void {
-    if (pending.resendDeadline === null) pending.resendDeadline = Date.now() + SUBMIT_RECOVERY_BUDGET_MS;
-    if (pending.resendTimer !== null) return;
-    // Only an unresolved in-flight turn is bounded here; an accepted admission
-    // is tracked by its status subscription, not by this send budget.
-    if (pending.delivery !== "in_flight") return;
-    const budget = Math.max(0, pending.resendDeadline - Date.now());
-    pending.resendTimer = this.setTimeoutFn(() => {
-      pending.resendTimer = null;
-      if (this.pendingTurn !== pending || pending.delivery !== "in_flight") return;
-      this.settleTurnPending(pending, {
-        code: "timeout",
-        message: "turn delivery could not be confirmed",
-        retryable: true,
-      } satisfies ProtocolError, false);
-    }, budget);
-  }
-
-  private clearResendDeadline(pending: TurnPending): void {
-    pending.resendDeadline = null;
-    if (pending.resendTimer === null) return;
-    this.clearTimeoutFn(pending.resendTimer);
-    pending.resendTimer = null;
-  }
-
-  /** Fire-and-forget diagnostic. Never throws into the send path. */
-  private reportSendDiagnostic(kind: "send_failure" | "send_recovered" | "send_recovery_failed", pending: TurnPending, error: ProtocolError): void {
-    const report = this.runtimeConnection.reportSendFailure;
-    if (!report) return;
-    try {
-      report({
-        kind,
-        code: error.code,
-        phase: sendDiagnosticPhase(error),
-        message: error.message.slice(0, 200),
-        retryable: error.retryable,
-        connectionState: this.runtimeConnection.connectionState,
-        epoch: pending.epoch,
-        sessionKind: this.snapshot?.cwd?.endsWith("/pix/assistant") ? "assistant" : "session",
-        sessionId: pending.sessionId,
-      });
-    } catch {
-      // Diagnostics never change send outcome.
-    }
-  }
-
-  /** Swallow observation-attach rejection; submitTurn may still cold-activate unfenced. */
-  private async ignoreAttachRejection(promise: Promise<void>): Promise<void> {
-    try {
-      await promise;
-    } catch {
-      // Observation attach is not the user send. After it settles, continue.
-    }
-  }
-
-  /** Refresh a never-fenced none-source pending from the exact attached fence
-   *  cursor (the same one {@link resolveSubmitTurnFence} uses for `attached`). */
-  private refreshNoneSourceFenceFromAttached(pending: TurnPending): void {
-    if (
-      pending.fenceSource !== "none"
-      || pending.fenceDropped
-      || pending.request.expectedEpoch !== undefined
-      || pending.request.expectedRevision !== undefined
-      || !this.attached
-      || this.sessionId !== pending.sessionId
-      || this.epoch === null
-    ) return;
-    pending.fenceSource = "attached";
-    pending.epoch = this.epoch;
-    pending.request = {
-      ...pending.request,
-      expectedEpoch: this.epoch,
-      expectedRevision: this.attachedFenceRevision ?? this.lastEventId,
-    };
-  }
-
-  /** One bounded pre-wire gate covering reconnect sendability and exact
-   * resume-attach. The gate and every re-send share ONE
-   * {@link SUBMIT_RECOVERY_BUDGET_MS} deadline for the whole logical send, so
-   * a retry cannot add a second full wait and a slow (but real) recovery is
-   * never judged "not sent" halfway through.
-   *
-   * The shared deadline covers the PRE-WIRE phase only. A turn the authority
-   * already admitted gets a fresh budget when it is re-sent after a reconnect
-   * (that resend re-opens the status subscription and must not be settled as a
-   * failure just because the original send started minutes ago). */
-  private waitForSubmitWire(pending: TurnPending, revision: number): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const preWire = pending.delivery === "in_flight";
-      // The pre-wire wait fixes the ONE budget for the whole logical send; it is
-      // installed here (without a settle timer) so the first failure's re-send
-      // shares it instead of starting a second full wait.
-      if (preWire && pending.resendDeadline === null) pending.resendDeadline = Date.now() + SUBMIT_RECOVERY_BUDGET_MS;
-      const deadline = preWire && pending.resendDeadline !== null
-        ? pending.resendDeadline
-        : Date.now() + SUBMIT_RECOVERY_BUDGET_MS;
-      const budget = Math.max(0, deadline - Date.now());
-      const finish = (fn: () => void): void => {
-        if (settled) return;
-        settled = true;
-        this.clearTimeoutFn(timer);
-        fn();
-      };
-      const timer = this.setTimeoutFn(() => {
-        finish(() => reject({ code: "timeout", message: "runtime not sendable in time", retryable: true } satisfies ProtocolError));
-      }, budget);
-      void (async () => {
-        try {
-          if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
-          // ALWAYS pass the send gate: a ready-but-stale (half-open) connection
-          // probes liveness here and waits through a forced reconnect instead
-          // of letting the submit race into a dead socket.
-          await this.whenSendable(budget);
-          if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
-          await Promise.resolve();
-          if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
-          const attach = this.attach;
-          if (attach !== null && attach.sessionId === pending.sessionId) {
-            await this.ignoreAttachRejection(attach.promise);
-            if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
-          }
-          finish(() => resolve());
-        } catch (cause) {
-          finish(() => reject(cause));
-        }
-      })();
-    });
-  }
-
-  /** Send (or re-send) the pending turn's submit frame on the current envelope. */
-  private sendSubmitTurn(): void {
-    const pending = this.pendingTurn;
-    if (!pending) return;
-    const revision = pending.dispatchRevision + 1;
-    pending.dispatchRevision = revision;
-    pending.attempt?.cancel();
-    pending.attempt = null;
-    void this.waitForSubmitWire(pending, revision).then(
-      () => {
-        if (!this.isCurrentSubmitDispatch(pending, revision)) return;
-        if (!this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE)) {
-          this.failSubmitTurnBeforeWire(pending, {
-            code: "unsupported_capability",
-            message: "atomic turn admission is unavailable",
-            retryable: false,
-          } satisfies ProtocolError);
-          return;
-        }
-        this.refreshNoneSourceFenceFromAttached(pending);
-        pending.tx.phase = "dispatching";
-        pending.wireGeneration = this.runtimeConnection.currentGeneration;
-        this.sendTurnAttempt(pending);
-      },
-      (cause: unknown) => {
-        if (!this.isCurrentSubmitDispatch(pending, revision)) return;
-        this.failSubmitTurnBeforeWire(pending, cause);
-      },
-    );
-  }
-
-  /**
-   * Same-epoch reconnect re-send: SAME operationId + payload on a FRESH
-   * transport envelope + generation. sessiond returns duplicate+accepted and
-   * re-opens the status subscription. Never called across an epoch boundary,
-   * and never after a failure — this is the current attempt moving to a new
-   * socket, so it does not consume the re-send budget ({@link resendTurn}).
-   */
-  private resendTurnAfterReconnect(): void {
-    this.sendSubmitTurn();
-  }
-
-  /**
-   * Settle the pending turn exactly once on lifecycle teardown (dispose / detach /
-   * stop / session switch / epoch change). An in-flight admission settles by
-   * delivery evidence through {@link settleTurnPending} (proven pre-wire →
-   * activation with the bubble removed; on the wire → uncertain with the bubble
-   * kept). An already-accepted turn keeps its bubble (it continues server-side)
-   * and only the status tracker is dropped. Never called on transport loss (the
-   * turn survives for the same-epoch reconnect resend).
+   * Lifecycle teardown of the tracked turn (dispose / detach / stop / session
+   * switch / epoch change). An accepted message is already delivered, so this
+   * only drops the status tracker and keeps the bubble — the authority's own
+   * committed entry consumes it when it arrives.
    */
   private settleTurn(error: ProtocolError): void {
     const pending = this.pendingTurn;
     if (!pending) return;
-    if (pending.delivery === "in_flight") {
-      this.settleTurnPending(pending, error, false);
-    } else {
-      this.clearResendDeadline(pending);
-      pending.attempt?.cancel();
-      this.binding.unregisterTurn(pending.operationId);
-      this.pendingTurn = null;
-    }
-    // Phase 5A: lifecycle teardown of the turn slot releases a deferred
-    // leaf-fence rebase (the turn is no longer in flight).
+    void error;
+    pending.attempt?.cancel();
+    this.binding.unregisterTurn(pending.operationId);
+    this.pendingTurn = null;
+    // Lifecycle teardown releases a deferred leaf-fence rebase.
     this.flushPendingLeafRebase();
     this.notify();
   }
@@ -3870,29 +3375,15 @@ export class SessionController implements RuntimeControllerPort {
         resyncError: { code: "epoch_changed", message: "epoch changed; interrupt not re-sent", retryable: false },
       },
       {
+        // An ACCEPTED turn needs no resend: the message is already delivered.
+        // A resume keeps its status tracker; a session switch drops it (the
+        // bubble survives and the authority's committed entry consumes it).
         name: "turn",
         pending: () => this.pendingTurn,
-        resend: () => this.resendTurnAfterReconnect(),
-        // The ONE 3A settle judgment: delivery evidence decides activation vs
-        // uncertain (in-flight), and an already-accepted turn keeps its bubble
-        // while only the status tracker is dropped.
         settle: (error) => this.settleTurn(error),
-        // The settle already tags the caller (uncertain keeps the bubble and
-        // the Composer shows its own copy); no second error in the view.
         reportsError: false,
-        // A resume MUST defer a cross-session turn to resyncAfterAttach: until
-        // the resume snapshot lands, possible delivery is ambiguous and may only
-        // become uncertain (never a definite interruption).
-        switchSettle: "fresh-only",
-        // Current-generation admission is authoritative (accept/reject/repair);
-        // a proven pre-wire pending waits for the send gate after this attach.
-        skipResync: () => {
-          const pending = this.pendingTurn;
-          if (pending === null) return false;
-          const currentGeneration = this.runtimeConnection.currentGeneration;
-          return pending.wireGeneration === currentGeneration || pending.wireGeneration === null;
-        },
-        resyncError: { code: "epoch_changed", message: "turn epoch changed; delivery uncertain", retryable: true },
+        switchSettle: "always",
+        skipResync: () => true,
       },
     ];
   }
@@ -4627,34 +4118,6 @@ export class SessionController implements RuntimeControllerPort {
     });
   }
 
-  private sendTurnAttempt(pending: TurnPending): void {
-    pending.attempt?.cancel();
-    pending.attempt = this.binding.sendAttempt({
-      buildMessage: (id) => ({ type: "submit_turn", id, payload: pending.request }),
-      expectation: {
-        kind: "submit_turn",
-        sessionId: pending.sessionId,
-        operationId: pending.operationId,
-        ...(pending.epoch === null ? {} : { expectedEpoch: pending.epoch }),
-      },
-      disconnectPolicy: "logical_retry",
-      // Past the send gate + REGISTERED on the transport: from the moment these
-      // bytes are actually WRITTEN (immediate or queued flush), a failure of
-      // this attempt means UNCERTAIN delivery (see failSubmitTurnBeforeWire).
-      onSent: () => { pending.wireSeen = true; },
-      onFrame: (frame) => {
-        if (this.pendingTurn !== pending || frame.type !== "submit_turn_result") return;
-        pending.attempt = null;
-        this.handleSubmitTurnAdmission(frame);
-      },
-      onSendFailure: (cause) => {
-        if (this.pendingTurn !== pending) return;
-        this.failSubmitTurnBeforeWire(pending, cause);
-      },
-      onDisconnect: () => {},
-    });
-  }
-
   private protocolErrorFrom(cause: unknown, fallback: string): ProtocolError {
     if (cause !== null && typeof cause === "object") {
       const value = cause as Partial<ProtocolError>;
@@ -4933,7 +4396,10 @@ export class SessionController implements RuntimeControllerPort {
       extensionUiReplyPending: this.pendingExtensionUiCommand !== null,
       capabilities: this.attached || this.resuming ? (snapshot?.capabilities ?? null) : null,
       turnActive: this.pendingTurn !== null,
-      turnDelivery: this.pendingTurn === null ? null : this.pendingTurn.delivery,
+      // An accepted turn is always delivered; there is no delivery verdict to
+      // report any more (the outbox owns retries and the authority owns
+      // delivery). Kept on the view for existing consumers.
+      turnDelivery: this.pendingTurn === null ? null : "accepted",
       submitTurnEnabled: this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE),
     };
   }

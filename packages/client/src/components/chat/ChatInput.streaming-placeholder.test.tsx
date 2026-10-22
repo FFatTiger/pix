@@ -13,7 +13,7 @@ class ResizeObserverStub {
 function renderStreamingInput() {
   return render(
     <I18nProvider>
-      <ChatInput onSend={() => true} onAbort={() => {}} isStreaming onSteer={vi.fn()} onFollowUp={vi.fn()} />
+      <ChatInput onSend={() => true} onAbort={() => {}} isStreaming />
     </I18nProvider>,
   );
 }

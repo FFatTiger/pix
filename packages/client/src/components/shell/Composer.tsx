@@ -63,6 +63,7 @@ export interface ComposerHandle {
 import type { FileIndexEntry } from "@/lib/file-fuzzy";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
 import { buildModelNameMap } from "@/lib/model-display";
+import { getStreamingSendMode } from "@/lib/chat-input-preferences";
 import type { SessionTreeNode } from "@/lib/chat-view-model";
 
 /**
@@ -347,7 +348,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     (capability: string) => live && capabilities.includes(capability as never),
     [live, capabilities],
   );
-  const hasSteer = hasCap("runtime.steer");
   const hasFollowUp = hasCap("runtime.follow_up");
   const hasQueue = hasCap("runtime.queue");
   const hasBash = hasCap("runtime.bash");
@@ -718,11 +718,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [selectedSessionId],
   );
 
-  /** True when a failure is DEFINITE (the turn never started) — only then restore the draft.
-   * A retryable transport failure is NOT definite, and neither is an
-   * UNCERTAIN-delivery settle (`phase: "uncertain"`): the turn may be
-   * admitted and running server-side, so restoring the draft (or claiming
-   * "not sent") could duplicate the message. */
+  /** True when a failure is FINAL (the authority proved it will never accept
+   *  this message). Only then is the draft restored and "not sent" shown —
+   *  every transient failure is retried by the outbox and stays silent. */
   const isDefiniteFailure = isDefiniteSendFailure;
 
   /** Restore the text into the composer when non-delivery was proved. */
@@ -730,22 +728,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     inputRef.current?.insertIfEmpty(message);
   }, []);
 
-  /** Fixed copy for a send failure. A new-session draft with NO chosen project
-   *  fails with `invalid_input` — say so instead of the generic failure text.
-   *  Any other code keeps the generic copy (never a raw ProtocolError). */
+  /** Fixed copy for the ONLY two failures a send can report: the payload is
+   *  illegal, or the session is gone. Every transient failure stays silent and
+   *  is retried by the outbox, so this helper is never reached for one. */
   const describeSendFailure = useCallback((cause: unknown): string => {
-    if (!isDefiniteFailure(cause)) return t("desktop.sendUnconfirmed");
     if (cause && typeof cause === "object" && "code" in cause) {
       const code = (cause as { code?: unknown }).code;
-      if (code === "invalid_input") return t("desktop.selectProjectFirst");
-      if (code === "unsupported_capability") {
-        const message = (cause as { message?: unknown }).message;
-        if (typeof message === "string" && message.length > 0) return message;
-      }
-      if ((code === "timeout" || code === "unavailable")
-        && (cause as { retryable?: unknown }).retryable === true) {
-        return t("desktop.sendReconnecting");
-      }
+      if (code === "invalid_input") return t("desktop.sendFailed");
+      if (code === "not_found") return t("desktop.sendFailed");
     }
     return t("desktop.sendFailed");
   }, [t]);
@@ -792,6 +782,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       const activationSettings = {
         model: carriedModel,
         thinkingLevel: stagedThinking,
+        // The 「运行中按 Enter」preference is a SEND PREFERENCE, not a decision
+        // about whether the Agent is busy: the authority starts a turn or
+        // queues the message with this policy.
+        whenBusy: getStreamingSendMode() === "steer" ? "steer" as const : "follow_up" as const,
       };
       const sendToExact = (
         actions: { sendPromptToSession: NonNullable<typeof exact>['sendPromptToSession'] },
@@ -813,6 +807,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             // attach and before the prompt (finite legacy v2 shim).
             model: activationSettings.model,
             thinkingLevel: activationSettings.thinkingLevel,
+            whenBusy: activationSettings.whenBusy,
           },
         );
         void sending
@@ -835,12 +830,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           })
           .catch((cause: unknown) => {
             if (!isCurrent()) return;
+            // The outbox retries every transient failure silently, so this only
+            // receives the two proven-final rejections: restore the draft and
+            // say "not sent".
             if (isDefiniteFailure(cause)) {
               restoreDraft(message);
-              setSendError(describeSendFailure(cause));
-              return;
             }
-            // Unknown delivery can already be committed; never invite a resend.
             setSendError(describeSendFailure(cause));
           });
         return sending;
@@ -942,46 +937,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         });
     });
   }, [exact, selectedSessionId, selectedSessionHasTitle, applyGeneratedTitle]);
-
-  // Steer / follow-up settle exactly like a prompt send: proven non-delivery
-  // (activation / definite) restores the draft and says so; an unresolved
-  // delivery shows the same "unconfirmed" copy and never restores the draft
-  // (the message may already be queued server-side).
-  const settleQueuedSend = useCallback((message: string, cause: unknown) => {
-    if (!isCurrent()) return;
-    if (isDefiniteFailure(cause)) {
-      restoreDraft(message);
-      setSendError(describeSendFailure(cause));
-      return;
-    }
-    setSendError(describeSendFailure(cause));
-  }, [isCurrent, restoreDraft, describeSendFailure, isDefiniteFailure]);
-
-  const handleSteer = useCallback(
-    (message: string, images?: AttachedImage[]) => {
-      if (!liveWorkspaceEnabled || !hasSteer || !exact) return;
-      autoEnablePush();
-      exact.steer(message, toImageAttachments(images)).catch((cause: unknown) => settleQueuedSend(message, cause));
-    },
-    [liveWorkspaceEnabled, hasSteer, exact, settleQueuedSend, autoEnablePush],
-  );
-
-  const handleFollowUp = useCallback(
-    (message: string, images?: AttachedImage[]) => {
-      if (!liveWorkspaceEnabled || !hasFollowUp || !exact) return;
-      autoEnablePush();
-      exact.followUp(message, toImageAttachments(images)).catch((cause: unknown) => settleQueuedSend(message, cause));
-    },
-    [liveWorkspaceEnabled, hasFollowUp, exact, settleQueuedSend, autoEnablePush],
-  );
-
-  const handlePromptWithStreamingBehavior = useCallback(
-    (message: string, behavior: "steer" | "followUp", images?: AttachedImage[]) => {
-      if (behavior === "steer") handleSteer(message, images);
-      else handleFollowUp(message, images);
-    },
-    [handleSteer, handleFollowUp],
-  );
 
   const handleAbort = useCallback(() => {
     if (!liveWorkspaceEnabled || !exact) return;
@@ -1320,9 +1275,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         sendDisabled={!liveWorkspaceEnabled && Boolean(selectedSessionId)}
         {...(hasBash && liveWorkspaceEnabled ? { onBash: handleBash } : {})}
         onAbort={handleAbort}
-        {...(hasSteer && liveWorkspaceEnabled ? { onSteer: handleSteer } : {})}
-        {...(hasFollowUp && liveWorkspaceEnabled ? { onFollowUp: handleFollowUp } : {})}
-        {...(liveWorkspaceEnabled && (hasSteer || hasFollowUp) ? { onPromptWithStreamingBehavior: handlePromptWithStreamingBehavior } : {})}
         isStreaming={promptRunning}
         isCompacting={isCompacting}
         {...(liveWorkspaceEnabled && hasCompactAbort ? { onAbortCompaction: handleAbortCompaction } : {})}

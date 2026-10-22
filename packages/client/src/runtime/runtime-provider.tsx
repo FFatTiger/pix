@@ -42,6 +42,22 @@ import {
   type RuntimeConnectionApi,
 } from "./exact-runtime.js";
 import { coalesceBursts } from "./burst-coalescer.js";
+import { SendOutboxStore, type OutboxStorage } from "./send-outbox-store.js";
+
+/**
+ * Browser storage for the durable send outbox. `localStorage` can throw (Safari
+ * private mode, quota); a denial degrades to in-memory only, never to a lost
+ * message.
+ */
+function browserOutboxStorage(): OutboxStorage | undefined {
+  try {
+    const storage = globalThis.localStorage;
+    if (storage === undefined || storage === null) return undefined;
+    return storage;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Detect the client shell (pwa when running standalone) and platform. */
 export function detectClientIdentity(navigatorLike: Navigator, matchMedia?: (q: string) => { matches: boolean }): ClientIdentity {
@@ -150,7 +166,14 @@ export function RuntimeProvider({ children, deps, options, coalesceRenderBursts 
       ...(options?.controllerOptions?.clearTimeout === undefined ? {} : { clearTimeout: options.controllerOptions.clearTimeout }),
       reportSendFailure,
     });
-    const registry = new SessionControllerRegistry(connection, options);
+    // ONE durable send outbox for the whole app. Every controller shares it, so
+    // a send survives a reload and is retried by whichever controller owns the
+    // session by then.
+    const outbox = options?.controllerOptions?.outbox ?? new SendOutboxStore(browserOutboxStorage());
+    const registry = new SessionControllerRegistry(connection, {
+      ...options,
+      controllerOptions: { ...options?.controllerOptions, outbox },
+    });
     return { connection, registry, coalesceRenderBursts };
   });
   // The owner is INTENTIONALLY IMMUTABLE: `deps`/`options` are read only in the

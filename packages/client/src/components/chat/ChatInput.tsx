@@ -73,9 +73,12 @@ interface Props {
   onSend: (message: string, images?: AttachedImage[], submission?: { rawValue: string }) => boolean;
   onBash?: (command: string, excludeFromContext: boolean) => void;
   onAbort: () => void;
-  onSteer?: (message: string, images?: AttachedImage[]) => void;
-  onFollowUp?: (message: string, images?: AttachedImage[]) => void;
-  onPromptWithStreamingBehavior?: (message: string, behavior: "steer" | "followUp", images?: AttachedImage[]) => void;
+  /**
+   * Delivery preference while the Agent is running (the「运行中按 Enter」
+   * setting). It is a PREFERENCE sent with the message, not a decision the
+   * composer makes: the authority starts a turn or queues the send.
+   */
+  whenBusy?: "steer" | "follow_up";
   isStreaming: boolean;
   /** Compaction is running outside a prompt — the send slot becomes a Stop button */
   isCompacting?: boolean;
@@ -158,14 +161,6 @@ interface Props {
   fileIndexSnapshot?: ChatFileIndexSnapshot | null;
   /** Mention-highlight skill names (source useSkillNames); null = unknown. */
   skillNames?: Set<string> | null;
-}
-
-/**
- * Which queue Enter picks while the agent runs: the「运行中按 Enter」setting
- * decides, falling back to whichever queue the runtime actually admits.
- */
-function resolveQueuedMode(preferSteer: boolean, hasSteer: boolean, hasFollowUp: boolean): "steer" | "followup" {
-  return preferSteer ? (hasSteer ? "steer" : "followup") : (hasFollowUp ? "followup" : "steer");
 }
 
 export interface ChatInputHandle {
@@ -385,7 +380,7 @@ export function getUserMessageDraftImages(message: UserMessage): ChatDraftImage[
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, toolbarAccessory, variant = "main", placeholder: placeholderOverride, labels, controlsLocked = false, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange, onModelMenuOpen,
+  onSend, onBash, onAbort, isStreaming, isCompacting, toolbarAccessory, variant = "main", placeholder: placeholderOverride, labels, controlsLocked = false, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange, onModelMenuOpen,
   compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, inputHistory = [],
@@ -393,7 +388,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onBuiltinCommand,
   builtinSlashCommands: builtinSlashCommandsProp = [],
   onAudioUnlock,
-  onPromptWithStreamingBehavior,
   draftKey,
   cwd,
   projectRoots,
@@ -1180,7 +1174,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const images = attachedImages;
     const files = pendingFiles;
     if (!msg && !images.length && !files.length) return;
-    if (isStreaming || sendDisabled) return;
+    if (sendDisabled) return;
     onAudioUnlock?.();
     if (!images.length && !files.length && msg.startsWith("!") && onBash) {
       const excludeFromContext = msg.startsWith("!!");
@@ -1216,13 +1210,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       try {
         accepted = onSend(message, images.length ? images : undefined, { rawValue });
       } catch (cause) {
+        // Only a final rejection reaches here (the outbox retries everything
+        // transient silently): put the text back and say "not sent".
         if (isDefiniteSendFailure(cause)) {
           commitUploadedMentionsToDraft(mentions, markerLines, files);
           setFileAttachmentError(t("desktop.sendFailed"));
-        } else {
-          settleAcceptedSubmission({ value, images, files });
-          setFileAttachmentError(t("desktop.sendUnconfirmed"));
+          return;
         }
+        commitUploadedMentionsToDraft(mentions, markerLines, files);
         return;
       }
       if (accepted) {
@@ -1478,70 +1473,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, [value, slashCaretPos, applyAutoHeight]);
 
-  const sendQueued = useCallback(async (mode: "steer" | "followup") => {
-    const msg = value.trim();
-    const imagesSnapshot = attachedImages;
-    const files = pendingFiles;
-    // Images and staged files can be delivered mid-stream (pi accepts them in
-    // steering / follow-up prompts). Upload first, then queue the message.
-    if (!msg && !imagesSnapshot.length && !files.length) return;
-    const identityRevision = composerIdentityRef.current.revision;
-    if (activeSubmissionRef.current?.identityRevision === identityRevision) return;
-    const images = imagesSnapshot.length ? imagesSnapshot : undefined;
-    onAudioUnlock?.();
-    const streamingBehavior = mode === "steer" ? "steer" : "followUp";
-    if (msg.startsWith("/") && !files.length && onPromptWithStreamingBehavior) {
-      onPromptWithStreamingBehavior(msg, streamingBehavior, images);
-      clearInput();
-      return;
-    }
-    const token = beginFileSubmission();
-    if (!token) return;
-    markSubmittingFiles(files, true);
-    try {
-      let mentions: string[] = [];
-      let markerLines: string[] = [];
-      try {
-        if (files.length) ({ mentions, markerLines } = await resolvePendingFileMentions(files));
-      } catch {
-        if (isFileSubmissionCurrent(token)) setFileAttachmentError(t("desktop.attachFileFailed"));
-        return;
-      }
-      if (!isFileSubmissionCurrent(token)) return;
-      const message = appendAttachedMarkerLines(appendMentionText(msg, mentions), markerLines);
-      let delivered = false;
-      try {
-        if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
-          onPromptWithStreamingBehavior(message, streamingBehavior, images);
-          delivered = true;
-        } else if (mode === "steer" && onSteer) {
-          onSteer(message, images);
-          delivered = true;
-        } else if (mode === "followup" && onFollowUp) {
-          onFollowUp(message, images);
-          delivered = true;
-        }
-      } catch (cause) {
-        if (isDefiniteSendFailure(cause)) {
-          commitUploadedMentionsToDraft(mentions, markerLines, files);
-          setFileAttachmentError(t("desktop.sendFailed"));
-        } else {
-          settleAcceptedSubmission({ value, images: imagesSnapshot, files });
-          setFileAttachmentError(t("desktop.sendUnconfirmed"));
-        }
-        return;
-      }
-      if (!delivered) {
-        commitUploadedMentionsToDraft(mentions, markerLines, files);
-        return;
-      }
-      settleAcceptedSubmission({ value, images: imagesSnapshot, files });
-    } finally {
-      if (mountedRef.current) markSubmittingFiles(files, false);
-      finishFileSubmission(token);
-    }
-  }, [value, attachedImages, pendingFiles, onPromptWithStreamingBehavior, onSteer, onFollowUp, onAudioUnlock, beginFileSubmission, commitUploadedMentionsToDraft, finishFileSubmission, isFileSubmissionCurrent, markSubmittingFiles, resolvePendingFileMentions, settleAcceptedSubmission, t]);
-
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       const nativeEvent = e.nativeEvent;
@@ -1685,18 +1616,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (isStreaming && (onSteer || onFollowUp)) {
-          // While the agent runs, Enter queues the message; the status capsule
-          // lists it with its type (引导/排队) until the runtime delivers it.
-          // The default type follows the「运行中按 Enter」setting, falling
-          // back to whichever queue the runtime admits.
-          sendQueued(resolveQueuedMode(streamingSendMode === "steer", Boolean(onSteer), Boolean(onFollowUp)));
-        } else {
-          handleSend();
-        }
+        // A send is ONE operation. Whether the Agent is idle or running is not
+        // the composer's business: the authority starts a turn or queues the
+        // message according to the「运行中按 Enter」preference, and the outbox
+        // guarantees exactly one delivery. There is no submit-vs-queue branch
+        // here to get wrong.
+        handleSend();
       }
     },
-    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, inputShortcut, markdownListContinue, streamingSendMode, cwd, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, openAtCompletion, applyAutoHeight]
+    [onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, handleSend, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, inputShortcut, markdownListContinue, cwd, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, openAtCompletion, applyAutoHeight]
   );
 
   const handleInput = useCallback(() => {
@@ -2171,7 +2099,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           })()}
           <div
             ref={inputShellRef}
-            className={`chat-input-shell${isStreaming && (onSteer || onFollowUp) ? " is-streaming" : ""}${manualMode ? " is-manual-height" : ""}`}
+            className={`chat-input-shell${isStreaming ? " is-streaming" : ""}${manualMode ? " is-manual-height" : ""}`}
             onClick={(e) => {
               const target = e.target as HTMLElement;
               // Overlays rendered inside the shell (popover covers, menus) close on tap;
@@ -2374,11 +2302,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onInput={handleInput}
             onPaste={handlePaste}
             placeholder={
-              isStreaming && (onSteer || onFollowUp)
-                ? resolveQueuedMode(streamingSendMode === "steer", Boolean(onSteer), Boolean(onFollowUp)) === "steer"
+              isStreaming
+                ? streamingSendMode === "steer"
                   ? t("desktop.steerWhileRunning")
                   : t("desktop.queueWhileRunning")
-                : isStreaming ? t("desktop.agentRunning")
                 : placeholderOverride ?? (isMobile ? t("desktop.messagePlaceholderShort") : t("desktop.messageWithCommands"))
             }
             rows={1}
