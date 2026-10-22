@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +40,45 @@ async function fixture() {
   }, null, 2), { mode: 0o600 });
   return { agentDir, secret };
 }
+
+describe("models.json created by Pi with the default umask", () => {
+  it("reads a 0644 models.json, writes it back 0600, and still refuses group/other write bits", async () => {
+    const { agentDir } = await fixture();
+    const modelsPath = join(agentDir, "models.json");
+    try {
+      if (process.platform === "win32") return;
+      await chmod(modelsPath, 0o644);
+      const store = createPiSdkModelsConfig({ agentDir, modelsDev: offlineModelsDev() });
+      const before = await store.readConfig();
+      assert.equal(before.providers[0]?.id, "custom-old");
+
+      const provider = before.providers[0]!;
+      await store.writeConfig({
+        expectedRevision: before.revision,
+        providers: [{
+          sourceId: provider.sourceId,
+          id: provider.id,
+          ...(provider.baseUrl === undefined ? {} : { baseUrl: provider.baseUrl }),
+          ...(provider.api === undefined ? {} : { api: provider.api }),
+          apiKey: { mode: "preserve" },
+          modelsDefined: true,
+          models: [{ ...provider.models[0]!, name: "Renamed Model" }],
+        }],
+      });
+      assert.equal((await stat(modelsPath)).mode & 0o777, 0o600);
+
+      for (const mode of [0o664, 0o646]) {
+        await chmod(modelsPath, mode);
+        await assert.rejects(
+          store.readConfig(),
+          (error: unknown) => (error as { code?: string }).code === "unavailable",
+        );
+      }
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("writable models.json config store", () => {
   it("redacts secrets, preserves hidden fields, supports rename, and fences stale revisions", async () => {
