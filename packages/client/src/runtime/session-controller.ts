@@ -1835,16 +1835,16 @@ export class SessionController implements RuntimeControllerPort {
       this.runtimeConnection.connect();
       return;
     }
-    if (state === "ready" || state === "handshaking" || state === "attaching" || state === "attached") {
+    if (state === "ready" || state === "attaching" || state === "attached") {
       // The answer came over a socket that still looks healthy, so no connection
       // event will follow on its own: reset the transport so ONE real attempt
-      // does, and let that attempt drive the retry.
+      // does, and let that attempt drive the retry. forceReconnect is idempotent
+      // while a connect/handshake is already in flight, so a recovery the
+      // transport started itself is never duplicated.
       this.runtimeConnection.recoverTransport("send outbox retry");
-      return;
     }
-    // Any other state is already reconnecting/unavailable; its transition back
-    // to a usable connection is the retry trigger (`onTransportForOutbox`).
-    // Nothing is armed here: with no transition there is nothing to recover from.
+    // handshaking/connecting/reconnecting/unavailable: a recovery is already in
+    // flight — its completion is the retry trigger (`onTransportForOutbox`).
   }
 
   /** Transport changes are the retry trigger — never a busy poll. */

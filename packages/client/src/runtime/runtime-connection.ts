@@ -416,6 +416,16 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     this.socket.forceReconnect(reason);
   }
 
+  /**
+   * True when the last outbound write already proved the socket dead while the
+   * browser still reported OPEN. The transport owner reconnects on its own
+   * recovery path in that case, so a caller must NOT force a second reconnect
+   * in parallel (that would leak one of the two sockets).
+   */
+  get outboundWriteFailed(): boolean {
+    return this.socket.outboundWriteFailed;
+  }
+
   dispose(): void {
     const error: ProtocolError = { code: "unavailable", message: "runtime disposed", retryable: false };
     this.pendingCreate?.reject(error);

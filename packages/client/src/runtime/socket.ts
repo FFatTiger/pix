@@ -276,6 +276,11 @@ export class RuntimeSocket {
     this.outboundDead = true;
   }
 
+  /** Read-only: the last outbound write already proved this socket dead. */
+  get outboundWriteFailed(): boolean {
+    return this.outboundDead;
+  }
+
   /**
    * Probe transport liveness: send one ping (single-flight) and resolve true
    * on ANY inbound frame, false otherwise. The result is decided by the ONE
