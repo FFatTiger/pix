@@ -178,6 +178,13 @@ export interface PiRuntimeDriver {
    * only reload enrichment is absent.
    */
   appendNestedResults?(payload: { version: 1; toolCallId: string; calls: readonly { id: string; text: string; truncated: boolean; imageCount: number; isError: boolean }[] }): void;
+  /**
+   * Persist a durable "this message was accepted" receipt as a plain SDK
+   * `custom` entry (`pix-sent-message`). Idempotent: the same `operationId`
+   * already present in the session file writes nothing. This is the ONLY
+   * dedupe identity that survives a worker restart or epoch rollover.
+   */
+  appendSentMessage?(receipt: { operationId: string; turnId: string; delivery: "started" | "steer" | "follow_up" }): void;
   bash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<{
     output: string;
     exitCode?: number;

@@ -19,6 +19,7 @@ export * from "./workspace-access.js";
 export * from "./results.js";
 export * from "./reads.js";
 export * from "./turns.js";
+export * from "./sent-messages.js";
 export * from "./revision.js";
 export * from "./semantic-mapping.js";
 export * from "./commands.js";

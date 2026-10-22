@@ -49,6 +49,7 @@ import {
   type StreamingAgentMessage as CoreStreamingAgentMessage,
 } from "@fffattiger/pix-runtime-core";
 import { win32 } from "node:path";
+import { QUEUED_SEND_COMMAND_ID_PREFIX } from "@fffattiger/pix-protocol";
 import { mapDriverError, mapMessage, sanitizeValue } from "../mappers/index.js";
 import { redactText } from "./sanitize.js";
 import { captureNestedToolResult, mergeNestedResults, NestedResultsArchive } from "./nested-results.js";
@@ -60,6 +61,17 @@ import {
 } from "./vendor/pi-side-chat/index.js";
 
 const COMMAND_TYPES = new Set<string>(RUNTIME_COMMAND_TYPES);
+
+/**
+ * The send operation id a queued-delivery command carries, if any. sessiond
+ * mints queued sends as `pix-send:<operationId>` so an accepted queue write
+ * persists the same receipt identity the original send used.
+ */
+function sendOperationIdOf(commandId: string): string | undefined {
+  return commandId.startsWith(QUEUED_SEND_COMMAND_ID_PREFIX)
+    ? commandId.slice(QUEUED_SEND_COMMAND_ID_PREFIX.length)
+    : undefined;
+}
 
 /**
  * Canonical bounded projection. Committed messages and the live partial reuse
@@ -451,6 +463,11 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
               followUp: this.reconcileQueue(this.queued.followUp, state.followUp),
             };
           }
+          // A send routed through this command path (sessiond's queued delivery)
+          // persists the same receipt identity a new turn would, so the outbox
+          // dedupes either delivery shape after a restart.
+          const queuedSend = command.commandId === undefined ? undefined : sendOperationIdOf(command.commandId);
+          this.persistSentMessage(queuedSend, disposition === "queued" ? "steer" : "started");
           return { ok: true, type: "steer", disposition };
         }
         case "follow_up": {
@@ -462,6 +479,8 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
               followUp: this.reconcileQueue(this.queued.followUp, state.followUp),
             };
           }
+          const queuedSend = command.commandId === undefined ? undefined : sendOperationIdOf(command.commandId);
+          this.persistSentMessage(queuedSend, disposition === "queued" ? "follow_up" : "started");
           return { ok: true, type: "follow_up", disposition };
         }
         case "switch_queued_delivery": {
@@ -915,11 +934,11 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       return { admission: { ok: false, error, snapshot }, completion: Promise.resolve(terminal) };
     };
     if (this.closed) return rejected(makeRuntimeError("unavailable", "runtime is closed"));
-    if (this.turnAdmissionBusy || this.promptRunning || this.driver.getState().isStreaming) {
-      return rejected(makeRuntimeError("session_busy", "a prompt is already in progress", { retryable: true }));
-    }
-    if (this.modelMutationBusy) {
-      return rejected(makeRuntimeError("session_busy", "a model change is already in progress", { retryable: true }));
+    // A running runtime is NOT an error: the authority forwards the send here
+    // precisely because the raw stream is busy, so the message is queued with
+    // the policy the sender chose. Nothing is rejected for being busy.
+    if (this.turnAdmissionBusy || this.modelMutationBusy) {
+      return rejected(makeRuntimeError("session_busy", "a prompt admission is already in progress", { retryable: true }));
     }
     if (typeof input.prompt !== "string" || input.prompt.trim().length === 0) {
       return rejected(makeRuntimeError("invalid_input", "prompt must be non-empty"));
@@ -962,6 +981,22 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         this.pinnedThinkingLevel = overrides.thinkingLevel;
       }
 
+      // A send into a RUNNING turn is queued, never rejected: the sender does
+      // not have to know whether the Agent is busy. The receipt is persisted
+      // BEFORE the queue call so an accepted send survives a runtime restart.
+      if (this.promptRunning || this.driver.getState().isStreaming) {
+        const disposition = input.whenBusy === "steer"
+          ? await this.driver.steer(input.prompt, input.images)
+          : await this.driver.followUp(input.prompt, input.images);
+        if (disposition === "queued") this.reconcileQueuedFromDriver();
+        this.persistSentMessage(input.operationId, input.whenBusy === "steer" ? "steer" : "follow_up");
+        const queuedSnapshot = await this.getSnapshot();
+        return {
+          admission: { ok: true, snapshot: queuedSnapshot },
+          completion: Promise.resolve({ ok: true, snapshot: queuedSnapshot, disposition: disposition === "queued" ? "queued" : "handled" }),
+        };
+      }
+
       this.activeTurnUserEntryId = undefined;
       // Mark/synthesize the running state honestly BEFORE the admission snapshot:
       // an accepted admission must report a prompt in progress.
@@ -999,10 +1034,15 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       }
       // Launch the prompt EXACTLY once; the long completion runs in the returned
       // promise and never holds the caller's ordinary control lane.
+      const turnOperationId = input.operationId;
       const completion = (async (): Promise<RuntimeTurnTerminal> => {
         let disposition: PromptDisposition | undefined;
         try {
           disposition = (await this.driver.prompt(input.prompt, input.images)).disposition;
+          // Durable receipt: the input was accepted by the backend. Persisting
+          // it here (not on completion) is what makes a resend after a worker
+          // restart dedupe instead of duplicating the message.
+          if (disposition === "started" || disposition === "queued") this.persistSentMessage(turnOperationId, "started");
           // Allow the message_end structural-correlation microtask to publish
           // the committed user identity before terminal snapshot capture.
           await Promise.resolve();
@@ -1671,6 +1711,22 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           : { images: turn.images }),
       };
     });
+  }
+
+  /**
+   * Persist the durable accepted-send receipt for one operation. Best-effort by
+   * design: a driver without custom-entry support (or a failed append) must not
+   * turn an accepted send into an error, it only narrows the restart dedupe
+   * window to the in-memory ledger.
+   */
+  private persistSentMessage(operationId: string | undefined, delivery: "started" | "steer" | "follow_up"): void {
+    if (operationId === undefined || this.driver.appendSentMessage === undefined) return;
+    try {
+      this.driver.appendSentMessage({ operationId, turnId: this.identity.sessionId, delivery });
+    } catch {
+      // The message is already accepted; losing the receipt only means a resend
+      // after a restart could be delivered twice, never that this send failed.
+    }
   }
 
   /** Re-seed the adapter queue mirror from the driver's authoritative view and

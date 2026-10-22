@@ -466,12 +466,52 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         assert.equal(commands.ok, true);
         const state = await port.read({ type: "get_state" });
         assert.equal(state.ok, true);
-        // A second submitTurn while the turn runs is session_busy.
+        // A second submitTurn while the turn runs is QUEUED, never rejected.
         const second = await port.submitTurn({ prompt: "another" });
-        assert.equal(second.admission.ok, false);
-        if (!second.admission.ok) assert.equal(second.admission.error.code, "session_busy");
+        assert.equal(second.admission.ok, true, "a running runtime queues the message");
+        assert.equal((await second.completion).disposition, "queued");
         const terminal = await handle.completion;
         assert.equal(terminal.ok, true);
+        await port.close("user");
+      });
+
+      it("submitTurn while running queues with the requested whenBusy policy (steer vs follow-up)", async () => {
+        const { port } = await newRuntime(harness);
+        const running = await port.submitTurn({ prompt: "long prompt" });
+        assert.equal(running.admission.ok, true);
+        await waitForSnapshot(port, (snapshot) => snapshot.state.isPromptRunning);
+        const steered = await port.submitTurn({ prompt: "steer me", whenBusy: "steer" });
+        assert.equal(steered.admission.ok, true);
+        const followed = await port.submitTurn({ prompt: "follow me", whenBusy: "follow_up" });
+        assert.equal(followed.admission.ok, true);
+        const queued = await port.read({ type: "get_state" });
+        assert.equal(queued.ok, true);
+        if (queued.ok && queued.type === "get_state") {
+          const state = queued.state;
+          assert.deepEqual(state.queuedMessages?.steering.map((turn) => turn.message), ["steer me"]);
+          assert.deepEqual(state.queuedMessages?.followUp.map((turn) => turn.message), ["follow me"]);
+        }
+        await running.completion;
+        await port.close("user");
+      });
+
+      it("a repeated operationId is delivered once, and the runtime repays it as queued while running", async () => {
+        const { port } = await newRuntime(harness);
+        const running = await port.submitTurn({ prompt: "long prompt", operationId: "op-once" });
+        assert.equal(running.admission.ok, true);
+        await waitForSnapshot(port, (snapshot) => snapshot.state.isPromptRunning);
+        const replay = await port.submitTurn({ prompt: "long prompt", operationId: "op-once" });
+        // Dedupe is the AUTHORITY's job; the runtime must at minimum never treat
+        // the replay as an error, so a retrying outbox converges either way.
+        assert.equal(replay.admission.ok, true);
+        const queued = await port.read({ type: "get_state" });
+        assert.equal(queued.ok, true);
+        if (queued.ok && queued.type === "get_state") {
+          const parked = [...(queued.state.queuedMessages?.steering ?? []), ...(queued.state.queuedMessages?.followUp ?? [])]
+            .filter((turn) => turn.message === "long prompt");
+          assert.ok(parked.length <= 1, "a replayed operation never parks twice");
+        }
+        await running.completion;
         await port.close("user");
       });
 

@@ -25,14 +25,41 @@ export const TurnActivationOverridesSchema = z.strictObject({
 });
 export type TurnActivationOverrides = z.infer<typeof TurnActivationOverridesSchema>;
 
+/**
+ * How a send should be delivered while the Agent is running. The AUTHORITY
+ * decides whether the session is busy — the client never guesses it. `steer`
+ * injects the message into the running turn; `follow_up` (the default) parks
+ * it for the end of the current turn.
+ */
+export const SubmitTurnWhenBusySchema = z.enum(["steer", "follow_up"]);
+export type SubmitTurnWhenBusy = z.infer<typeof SubmitTurnWhenBusySchema>;
+
+/**
+ * One unconditional, idempotent "send this user message" request — the ONLY
+ * send operation on the wire. The authority always accepts it (or answers a
+ * duplicate for a replayed `operationId`) and decides the delivery itself:
+ * an idle session starts a new turn, a running session queues the message per
+ * {@link SubmitTurnRequestSchema.shape.whenBusy}. Only `invalid_input` (the
+ * payload itself is illegal) and `not_found` (the session is gone) are final
+ * rejections; every other failure is retryable and the client resends the
+ * SAME `operationId`.
+ *
+ * `expectedEpoch` / `expectedRevision` stay on the wire for cached clients that
+ * still send them, and are DELIBERATELY IGNORED: they were client-side guesses
+ * about authority state, and every mismatch used to surface as a spurious
+ * "message not sent". Idempotency is carried by `operationId` alone.
+ */
 export const SubmitTurnRequestSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
+  /** Legacy fence fields — accepted for old clients, ignored by the authority. */
   expectedEpoch: EpochSchema.optional(),
   expectedRevision: z.number().int().nonnegative().safe().optional(),
   prompt: NonBlankTextSchema,
   images: ImageAttachmentArraySchema.optional(),
   activationOverrides: TurnActivationOverridesSchema.optional(),
   operationId: NonEmptyStringSchema,
+  /** Queue policy the authority applies when the session is already running. */
+  whenBusy: SubmitTurnWhenBusySchema.optional(),
 }).superRefine((value, ctx) => {
   if (value.expectedRevision !== undefined && value.expectedEpoch === undefined) {
     ctx.addIssue({ code: "custom", path: ["expectedRevision"], message: "expectedRevision requires expectedEpoch" });

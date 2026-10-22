@@ -11,6 +11,18 @@ export interface RuntimeTurnStart {
     readonly model?: ModelSelector;
     readonly thinkingLevel?: ThinkingLevel;
   };
+  /**
+   * Stable send identity. The adapter persists it as a `pix-sent-message`
+   * receipt so an accepted message survives worker restarts and epoch
+   * rollovers, and a replay of the same id is never delivered twice.
+   */
+  readonly operationId?: string;
+  /**
+   * Queue policy when the runtime is ALREADY running: `steer` injects the
+   * message into the current turn, `follow_up` (the default) parks it until the
+   * turn ends. The caller never has to know whether the runtime is busy.
+   */
+  readonly whenBusy?: "steer" | "follow_up";
 }
 
 /** Immediate result of the adapter's prompt-admission barrier. */

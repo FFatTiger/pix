@@ -15,6 +15,7 @@ import {
   RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
   RUNTIME_VISIBILITY_FEATURE,
+  RUNTIME_SEND_UNCONDITIONAL_FEATURE,
   SESSIOND_BUILD_IDENTITY,
   evaluateSessiondBuild,
   RuntimeActivateResultSchema,
@@ -399,6 +400,12 @@ interface GatewayConfig {
   readonly livenessEnabled: boolean;
   /** Page-visibility reporting (negotiated `runtime.visibility.v1`): Host-answered. */
   readonly visibilityEnabled: boolean;
+  /**
+   * Unconditional idempotent send (negotiated `runtime.send-unconditional.v1`):
+   * sessiond owns delivery decisions and durable `operationId` dedupe. When
+   * false the client keeps the legacy busy/epoch guessing paths.
+   */
+  readonly sendUnconditionalEnabled: boolean;
   readonly visibilityTracker: VisibilityTracker | undefined;
   readonly runtimeWorkspaceAuthorizer: RuntimeWorkspaceAuthorizer | undefined;
   readonly currentCapabilities: () => Promise<readonly HostCapability[]>;
@@ -578,10 +585,12 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     const requestedQuestionnaire = handshake.payload.features.includes(RUNTIME_QUESTIONNAIRE_FEATURE);
     const requestedLiveness = handshake.payload.features.includes(RUNTIME_LIVENESS_FEATURE);
     const requestedVisibility = handshake.payload.features.includes(RUNTIME_VISIBILITY_FEATURE);
+    const requestedSendUnconditional = handshake.payload.features.includes(RUNTIME_SEND_UNCONDITIONAL_FEATURE);
     let runningWatchEnabled = false;
     let assistantPresenceEnabled = false;
     let readRpcEnabled = false;
     let submitTurnEnabled = false;
+    let sendUnconditionalEnabled = false;
     let epochRolloverEnabled = false;
     let observeExistingEnabled = false;
     let explicitActivateEnabled = false;
@@ -594,7 +603,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     // acknowledged (the frame would be rejected anyway).
     const visibilityEnabled = requestedVisibility && this.visibilityTracker !== undefined;
     const wantsLifecycle = requestedObserveExisting || requestedExplicitActivate;
-    if (requestedRunningWatch || requestedReadRpc || requestedSubmitTurn || requestedEpochRollover || wantsLifecycle || requestedQuestionnaire) {
+    if (requestedRunningWatch || requestedReadRpc || requestedSubmitTurn || requestedEpochRollover || wantsLifecycle || requestedQuestionnaire || requestedSendUnconditional) {
       try {
         // Single system.hello for negotiated additive features. A seam that is
         // not wired/verified is never negotiated (fail closed to false).
@@ -603,6 +612,10 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
         assistantPresenceEnabled = requestedAssistantPresence && this.client.watchRunning !== undefined && hello.capabilities?.includes(RUNTIME_ASSISTANT_PRESENCE_FEATURE) === true;
         readRpcEnabled = requestedReadRpc && hello.capabilities?.includes(RUNTIME_READ_RPC_FEATURE) === true;
         submitTurnEnabled = requestedSubmitTurn && this.client.submitTurn !== undefined && hello.capabilities?.includes(RUNTIME_SUBMIT_TURN_FEATURE) === true;
+        // The unconditional send contract is a sessiond guarantee (it owns
+        // delivery decisions and durable dedupe), so it is only negotiated when
+        // sessiond advertises it AND the atomic submit seam is wired.
+        sendUnconditionalEnabled = requestedSendUnconditional && submitTurnEnabled && hello.capabilities?.includes(RUNTIME_SEND_UNCONDITIONAL_FEATURE) === true;
         epochRolloverEnabled = requestedEpochRollover && hello.capabilities?.includes(RUNTIME_EPOCH_ROLLOVER_FEATURE) === true;
         const hostHasAgent = resolved.capabilities.includes("agent");
         const authorizerWired = this.runtimeWorkspaceAuthorizer !== undefined;
@@ -617,6 +630,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
         assistantPresenceEnabled = false;
         readRpcEnabled = false;
         submitTurnEnabled = false;
+        sendUnconditionalEnabled = false;
         epochRolloverEnabled = false;
         observeExistingEnabled = false;
         explicitActivateEnabled = false;
@@ -634,6 +648,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       ...(questionnaireEnabled ? [RUNTIME_QUESTIONNAIRE_FEATURE] : []),
       ...(livenessEnabled ? [RUNTIME_LIVENESS_FEATURE] : []),
       ...(visibilityEnabled ? [RUNTIME_VISIBILITY_FEATURE] : []),
+      ...(sendUnconditionalEnabled ? [RUNTIME_SEND_UNCONDITIONAL_FEATURE] : []),
     ];
     const handshakeResponse = this.buildHandshakeResponse(resolved.capabilities, acceptedFeatures);
     this.write(session, {
@@ -659,6 +674,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       questionnaireEnabled,
       livenessEnabled,
       visibilityEnabled,
+      sendUnconditionalEnabled,
       visibilityTracker: this.visibilityTracker,
       runtimeWorkspaceAuthorizer: this.runtimeWorkspaceAuthorizer,
       currentCapabilities: async () => (await this.resolveConnectionCapabilities()).capabilities,

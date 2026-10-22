@@ -115,6 +115,12 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
   private autoRetry = false;
   private systemPrompt = "You are a coding agent.";
   private queue: QueuedMessages = emptyQueuedMessages();
+  /**
+   * Send identities already accepted by this runtime. A replayed
+   * `operationId` must never be delivered (or parked) twice; the real adapter
+   * persists the same identity as a `pix-sent-message` receipt.
+   */
+  private readonly sentOperations = new Map<string, string>();
   private listeners = new Set<(event: RuntimeEvent) => void>();
 
   private status: "idle" | "prompt" | "bash" | "compacting" = "idle";
@@ -231,7 +237,32 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       return { admission: { ok: false, error, snapshot }, completion: Promise.resolve({ ok: false, error, snapshot }) };
     };
     if (this.closed) return reject(makeRuntimeError("unavailable", "runtime is closed"));
-    if (this.status !== "idle") return reject(makeRuntimeError("session_busy", "a turn is already running", { retryable: true }));
+    // Durable-ish send identity: a replay answers from the receipt set.
+    if (input.operationId !== undefined) {
+      const prior = this.sentOperations.get(input.operationId);
+      if (prior !== undefined) {
+        const snapshot = await this.getSnapshot();
+        return { admission: { ok: true, snapshot }, completion: Promise.resolve({ ok: true, snapshot, disposition: prior === "started" ? "started" : "queued" }) };
+      }
+    }
+    const recordSent = (delivery: "started" | "steer" | "follow_up"): void => {
+      if (input.operationId !== undefined) this.sentOperations.set(input.operationId, delivery === "started" ? "started" : "queued");
+    };
+    // A running runtime QUEUES the send with the requested policy instead of
+    // refusing it: the caller never has to know whether the Agent is busy.
+    if (this.status !== "idle") {
+      const queued = await this.executeSteerOrFollowUp({
+        type: input.whenBusy === "steer" ? "steer" : "follow_up",
+        message: input.prompt,
+        ...(input.images === undefined ? {} : { images: input.images }),
+      });
+      const queuedSnapshot = await this.getSnapshot();
+      if (!queued.ok) {
+        return { admission: { ok: false, error: queued.error, snapshot: queuedSnapshot }, completion: Promise.resolve({ ok: false, error: queued.error, snapshot: queuedSnapshot }) };
+      }
+      recordSent(input.whenBusy === "steer" ? "steer" : "follow_up");
+      return { admission: { ok: true, snapshot: queuedSnapshot }, completion: Promise.resolve({ ok: true, snapshot: queuedSnapshot, disposition: "queued" }) };
+    }
     const beforeCount = this.store.getSession(this.identity.sessionId)?.entries.length ?? 0;
     if (input.activationOverrides?.model !== undefined) {
       const result = await this.executeSetModel({ type: "set_model", provider: input.activationOverrides.model.provider, modelId: input.activationOverrides.model.modelId });
@@ -258,6 +289,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
     }
     const execution = this.executePrompt({ type: "prompt", message: input.prompt, ...(input.images === undefined ? {} : { images: input.images }) });
     this.admissionRunning = false; // runTurn flips status to "prompt" synchronously
+    recordSent("started");
     const completion = execution.then(async (result) => {
       const terminalSnapshot = await this.getSnapshot();
       const userEntryId = this.store.getSession(this.identity.sessionId)?.entries.slice(beforeCount).find((entry) => entry.message.role === "user")?.entryId;

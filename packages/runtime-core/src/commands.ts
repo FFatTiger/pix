@@ -78,12 +78,20 @@ export interface SteerCommand {
   type: "steer";
   message: string;
   images?: readonly ImageAttachment[];
+  /**
+   * Sender-issued id of the original send, when this queue write IS a send
+   * (sessiond mints `pix-send:<operationId>`). The runtime persists it as the
+   * durable receipt identity so retries dedupe across restarts.
+   */
+  commandId?: string;
 }
 
 export interface FollowUpCommand {
   type: "follow_up";
   message: string;
   images?: readonly ImageAttachment[];
+  /** See {@link SteerCommand.commandId}. */
+  commandId?: string;
 }
 
 /**

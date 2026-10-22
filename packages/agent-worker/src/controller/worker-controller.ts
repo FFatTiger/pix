@@ -730,6 +730,10 @@ export class WorkerController {
       prompt: request.prompt,
       ...(request.images === undefined ? {} : { images: request.images }),
       ...(activationOverrides === undefined ? {} : { activationOverrides }),
+      operationId,
+      // The authority decides delivery; the runtime applies the queue policy
+      // when it turns out to be running.
+      ...(request.whenBusy === undefined ? {} : { whenBusy: request.whenBusy }),
     });
     let ledger!: { fingerprint: string; result?: SubmitTurnAdmission; status?: TurnStatus; admission: Promise<{ result: SubmitTurnAdmission; completion: import("@fffattiger/pix-runtime-core").RuntimeTurnHandle["completion"] | undefined }> };
     const admission: Promise<{ result: SubmitTurnAdmission; completion: import("@fffattiger/pix-runtime-core").RuntimeTurnHandle["completion"] | undefined }> = call.then((handle) => {

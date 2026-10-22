@@ -73,12 +73,14 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
         type: "steer",
         message: command.message,
         ...(command.images === undefined ? {} : { images: mapImages(command.images) }),
+        ...(command.commandId === undefined ? {} : { commandId: command.commandId }),
       };
     case "follow_up":
       return {
         type: "follow_up",
         message: command.message,
         ...(command.images === undefined ? {} : { images: mapImages(command.images) }),
+        ...(command.commandId === undefined ? {} : { commandId: command.commandId }),
       };
     case "switch_queued_delivery":
       return {

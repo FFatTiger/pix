@@ -32,6 +32,7 @@ import {
 } from "../local-posix.js";
 import { LocalAuthorityError, type LocalAuthorityCode } from "@fffattiger/pix-local-authority/state";
 import { createSessiondAttachmentStore, type SessiondAttachmentStore } from "../attachments.js";
+import type { SentMessageLedgerPort } from "../sent-messages.js";
 import type { WorkerProcessFactory } from "../worker.js";
 import {
   createProductionWorkerProcessFactory,
@@ -41,6 +42,7 @@ import { resolveRuntimeDir } from "./locator.js";
 import {
   createPiSdkSessionPorts,
   createPiSdkSessionStore,
+  readPiSdkSentMessages,
 } from "@fffattiger/pix-pi-sdk-adapter/sessions";
 import { createAssistantCreateAuthorizer } from "@fffattiger/pix-pi-sdk-adapter/trust";
 
@@ -102,6 +104,12 @@ export interface DaemonOptions {
    * its own sweep.
    */
   attachments?: SessiondAttachmentStore | null;
+  /**
+   * Durable send-receipt ledger (sessiond's idempotency source). Defaults to
+   * the Pi SDK adapter's JSONL reader; `null` leaves dedupe per-epoch and
+   * in-memory (unit harnesses).
+   */
+  sentMessages?: SentMessageLedgerPort | null;
 }
 
 /**
@@ -256,6 +264,13 @@ function buildDependencies(directory: string, options: DaemonOptions): { deps: S
     },
   };
   if (catalog) deps.sessionCatalog = catalog;
+  // Durable send receipts: the SAME adapter that writes the `pix-sent-message`
+  // custom entries reads them back, so sessiond's idempotency survives a worker
+  // restart or epoch rollover. An explicit override (including `null`) wins.
+  const sentMessages = options.sentMessages === undefined
+    ? { listSentMessages: (sessionFile: string, limit: number) => readPiSdkSentMessages(sessionFile, limit) }
+    : options.sentMessages;
+  if (sentMessages) deps.sentMessages = sentMessages;
   const projectCatalog = options.projectCatalog === undefined
     ? (options.sessionCatalog === undefined ? defaultPorts.projectCatalog : null)
     : options.projectCatalog;

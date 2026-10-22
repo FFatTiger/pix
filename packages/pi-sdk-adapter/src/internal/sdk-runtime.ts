@@ -16,12 +16,11 @@ import type {
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES, BUILTIN_CAPABILITY_REGISTRY } from "@fffattiger/pix-runtime-core";
-import { extensionCustomUnsupportedNotice } from "@fffattiger/pix-protocol";
+import { extensionCustomUnsupportedNotice, PIX_SENT_MESSAGE_CUSTOM_TYPE, parseSentMessageReceipt } from "@fffattiger/pix-protocol";
 import { effectiveAssistantSystemPromptFor, ensureAssistantToolsActive, assistantExtensionFactoriesForCwd } from "./assistant-tools.js";
 import { createShowFilesExtension } from "./show-files.js";
 import { renderAssistantPreamble } from "./assistant-system-prompt.js";
-import { NESTED_RESULTS_CUSTOM_TYPE } from "./nested-results.js";
-import { redactText } from "./sanitize.js";
+import { NESTED_RESULTS_CUSTOM_TYPE } from "./nested-results.js";import { redactText } from "./sanitize.js";
 import { createPiSdkSessionStore } from "./session-store.js";
 import { readGlobalToolsPreference } from "./settings-config-store.js";
 import { estimateSdkBranchContextTokens, type SdkContextMessage } from "./context-tokens.js";
@@ -559,6 +558,9 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   /** Slash command currently executing inside this session (see
    * {@link currentCommandInvocation}). */
   private activeCommand: string | undefined;
+  /** Lazily rebuilt set of `pix-sent-message` operation ids for this session
+   *  file; makes receipt writing idempotent across a runtime restart. */
+  private sentMessageIds: Set<string> | undefined;
 
   constructor(
     private readonly session: AgentSession,
@@ -1055,6 +1057,28 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     calls: readonly { id: string; text: string; truncated: boolean; imageCount: number; isError: boolean }[];
   }): void {
     this.session.sessionManager.appendCustomEntry(NESTED_RESULTS_CUSTOM_TYPE, payload);
+  }
+
+  /**
+   * Persist a durable accepted-send receipt (`pix-sent-message`). The SDK
+   * ignores the entry in `buildSessionContext`, so it never reaches the model
+   * or compaction. Writing is idempotent on `operationId`: a replay of the
+   * same send never appends a second receipt.
+   */
+  appendSentMessage(receipt: { operationId: string; turnId: string; delivery: "started" | "steer" | "follow_up" }): void {
+    const manager = this.session.sessionManager;
+    if (this.sentMessageIds === undefined) {
+      const seen = new Set<string>();
+      for (const entry of manager.getEntries()) {
+        if (entry.type !== "custom" || entry.customType !== PIX_SENT_MESSAGE_CUSTOM_TYPE) continue;
+        const parsed = parseSentMessageReceipt(entry.data);
+        if (parsed) seen.add(parsed.operationId);
+      }
+      this.sentMessageIds = seen;
+    }
+    if (this.sentMessageIds.has(receipt.operationId)) return;
+    manager.appendCustomEntry(PIX_SENT_MESSAGE_CUSTOM_TYPE, { version: 1, ...receipt });
+    this.sentMessageIds.add(receipt.operationId);
   }
 
   private entryMatchesRole(entry: unknown, expectedRole?: string): boolean {

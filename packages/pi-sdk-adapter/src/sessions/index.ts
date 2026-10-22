@@ -27,6 +27,7 @@ import {
   type SessionTree,
 } from "@fffattiger/pix-runtime-core";
 import { createPiSdkSessionStore as createSdkSessionStore } from "../internal/session-store.js";
+import { readSentMessages } from "../internal/sent-messages.js";
 
 /**
  * Injectable session store contract. The default implementation (created by
@@ -171,6 +172,29 @@ class PiSdkProjectCatalog implements ProjectCatalogPort {
     const offset = (request.page - 1) * request.pageSize;
     return { projects: projects.slice(offset, offset + request.pageSize), page: request.page, pageSize: request.pageSize, total, totalPages: total === 0 ? 0 : Math.ceil(total / request.pageSize), catalogRevision: 0 };
   }
+}
+
+/**
+ * One accepted user message as persisted in the session JSONL by the adapter's
+ * `pix-sent-message` receipt entry (see `@fffattiger/pix-protocol`).
+ */
+export interface PiSdkSentMessageReceipt {
+  operationId: string;
+  turnId: string;
+  delivery: "started" | "steer" | "follow_up";
+}
+
+/**
+ * Durable accepted-send receipts for one session (sessiond's idempotency
+ * source). `sessionFile` is the already-located session JSONL; the read is
+ * bounded to the file tail and yields an empty list on any failure, so a send
+ * is retried rather than silently dropped.
+ */
+export async function readPiSdkSentMessages(
+  sessionFile: string,
+  limit: number,
+): Promise<readonly PiSdkSentMessageReceipt[]> {
+  return readSentMessages(sessionFile, limit);
 }
 
 class PiSdkSessionLocator implements SessionLocatorPort {

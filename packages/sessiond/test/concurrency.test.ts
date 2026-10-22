@@ -489,20 +489,15 @@ test("terminal turn subscribers close, allowing turn-operation capacity to rotat
   // Terminal delivery includes the worker's authoritative idle refresh.
   assert.equal(service.getSnapshot("s").state.isPromptRunning, false);
 
-  const terminalRevision = liveRevision(service, "s", activated.epoch);
+  // Ledger capacity is a bounded buffer, never a user-visible rejection: the
+  // lease is reclaimed (epoch rotated at most once) and the send still lands.
   const trigger = await service.submitTurn({
-    sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: terminalRevision,
-    prompt: "trigger", operationId: "turn-cap-2",
+    sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: liveRevision(service, "s", activated.epoch),
+    prompt: "second", operationId: "turn-cap-2",
   });
-  assert.equal(trigger.status, "rejected");
-  if (trigger.status === "rejected") {
-    assert.equal(trigger.delivery, "not_delivered");
-    assert.equal(trigger.error.code, "epoch_changed");
-    assert.notEqual(trigger.epoch, activated.epoch);
-    assert.equal(trigger.revision, 0);
-  }
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.rotateEpoch").length, 1);
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "triggering turn is never dispatched");
+  assert.notEqual(trigger.status, "rejected");
+  assert.ok(workers.workers[0]!.sent.filter((message) => message.type === "worker.rotateEpoch").length <= 1);
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "both sends dispatch");
   prepared.close();
   await service.shutdown();
 });
@@ -528,27 +523,21 @@ test("Phase 3 submitTurn: same operationId returns once; a different fingerprint
   await service.shutdown();
 });
 
-test("Phase 3 submitTurn: stale epoch / missing fence rejects without touching the Worker", async () => {
-  const { service, workers } = makeService();
-  const activated = await service.activate("s");
+test("Phase 3 submitTurn: stale epoch / missing fence never reject a user message", async () => {
+  const { service, workers } = makeService({}, { snapshot: promptCapSnapshot() });
+  await service.activate("s");
+  // A cached client's stale fence is a guess about authority state, not a
+  // contract: the message is delivered anyway and the fences are ignored.
   const stale = await service.submitTurn({ sessionId: "s", expectedEpoch: "stale-epoch", expectedRevision: 0, prompt: "x", operationId: "op-stale" });
-  assert.equal(stale.status, "rejected");
-  if (stale.status === "rejected") {
-    assert.equal(stale.delivery, "not_delivered");
-    assert.equal(stale.error.code, "epoch_changed");
-  }
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 0, "a stale identity must never reach the Worker");
-  const noFence = await service.submitTurn({ sessionId: "s", prompt: "x", operationId: "op-nofence" });
-  assert.equal(noFence.status, "rejected");
-  if (noFence.status === "rejected") {
-    assert.equal(noFence.delivery, "not_delivered");
-    assert.equal(noFence.error.code, "conflict");
-  }
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 0, "a missing epoch fence on a live session must never reach the Worker");
+  assert.equal(stale.status, "accepted");
+  const noFence = await service.submitTurn({ sessionId: "s", prompt: "y", operationId: "op-nofence" });
+  // Second send lands while the first turn runs → the authority queues it.
+  assert.ok(noFence.status === "accepted" || noFence.status === "duplicate");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "the first send starts a turn");
   await service.shutdown();
 });
 
-test("Phase 3 submitTurn: side-channel and conversation journal churn never reject a submit; the epoch fence still does", async () => {
+test("Phase 3 submitTurn: side-channel and conversation journal churn never change delivery; no epoch guess can reject a send", async () => {
   const { service, workers } = makeService({}, { commandDelayMs: 40, snapshot: promptCapSnapshot() });
   const activated = await service.activate("s");
   const worker = workers.workers[0]!;
@@ -584,19 +573,19 @@ test("Phase 3 submitTurn: side-channel and conversation journal churn never reje
   const lagging = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: conversationBase, prompt: "lagging now", operationId: "op-lagging-conversation" });
   assert.equal(lagging.status, "accepted", "a lagging revision must not reject an append-only submit");
 
-  // The epoch fence is the surviving authority guard.
+  // A stale epoch is a client guess too: it is ignored, and the send is
+  // delivered (queued, because the earlier turn is still running).
   const staleEpoch = await service.submitTurn({ sessionId: "s", expectedEpoch: "e-stale", expectedRevision: afterConversation, prompt: "wrong epoch", operationId: "op-stale-epoch-any" });
-  assert.equal(staleEpoch.status, "rejected");
-  if (staleEpoch.status === "rejected") assert.equal(staleEpoch.error.code, "epoch_changed");
-  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "the two admitted turns dispatch; the stale epoch never does");
+  assert.equal(staleEpoch.status, "accepted");
+  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "only the idle-path sends dispatch a turn; the running ones queue");
   await service.shutdown();
 });
 
-test("submitTurn ignores expectedRevision: a conversation event between capture and admission is not a lost update (epoch + operation ledger still fence)", async () => {
+test("submitTurn ignores expectedRevision: a conversation event between capture and admission is not a lost update", async () => {
   // Submitting appends to the end of the conversation, so a lagging revision
   // cursor is not a concurrent-update hazard — sessiond's rejections at that
-  // step produced two production false "message not sent" incidents. The fence
-  // that matters is the epoch (rollover / rekey) plus the operation ledger.
+  // step produced two production false "message not sent" incidents. Nothing
+  // about the cursor may reject a send.
   const { service, workers } = makeService({}, { commandDelayMs: 40, snapshot: promptCapSnapshot() });
   const activated = await service.activate("s");
   const worker = workers.workers[0]!;
@@ -628,13 +617,12 @@ test("submitTurn ignores expectedRevision: a conversation event between capture 
   });
   assert.equal(future.status, "accepted", "an inflated revision must not reject an append-only submit");
 
-  // The epoch fence still rejects, and the ledger still answers duplicate.
+  // A stale epoch is ignored as well; the ledger still answers duplicate.
   const staleEpoch = await service.submitTurn({
     sessionId: "s", expectedEpoch: "stale-epoch", expectedRevision: staleRevision,
     prompt: "wrong epoch", operationId: "op-stale-epoch",
   });
-  assert.equal(staleEpoch.status, "rejected");
-  if (staleEpoch.status === "rejected") assert.equal(staleEpoch.error.code, "epoch_changed");
+  assert.equal(staleEpoch.status, "accepted");
   const duplicate = await service.submitTurn({
     sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: staleRevision,
     prompt: "from the future", operationId: "op-future-revision",
@@ -666,7 +654,7 @@ test("Phase 3 submitTurn: admission timeout → uncertain, never redispatched; l
   await service.shutdown();
 });
 
-test("Phase 3: a live session rejects a second concurrent turn as session_busy (single running turn)", async () => {
+test("Phase 3: a second send while a turn runs is QUEUED, never rejected as session_busy", async () => {
   const { service, workers } = makeService({}, { commandDelayMs: 40, snapshot: promptCapSnapshot() });
   const activated = await service.activate("s");
   const revision = liveRevision(service, "s", activated.epoch);
@@ -675,10 +663,16 @@ test("Phase 3: a live session rejects a second concurrent turn as session_busy (
   // The first admission advanced the journal (running-state shim); an attached
   // client would hold the fresh revision — re-capture it before the second submit.
   const revision2 = liveRevision(service, "s", activated.epoch);
-  const busy = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision2, prompt: "second", operationId: "op-second" });
-  assert.equal(busy.status, "rejected");
-  if (busy.status === "rejected") assert.equal(busy.error.code, "session_busy");
-  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1);
+  const queued = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision2, prompt: "second", operationId: "op-second" });
+  assert.equal(queued.status, "accepted");
+  if (queued.status === "accepted") {
+    assert.equal(queued.turnStatus.disposition, "queued");
+  }
+  const steered = await service.submitTurn({ sessionId: "s", prompt: "third", operationId: "op-third", whenBusy: "steer" });
+  assert.equal(steered.status, "accepted");
+  const commands = workers.workers[0]!.sent.filter((message) => message.type === "worker.command").map((message) => message.type === "worker.command" ? message.payload.command.type : "");
+  assert.deepEqual(commands, ["follow_up", "steer"], "queued sends ride the authoritative steer/follow_up command path");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "a busy session never starts a second turn");
   await service.shutdown();
 });
 
@@ -1059,23 +1053,24 @@ test("turn authority: fast handled completion repairs admission before terminal,
   reconnect.close();
 });
 
-test("turn authority: pending finalization stays busy and cannot roll epoch even when projection is idle", async (t) => {
+test("turn authority: pending finalization keeps a new send queued (never a rejection) and the epoch is only rolled at capacity", async (t) => {
   const h = await heldTerminalHarness({ turnOperationLimit: 1 });
   t.after(() => h.service.shutdown());
   h.worker.emitEvent({ type: "prompt_done", sessionId: "s" });
   assert.equal(h.service.getSnapshot("s").state.isPromptRunning, false);
   assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "busy");
-  const blocked = await h.service.submitTurn({ ...h.request, operationId: "capacity", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
-  assert.equal(blocked.status, "rejected");
-  if (blocked.status === "rejected") assert.equal(blocked.error.code, "session_busy");
+  // A send during finalization is delivered, never refused: the message rides
+  // the authoritative queued path while the previous turn settles.
+  const accepted = await h.service.submitTurn({ ...h.request, operationId: "capacity", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
+  assert.equal(accepted.status, "accepted");
   assert.equal(h.worker.sent.filter((message) => message.type === "worker.rotateEpoch").length, 0);
   h.worker.releaseHeldSnapshots();
   await h.terminal.promise;
   await flushMicrotasks();
-  const rotated = await h.service.submitTurn({ ...h.request, operationId: "capacity", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
-  assert.equal(rotated.status, "rejected");
-  if (rotated.status === "rejected") assert.equal(rotated.error.code, "epoch_changed");
-  assert.equal(h.worker.sent.filter((message) => message.type === "worker.rotateEpoch").length, 1);
+  // Capacity is a bounded buffer, not a user-visible failure: the send lands.
+  const afterCapacity = await h.service.submitTurn({ ...h.request, operationId: "capacity-2", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
+  assert.notEqual(afterCapacity.status, "rejected");
+  assert.ok(h.worker.sent.filter((message) => message.type === "worker.rotateEpoch").length <= 1);
 });
 
 test("turn authority: refresh preserves a real external stream instead of forcing idle", async (t) => {
@@ -1092,8 +1087,8 @@ test("turn authority: refresh preserves a real external stream instead of forcin
   assert.equal(h.service.getSnapshot("s").streaming?.active, true);
   assert.deepEqual(h.pushes[0]?.authority?.snapshot, external);
   const second = await h.service.submitTurn({ ...h.request, operationId: "external-busy", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
-  assert.equal(second.status, "rejected");
-  if (second.status === "rejected") assert.equal(second.error.code, "session_busy");
+  // A genuinely running stream queues the send instead of refusing it.
+  assert.equal(second.status, "accepted");
 });
 
 test("turn authority: rejected snapshot publishes structured unavailable and retains running truth", async (t) => {
@@ -1464,3 +1459,91 @@ for (const outcome of ["send failure", "timeout"] as const) {
     assert.deepEqual(states, [["s"], []], "late transport settlement cannot publish twice");
   });
 }
+
+// --- Unconditional idempotent send (outbox contract) -----------------------
+
+/** A receipt ledger stub: sessiond's durable dedupe source. */
+function receiptLedger(entries: { operationId: string; turnId: string; delivery: "started" | "steer" | "follow_up" }[] = []) {
+  return {
+    entries,
+    calls: 0,
+    async listSentMessages(_sessionFile: string, limit: number) {
+      this.calls += 1;
+      return this.entries.slice(-limit);
+    },
+  };
+}
+
+function makeServiceWithReceipts(ledger: ReturnType<typeof receiptLedger>) {
+  const workers = new FakeWorkerFactory({ snapshot: promptCapSnapshot(), commandDelayMs: 40 });
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId) { return { cwd: `/${sessionId}`, projectRoot: `/${sessionId}` }; } },
+    workerFactory: workers,
+    sentMessages: ledger,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  return { service, workers, ledger };
+}
+
+test("send dedupe is durable: a receipt already in the session JSONL answers duplicate and never dispatches", async () => {
+  const ledger = receiptLedger([{ operationId: "op-before-restart", turnId: "turn-from-the-past", delivery: "started" }]);
+  const { service, workers } = makeServiceWithReceipts(ledger);
+  await service.activate("s");
+  const replay = await service.submitTurn({ sessionId: "s", prompt: "hello", operationId: "op-before-restart" });
+  assert.equal(ledger.calls, 1, "the durable ledger is consulted");
+  assert.equal(replay.status, "duplicate");
+  if (replay.status === "duplicate") {
+    assert.equal(replay.delivery, "accepted");
+    assert.equal(replay.turnId, "turn-from-the-past");
+  }
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 0, "a durable duplicate is never delivered twice");
+  await service.shutdown();
+});
+
+test("send dedupe survives an epoch rollover: the in-memory ledger is cleared, the receipt is not", async () => {
+  const ledger = receiptLedger();
+  const { service, workers } = makeServiceWithReceipts(ledger);
+  const activated = await service.activate("s");
+  const first = await service.submitTurn({ sessionId: "s", prompt: "hello", operationId: "op-survives" });
+  assert.equal(first.status, "accepted");
+  // Simulate the adapter persisting the receipt, then a whole-epoch rollover
+  // (which clears every per-epoch in-memory ledger).
+  ledger.entries.push({ operationId: "op-survives", turnId: first.status === "accepted" ? first.turnId : "turn-x", delivery: "started" });
+  await wait(60);
+  const rotated = await service.command("s", { type: "set_auto_retry", commandId: "rotate-me", enabled: true }, activated.epoch);
+  assert.equal(rotated.result.ok, true);
+  const resend = await service.submitTurn({ sessionId: "s", prompt: "hello", operationId: "op-survives" });
+  assert.equal(resend.status, "duplicate");
+  if (resend.status === "duplicate") assert.equal(resend.delivery, "accepted");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "the resend never dispatches a second turn");
+  await service.shutdown();
+});
+
+test("send rejects ONLY invalid_input / not_found; every other failure stays retryable", async () => {
+  const ledger = receiptLedger();
+  const { service } = makeServiceWithReceipts(ledger);
+  await service.activate("s");
+  // A missing session is final: nothing about resending creates it. The
+  // activation context/locator reports it gone, so the send fails closed with
+  // the one non-retryable code the outbox is allowed to surface.
+  const missingLocator = {
+    async locate(sessionId: string) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: false }; },
+    async resolveLeafId() { return "leaf"; },
+  };
+  const workers = new FakeWorkerFactory({ snapshot: promptCapSnapshot() });
+  const isolated = new SessiondService({
+    sessionLocator: missingLocator,
+    activationContext: { async resolve(sessionId) { return { cwd: `/${sessionId}`, projectRoot: `/${sessionId}` }; } },
+    workerFactory: workers,
+    sentMessages: ledger,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  const missing = await isolated.submitTurn({ sessionId: "gone", prompt: "hi", operationId: "op-missing" });
+  assert.equal(missing.status, "rejected");
+  if (missing.status === "rejected") {
+    assert.equal(missing.error.code, "not_found");
+    assert.equal(missing.error.retryable, false);
+  }
+  assert.equal(workers.starts, 0, "a missing session never starts a worker");
+  await isolated.shutdown();
+  await service.shutdown();
+});

@@ -108,3 +108,19 @@ export type RuntimeAssistantPresenceFeature = typeof RUNTIME_ASSISTANT_PRESENCE_
  */
 export const RUNTIME_VISIBILITY_FEATURE = "runtime.visibility.v1" as const;
 export type RuntimeVisibilityFeature = typeof RUNTIME_VISIBILITY_FEATURE;
+
+/**
+ * Unconditional, idempotent message send. A sessiond advertising this token
+ * accepts `runtime.submitTurn` as the ONLY send operation and decides delivery
+ * itself: `whenBusy` selects steer vs follow-up while the Agent runs, an idle
+ * session starts a turn, `expectedEpoch`/`expectedRevision` are ignored, and
+ * `operationId` dedupe is durable (rebuilt from the session JSONL, so it
+ * survives worker restarts and epoch rollovers). Clients that negotiate it
+ * omit the busy/epoch guesses and retry the same `operationId` until the
+ * authority answers accepted/duplicate; only `invalid_input` and `not_found`
+ * are final. Removal condition: absorbed into the next PROTOCOL_VERSION bump
+ * once every supported daemon advertises it (same finite shim window as the
+ * other additive v2 features).
+ */
+export const RUNTIME_SEND_UNCONDITIONAL_FEATURE = "runtime.send-unconditional.v1" as const;
+export type RuntimeSendUnconditionalFeature = typeof RUNTIME_SEND_UNCONDITIONAL_FEATURE;

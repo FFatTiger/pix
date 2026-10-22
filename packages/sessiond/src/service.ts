@@ -23,6 +23,7 @@ import type {
   SubmitTurnAdmission,
   TurnStatus,
   ProtocolError,
+  PromptDisposition,
   SessiondTurnStatusPush,
   RuntimeGetSnapshotResult,
   RuntimeListRunningResult,
@@ -46,6 +47,7 @@ import {
   RuntimeCloseReasonSchema,
   ExtensionUiInteractiveMethodSchema,
   ASSISTANT_SENT_MESSAGE_PREFIX,
+  queuedSendCommandId,
   isAssistantSentMessage,
   type ProtocolErrorCode,
   type WorkerBuild,
@@ -54,6 +56,7 @@ import type { RuntimeCloseReason, SessiondRunningWatchPush } from "@fffattiger/p
 import type { AssistantPresence } from "@fffattiger/pix-protocol";
 import { READ_ONLY_RUNTIME_COMMAND_TYPES, compareSessionQueryHits, isRuntimeError, isAssistantWorkspacePath, matchSessionQuery, resolveAssistantWorkspaceDir, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMatchSource, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
 import { AssistantOpsAuthority, type AssistantOpsRecordView } from "./assistant-ops.js";
+import { SENT_MESSAGE_LEDGER_LIMIT, type DurableSendReceipt, type SentMessageLedgerPort } from "./sent-messages.js";
 import { AssistantResidencySupervisor, type AssistantResidencySurface } from "./assistant-residency.js";
 import { WorkspaceStateError } from "./workspace-state.js";
 import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, epochChangedCommand, epochChangedInterrupt, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
@@ -183,6 +186,13 @@ export interface SessiondDependencies {
    * unchanged, and session delete skips attachment cleanup).
    */
   attachments?: import("./attachments.js").SessiondAttachmentStore | null;
+  /**
+   * Durable send receipts (the `pix-sent-message` custom entries the adapter
+   * writes into the session JSONL). Optional: without it the idempotency set
+   * lives only in the per-epoch in-memory ledger (unit harnesses); the
+   * production daemon always wires the Pi SDK adapter's JSONL reader.
+   */
+  sentMessages?: SentMessageLedgerPort | null;
 }
 
 export interface PreparedAttachment {
@@ -2149,6 +2159,28 @@ export class SessiondService {
   // Phase 3 atomic submitTurn authority
   // ---------------------------------------------------------------------
 
+  /**
+   * The ONE send operation: unconditional and idempotent.
+   *
+   * The authority — never the client — decides how a user message is
+   * delivered:
+   *  - idle session → a new turn (`disposition: "started"`);
+   *  - running session → the message is QUEUED through the same authoritative
+   *    steer / follow_up command path the UI uses (`whenBusy`, default
+   *    `follow_up`), answering accepted with `disposition: "queued"`;
+   *  - stopped/crashed record → the normal activation path starts the worker;
+   *  - pending whole-epoch rollover → the request waits for it to settle.
+   *
+   * There is NO busy/epoch/revision rejection anymore: those fences were
+   * client-side guesses about authority state and every mismatch surfaced as a
+   * spurious "message not sent". `expectedEpoch`/`expectedRevision` are still
+   * accepted (cached clients keep sending them) and deliberately ignored.
+   *
+   * The only final rejections are `invalid_input` (the payload itself is
+   * illegal) and `not_found` (the session is gone). Everything else is
+   * retryable, and a retry with the SAME `operationId` is answered from the
+   * durable receipt ledger without delivering twice.
+   */
   async submitTurn(input: RuntimeSubmitTurnParams): Promise<SubmitTurnAdmission> {
     if (this.shuttingDown) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "unavailable", message: "sessiond is shutting down", retryable: true });
     const admitted = await this.coordinator.admit<SubmitTurnAdmission | { pending: Promise<SubmitTurnAdmission> }>(input.sessionId, "submit", async (ctx) => {
@@ -2160,24 +2192,7 @@ export class SessiondService {
         // annotated prompt) matches a replay of the identical original payload.
         const prior = record.turnOperations.get(input.operationId);
         if (prior) return this.duplicateTurn(record, prior, this.turnFingerprint(await this.fingerprintTurnInput(record, input)));
-        if (input.expectedEpoch === undefined) {
-          // Phase 5B: after a rollover a missing epoch is epoch_changed; before
-          // the first rollover it keeps the legacy conflict (no epoch fence).
-          if (record.requiresEpochFence) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "epoch_changed", message: "session epoch changed", retryable: true }, record.epoch, record.journal.lastEventId);
-          return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "conflict", message: "live session submit requires an epoch fence", retryable: false }, record.epoch, record.journal.lastEventId);
-        }
-        if (input.expectedEpoch !== record.epoch) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "epoch_changed", message: "session epoch changed", retryable: false }, input.expectedEpoch, input.expectedRevision);
-        // NO revision fence here. A submit only APPENDS a turn to the end of the
-        // conversation, so a client cursor that lagged behind a concurrent
-        // journal advance is not a lost update — the operation ledger handles
-        // replays and the epoch fence handles rollover/rekey. `expectedRevision`
-        // stays accepted on the wire (old clients keep sending it) but is
-        // deliberately ignored: fencing on it rejected legitimate sends twice
-        // in production as a false "message not sent".
       } else {
-        if (input.expectedEpoch !== undefined || input.expectedRevision !== undefined) {
-          return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "epoch_changed", message: "session is no longer active at the expected epoch", retryable: false }, input.expectedEpoch, input.expectedRevision);
-        }
         if (ctx.isStale()) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "conflict", message: "session identity changed during submit", retryable: false });
         const location = await this.deps.sessionLocator.locate(ctx.canonicalId);
         if (!location.exists) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "not_found", message: "session not found", retryable: false });
@@ -2186,12 +2201,16 @@ export class SessiondService {
       }
 
       if (!record || ["crashed", "stopped", "stopping"].includes(record.status)) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "worker_unavailable", message: "runtime is not active", retryable: true });
-      // Phase 5B: block every NEW turn admission while a whole-epoch rollover is pending.
-      if (record.epochRollover !== undefined) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "epoch_changed", message: "session epoch changed", retryable: true }, record.epoch, record.journal.lastEventId);
+      // A pending whole-epoch rollover is transient: WAIT for it (inside the
+      // per-session lane, so nothing else of this session interleaves) and then
+      // deliver normally. It is never a user-visible rejection.
+      await this.awaitPendingRollover(record);
       const caps = record.projection.snapshot().capabilities.capabilities;
-      if (!caps.includes("runtime.prompt")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "unsupported_capability", message: "capability not supported: runtime.prompt", retryable: false }, record.epoch, record.journal.lastEventId);
-      if (input.activationOverrides?.model !== undefined && !caps.includes("runtime.model.set")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "unsupported_capability", message: "capability not supported: runtime.model.set", retryable: false }, record.epoch, record.journal.lastEventId);
-      if (input.activationOverrides?.thinkingLevel !== undefined && !caps.includes("runtime.thinking.set")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "unsupported_capability", message: "capability not supported: runtime.thinking.set", retryable: false }, record.epoch, record.journal.lastEventId);
+      // A live runtime that cannot prompt at all is a permanent, non-retryable
+      // condition of this runtime (nothing about resending would change it).
+      if (!caps.includes("runtime.prompt")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "invalid_input", message: "this runtime cannot accept messages", retryable: false }, record.epoch, record.journal.lastEventId);
+      if (input.activationOverrides?.model !== undefined && !caps.includes("runtime.model.set")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "invalid_input", message: "capability not supported: runtime.model.set", retryable: false }, record.epoch, record.journal.lastEventId);
+      if (input.activationOverrides?.thinkingLevel !== undefined && !caps.includes("runtime.thinking.set")) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "invalid_input", message: "capability not supported: runtime.thinking.set", retryable: false }, record.epoch, record.journal.lastEventId);
       // Inline images are persisted under the canonical session id BEFORE the
       // fingerprint, so the prior-check / duplicateTurn / the operation record
       // all hash the transformed prompt. The write is content-addressed, so a
@@ -2204,67 +2223,27 @@ export class SessiondService {
       // was in flight on an earlier call that passed the pre-write check.
       const prior = record.turnOperations.get(input.operationId);
       if (prior) return this.duplicateTurn(record, prior, fingerprint);
-      // Phase 5B: at turnOperation capacity BEFORE inserting any pending/
-      // accepted identity, start/join a whole-epoch rollover. On success the
-      // triggering submit is proven not-admitted and returns a rejected
-      // not_delivered epoch_changed carrying the NEW authority epoch + revision
-      // 0; on failure the old epoch/ledgers stay intact and the original
-      // session_busy capacity failure is returned. Never dispatched to the worker.
+      // Durable dedupe: the in-memory ledger is per epoch and dies with the
+      // worker, but an accepted message is already in the session JSONL. A
+      // resend after a worker restart / epoch rollover answers duplicate instead
+      // of delivering the same message twice.
+      const receipt = await this.readDurableReceipt(record, input.operationId);
+      if (receipt !== undefined) return this.duplicateFromReceipt(record, input.operationId, receipt);
+      // No-busy contract: a session that is already running gets the message
+      // QUEUED through the authoritative steer / follow_up command path.
+      if (this.isTurnRunning(record)) return this.queueWhileRunning(record, input, fingerprint);
+      // Capacity of the in-memory operation ledger is a transient condition:
+      // rotate the epoch (which also clears the ledger) and keep going. Loss of
+      // the ledger is safe because dedupe is durable (the JSONL receipts).
       if (record.turnOperations.size >= this.turnOperationLimit) {
         const roll = await this.rotateEpoch(record, true);
-        if (roll.rolled) {
-          return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "epoch_changed", message: "session epoch changed", retryable: true }, record.epoch, 0);
-        }
-        return this.rejectedTurn(
-          record.sessionId,
-          input.operationId,
-          "not_delivered",
-          roll.error.code === "session_busy"
-            ? { code: "session_busy", message: "turn operation capacity reached for this epoch", retryable: true }
-            : roll.error,
-          record.epoch,
-          record.journal.lastEventId,
-        );
+        // A failed rollover keeps the old epoch and ledgers intact. The request
+        // is still owed an answer, so dispatch into the existing epoch rather
+        // than dropping the user's message; capacity only bounds the ledger.
+        if (!roll.rolled && roll.error.code === "session_busy") this.noteCapacityOverflow(record);
       }
-      if (this.isTurnRunning(record)) return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", { code: "session_busy", message: "a turn is already running", retryable: true }, record.epoch, record.journal.lastEventId);
 
-      const epoch = record.epoch;
-      const turnId = `turn:${randomUUID()}`;
-      const dispatchId = `turn-dispatch:${epoch}:${randomUUID()}`;
-      const initialStatus: TurnStatus = { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, revision: 0, state: "admitted" };
-      const placeholder = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "timeout", message: "turn admission is pending", retryable: true }, epoch, record.journal.lastEventId);
-      const operation: TurnOperationRecord = { operationId: input.operationId, fingerprint, epoch, turnId, dispatchId, admission: placeholder, status: initialStatus, dispatched: true, subscribers: new Set() };
-      record.turnOperations.set(input.operationId, operation);
-      const wait = deferred<SubmitTurnAdmission>();
-      const timer = setTimeout(() => {
-        const pending = record!.pendingTurnAdmissions.get(dispatchId);
-        if (!pending) return;
-        record!.pendingTurnAdmissions.delete(dispatchId);
-        const uncertain = this.rejectedTurn(record!.sessionId, input.operationId, "uncertain", { code: "timeout", message: "worker turn admission timed out", retryable: true }, epoch, record!.journal.lastEventId);
-        operation.admission = uncertain;
-        operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
-        this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
-        this.broadcastRunningChanged(record!.sessionId);
-        wait.resolve(uncertain);
-      }, this.turnAdmissionTimeoutMs);
-      record.pendingTurnAdmissions.set(dispatchId, { dispatchId, sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, fingerprint, resolve: wait.resolve, timer });
-      this.touch(record);
-      this.broadcastRunningChanged(record.sessionId);
-      const workerMessage: WorkerSubmitTurnMessage = { type: "worker.submitTurn", id: dispatchId, protocolVersion: PROTOCOL_VERSION, payload: { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, fingerprint, request: { ...input, sessionId: record.sessionId } } };
-      void Promise.resolve().then(() => record.worker.send(workerMessage)).catch(() => {
-        if (!record.pendingTurnAdmissions.has(dispatchId)) return;
-        clearTimeout(timer);
-        record.pendingTurnAdmissions.delete(dispatchId);
-        const uncertain = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "worker_unavailable", message: "worker turn admission send failed", retryable: true }, epoch, record.journal.lastEventId);
-        operation.admission = uncertain;
-        operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
-        this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
-        this.broadcastRunningChanged(record.sessionId);
-        wait.resolve(uncertain);
-      });
-      // Release the identity lane after dispatch: stop and same-id retries must
-      // progress while admission is pending, including a stalled worker send.
-      return { pending: wait.promise };
+      return this.dispatchTurn(record, input, fingerprint);
     });
     return "pending" in admitted ? admitted.pending : admitted;
   }
@@ -2346,6 +2325,181 @@ export class SessiondService {
       },
       close: () => close(),
     };
+  }
+
+  /**
+   * Wait for a pending whole-epoch rollover to settle, then continue. Bounded by
+   * the rollover's own timeout (it either commits or fails closed and clears
+   * the slot), so this never waits unboundedly. Must be called INSIDE the
+   * per-session submit lane: nothing else of this session interleaves while a
+   * send is waiting.
+   */
+  private async awaitPendingRollover(record: RecordState): Promise<void> {
+    while (record.epochRollover !== undefined && this.records.get(record.sessionId) === record) {
+      await record.epochRollover.promise.catch(() => undefined);
+    }
+  }
+
+  /**
+   * The in-memory operation ledger is bounded so a long-lived epoch cannot grow
+   * without limit. Overflow is not the user's problem: the durable receipts in
+   * the session JSONL already prove which sends were accepted, so the oldest
+   * terminal entries are dropped and the send proceeds.
+   */
+  private noteCapacityOverflow(record: RecordState): void {
+    for (const operation of record.turnOperations.values()) {
+      if (operation.status.state !== "completed" && operation.status.state !== "failed") continue;
+      if (operation.subscribers.size > 0) continue;
+      record.turnOperations.delete(operation.operationId);
+      if (record.turnOperations.size < this.turnOperationLimit) return;
+    }
+  }
+
+  /**
+   * Deliver a message into a RUNNING session through the authoritative queued
+   * command path (steer / follow_up) instead of rejecting it. The command
+   * carries the send's operationId inside its command id, so the adapter writes
+   * the same durable receipt identity a new turn would write, and a resend of
+   * the same operationId dedupes against it.
+   */
+  private async queueWhileRunning(
+    record: RecordState,
+    input: RuntimeSubmitTurnParams,
+    fingerprint: string,
+  ): Promise<SubmitTurnAdmission> {
+    const delivery = input.whenBusy ?? "follow_up";
+    const command: RuntimeCommand = delivery === "steer"
+      ? { commandId: queuedSendCommandId(input.operationId), type: "steer", message: input.prompt, ...(input.images === undefined ? {} : { images: [...input.images] }) }
+      : { commandId: queuedSendCommandId(input.operationId), type: "follow_up", message: input.prompt, ...(input.images === undefined ? {} : { images: [...input.images] }) };
+    const epoch = record.epoch;
+    const turnId = `turn:${randomUUID()}`;
+    const status: TurnStatus = { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, revision: 0, state: "running", disposition: "queued" };
+    const operation: TurnOperationRecord = {
+      operationId: input.operationId,
+      fingerprint,
+      epoch,
+      turnId,
+      dispatchId: `send-dispatch:${epoch}:${randomUUID()}`,
+      admission: this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "timeout", message: "queued send is pending", retryable: true }, epoch, record.journal.lastEventId),
+      status,
+      dispatched: false,
+      subscribers: new Set(),
+    };
+    record.turnOperations.set(input.operationId, operation);
+    let outcome: CorrelatedRuntimeCommandResult;
+    try {
+      outcome = await this.commandOnRecord(record, command, epoch, false, operationFingerprint(command));
+    } catch (error) {
+      record.turnOperations.delete(input.operationId);
+      return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", {
+        code: "unavailable",
+        message: error instanceof SessiondError ? error.message : "queued send failed",
+        retryable: true,
+      }, epoch, record.journal.lastEventId);
+    }
+    if (!outcome.result.ok) {
+      record.turnOperations.delete(input.operationId);
+      const error = outcome.result.error;
+      // Only a permanent, payload-shaped failure is final; everything else is
+      // retryable so the outbox resends the SAME operationId.
+      const final = !error.retryable && (error.code === "invalid_input" || error.code === "unsupported_capability" || error.code === "not_found");
+      return this.rejectedTurn(record.sessionId, input.operationId, "not_delivered", {
+        code: final ? "invalid_input" : error.code,
+        message: final ? error.message : "queued send was not accepted",
+        retryable: !final,
+      }, epoch, record.journal.lastEventId);
+    }
+    const admission: SubmitTurnAdmission = {
+      status: "accepted",
+      delivery: "accepted",
+      sessionId: record.sessionId,
+      epoch,
+      revision: record.journal.lastEventId,
+      operationId: input.operationId,
+      turnId,
+      snapshot: record.projection.snapshot(),
+      turnStatus: status,
+    };
+    operation.admission = admission;
+    return admission;
+  }
+
+  /**
+   * Durable dedupe lookup: an accepted send is persisted in the session JSONL,
+   * so it survives worker restarts and epoch rollovers. A miss (or an
+   * unreadable ledger) means "send it", never a fake success.
+   */
+  private async readDurableReceipt(record: RecordState, operationId: string): Promise<DurableSendReceipt | undefined> {
+    const port = this.deps.sentMessages;
+    if (!port) return undefined;
+    try {
+      const sessionFile = record.sessionFile ?? (await this.deps.sessionLocator.locate(record.sessionId)).sessionFile;
+      if (sessionFile === undefined) return undefined;
+      const receipts = await port.listSentMessages(sessionFile, SENT_MESSAGE_LEDGER_LIMIT);
+      for (let index = receipts.length - 1; index >= 0; index -= 1) {
+        if (receipts[index]!.operationId === operationId) return receipts[index];
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Answer a resend from the durable receipt: accepted, delivered exactly once. */
+  private duplicateFromReceipt(record: RecordState, operationId: string, receipt: DurableSendReceipt): SubmitTurnAdmission {
+    const disposition: PromptDisposition = receipt.delivery === "started" ? "started" : "queued";
+    return {
+      status: "duplicate",
+      delivery: "accepted",
+      sessionId: record.sessionId,
+      epoch: record.epoch,
+      revision: record.journal.lastEventId,
+      operationId,
+      turnId: receipt.turnId,
+      turnStatus: { sessionId: record.sessionId, epoch: record.epoch, operationId, turnId: receipt.turnId, revision: 0, state: "running", disposition },
+      snapshot: record.projection.snapshot(),
+    };
+  }
+
+  /** Dispatch one admitted new turn to the worker (the only "start a turn" path). */
+  private dispatchTurn(record: RecordState, input: RuntimeSubmitTurnParams, fingerprint: string): { pending: Promise<SubmitTurnAdmission> } {
+    const epoch = record.epoch;
+    const turnId = `turn:${randomUUID()}`;
+    const dispatchId = `turn-dispatch:${epoch}:${randomUUID()}`;
+    const initialStatus: TurnStatus = { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, revision: 0, state: "admitted" };
+    const placeholder = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "timeout", message: "turn admission is pending", retryable: true }, epoch, record.journal.lastEventId);
+    const operation: TurnOperationRecord = { operationId: input.operationId, fingerprint, epoch, turnId, dispatchId, admission: placeholder, status: initialStatus, dispatched: true, subscribers: new Set() };
+    record.turnOperations.set(input.operationId, operation);
+    const wait = deferred<SubmitTurnAdmission>();
+    const timer = setTimeout(() => {
+      const pending = record.pendingTurnAdmissions.get(dispatchId);
+      if (!pending) return;
+      record.pendingTurnAdmissions.delete(dispatchId);
+      const uncertain = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "timeout", message: "worker turn admission timed out", retryable: true }, epoch, record.journal.lastEventId);
+      operation.admission = uncertain;
+      operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
+      this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+      this.broadcastRunningChanged(record.sessionId);
+      wait.resolve(uncertain);
+    }, this.turnAdmissionTimeoutMs);
+    record.pendingTurnAdmissions.set(dispatchId, { dispatchId, sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, fingerprint, resolve: wait.resolve, timer });
+    this.touch(record);
+    this.broadcastRunningChanged(record.sessionId);
+    const workerMessage: WorkerSubmitTurnMessage = { type: "worker.submitTurn", id: dispatchId, protocolVersion: PROTOCOL_VERSION, payload: { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, fingerprint, request: { ...input, sessionId: record.sessionId } } };
+    void Promise.resolve().then(() => record.worker.send(workerMessage)).catch(() => {
+      if (!record.pendingTurnAdmissions.has(dispatchId)) return;
+      clearTimeout(timer);
+      record.pendingTurnAdmissions.delete(dispatchId);
+      const uncertain = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "worker_unavailable", message: "worker turn admission send failed", retryable: true }, epoch, record.journal.lastEventId);
+      operation.admission = uncertain;
+      operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
+      this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+      this.broadcastRunningChanged(record.sessionId);
+      wait.resolve(uncertain);
+    });
+    // Release the identity lane after dispatch: stop and same-id retries must
+    // progress while admission is pending, including a stalled worker send.
+    return { pending: wait.promise };
   }
 
   private duplicateTurn(record: RecordState, operation: TurnOperationRecord, fingerprint: string): SubmitTurnAdmission {
