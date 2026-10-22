@@ -1243,7 +1243,8 @@ export class SessionController implements RuntimeControllerPort {
     // message's type, so it must never wait behind the turn (the runtime's
     // revision fence fails it closed if the queue changed).
     if (
-      this.pendingTurn && !this.pendingTurn.terminal && command.type !== "switch_queued_delivery"
+      ((this.pendingTurn && !this.pendingTurn.terminal) || this.promptTransaction !== null)
+      && command.type !== "switch_queued_delivery"
     ) {
       return Promise.reject(preDispatchError({
         code: "session_busy",

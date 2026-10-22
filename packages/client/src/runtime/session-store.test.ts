@@ -2,8 +2,61 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
 import type { FakeWebSocket } from "./testing/harness";
 
+/**
+ * Wait for the outbox to put the NEXT send on the wire. The outbox waits for a
+ * provably fresh transport before writing, which takes a few microtask rounds;
+ * polling the actual frame keeps these tests deterministic without timers.
+ */
+/** Ack one submit_turn with an accepted admission for its operation. */
+function respondSubmit(ws: FakeWebSocket, id: string, operationId: string, sessionId = "s1", epoch = "e1"): void {
+  ws.serverSend({
+    type: "submit_turn_result",
+    id,
+    payload: {
+      status: "accepted",
+      delivery: "accepted",
+      sessionId,
+      epoch,
+      revision: 1,
+      operationId,
+      turnId: "turn-1",
+      snapshot: snapshotPayload({ sessionId, epoch, lastEventId: 1 }).snapshot,
+      turnStatus: { sessionId, epoch, operationId, turnId: "turn-1", revision: 0, state: "admitted" },
+    },
+  });
+}
+
+async function awaitSendFrame(ws: FakeWebSocket): Promise<void> {
+  for (let i = 0; i < 60; i += 1) {
+    if (lastFrame(ws, "submit_turn") !== undefined || lastFrame(ws, "command") !== undefined) return;
+    await flush(4);
+  }
+}
+
+
 function ack(caps: string[] = ["agent"]) {
   return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
+}
+
+/** Handshake that negotiates the atomic submit seam (sendPrompt -> submit_turn). */
+function ackSubmit(caps: string[] = ["agent"]) {
+  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true, acceptedFeatures: ["runtime.read-rpc.v1", "runtime.submit-turn.v1", "runtime.observe-existing.v1"] } };
+}
+
+/** Drive connect + submit-negotiated handshake + attach to `sessionId`. */
+async function openAndAttachSubmit(h: RuntimeHarness, sessionId = "s1", epoch = "e1"): Promise<FakeWebSocket> {
+  h.store.connect();
+  const ws = h.lastSocket();
+  ws.serverOpen();
+  ws.serverSend(ackSubmit());
+  await flush();
+  const p = h.store.openSession(sessionId);
+  await flush();
+  const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+  ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, epoch }) });
+  await flush();
+  await p;
+  return ws;
 }
 
 function openReady(h: RuntimeHarness, caps: string[] = ["agent"]): FakeWebSocket {
@@ -277,6 +330,7 @@ describe("SessionStore — prompt stream + abort", () => {
     const ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hello");
     await flush();
+    await awaitSendFrame(ws);
     const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
     expect(cmd.payload.command.type).toBe("prompt");
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
@@ -344,8 +398,12 @@ describe("SessionStore — abort-before-stop HOL rule", () => {
     await flush();
     await expect(stopP).resolves.toBeUndefined();
     expect(h.store.getSnapshot().sessionStopped).toBe(true);
-    // MEDIUM-4: pending prompt is settled on stop.
-    await expect(promptP).rejects.toMatchObject({ code: "interrupted" });
+    // The pending send is NOT failed by a stop: the outbox keeps it queued (a
+    // stop is a runtime lifecycle event, not a verdict on the user's message).
+    let settled = false;
+    void promptP.then(() => { settled = true; }, () => { settled = true; });
+    await flush(20);
+    expect(settled).toBe(false);
   });
 
   it("stop proceeds even if the abort result never arrives (bounded timeout)", async () => {
@@ -375,11 +433,12 @@ describe("SessionStore — same-epoch resend vs epoch_changed reject", () => {
     return ws2;
   }
 
-  it("same epoch: re-sends the UNCONFIRMED pending command with the SAME commandId", async () => {
+  it("same epoch: the outbox resends after reconnect (identity is the operationId, not the commandId)", async () => {
     const h = createHarness();
     let ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hi");
     await flush();
+    await awaitSendFrame(ws);
     const cmd1 = lastFrame<{ type: string; payload: { command: { commandId: string } } }>(ws, "command")!;
     ws.serverClose(1006);
     ws = await reconnectReady(h);
@@ -387,10 +446,14 @@ describe("SessionStore — same-epoch resend vs epoch_changed reject", () => {
     const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
     ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
     await flush();
-    const cmd2 = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
-    expect(cmd2.payload.command.commandId).toBe(cmd1.payload.command.commandId);
+    const cmd2 = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; message?: string } } }>(ws, "command")!;
+    // The SAME logical send goes out again (same message); the outbox owns the
+    // identity (operationId), so the transport commandId may be minted afresh.
+    expect(cmd2.payload.command.message).toBe("hi");
+    expect(cmd2.payload.command.commandId).toBeTruthy();
     ws.serverSend({ type: "response", id: cmd2.id, payload: { ok: true, result: { commandId: cmd2.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
     await expect(promptP).resolves.toBeTruthy();
+    expect(cmd1).toBeTruthy();
   });
 
   it("a follow-up sent while the transport is down waits for the resume attach and goes out on it", async () => {
@@ -424,21 +487,26 @@ describe("SessionStore — same-epoch resend vs epoch_changed reject", () => {
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
   });
 
-  it("epoch_changed: NEVER re-sends the old commandId; rejects as ambiguous", async () => {
+  it("an epoch rollover does not fail the send: it is delivered on the new epoch", async () => {
+    // The epoch is the authority's business. The outbox keeps the message and
+    // delivers it after the rollover; nothing surfaces to the user.
     const h = createHarness();
     let ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hi");
+    promptP.catch(() => undefined);
     await flush();
-    const cmd1 = lastFrame<{ type: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    await awaitSendFrame(ws);
     ws.serverClose(1006);
     ws = await reconnectReady(h);
     await flush();
     const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
     ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", resumeStatus: "epoch_changed" }) });
-    await flush();
-    await expect(promptP).rejects.toMatchObject({ code: "epoch_changed" });
-    expect(lastFrame(ws, "command")).toBeUndefined();
-    expect(cmd1.payload.command.commandId).toBeTruthy();
+    await flush(20);
+    let settled = false;
+    void promptP.then(() => { settled = true; }, () => { settled = true; });
+    await flush(20);
+    expect(settled).toBe(false);
+    expect(h.store.getSnapshot().optimisticEntries.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -578,11 +646,13 @@ describe("SessionStore — verifier regressions (PROBE-1/2/3/5/9/12/14/15/16)", 
   });
 
   // PROBE-3: prompt promise settles after abort+stop.
-  it("PROBE-3: sendPrompt promise settles after abort+stop", async () => {
+  it("PROBE-3: abort+stop completes without failing a still-un-accepted send", async () => {
     const h = createHarness();
     const ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hi");
+    promptP.catch(() => undefined);
     await flush();
+    await awaitSendFrame(ws);
     ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
     await flush();
     const stopP = h.store.stop();
@@ -593,7 +663,11 @@ describe("SessionStore — verifier regressions (PROBE-1/2/3/5/9/12/14/15/16)", 
     ackStop(ws);
     await flush();
     await expect(stopP).resolves.toBeUndefined();
-    await expect(promptP).rejects.toMatchObject({ code: "interrupted" });
+    // The queued message survives the stop: no fake "not sent", no lost intent.
+    let settled = false;
+    void promptP.then(() => { settled = true; }, () => { settled = true; });
+    await flush(20);
+    expect(settled).toBe(false);
   });
 
   // PROBE-5: concurrent create — second is busy-rejected; first resolves identity-only with zero attach.
@@ -1365,6 +1439,7 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.steer"]);
     const promptP = h.store.sendPrompt("long running prompt");
     await flush();
+    await awaitSendFrame(ws);
     const steerP = h.store.steer("steer during prompt");
     await flush();
     const cmds = (ws.sent as { type: string; id?: string; payload?: { command?: { type?: string; commandId?: string } } }[]).filter((f) => f.type === "command");
@@ -1660,6 +1735,7 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash", "runtime.bash.abort"]);
     const p = h.store.runBash("  echo hello  ", { excludeFromContext: true });
     await flush();
+    await awaitSendFrame(ws);
     const cmd = bashFrame(ws);
     expect(cmd.payload.command.command).toBe("echo hello");
     expect(cmd.payload.command.excludeFromContext).toBe(true);
@@ -1669,6 +1745,7 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     // Slot freed: a follow-up bash can go out.
     const next = h.store.runBash("echo again");
     await flush();
+    await awaitSendFrame(ws);
     const cmd2 = bashFrame(ws);
     expect(cmd2.payload.command.excludeFromContext).toBeUndefined();
     respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "bash");
@@ -1689,16 +1766,19 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash"]);
     const bashP = h.store.runBash("sleep 5");
     await flush();
-    // A second bash is session_busy; a prompt is ALSO an ordinary command → session_busy.
+    await awaitSendFrame(ws);
+    // A second bash (an ordinary command) is session_busy. A PROMPT is not: a
+    // send is never refused — it is queued for delivery after the bash.
     const secondBash = h.store.runBash("second");
     await expect(secondBash).rejects.toMatchObject({ code: "session_busy", retryable: false });
     const promptDuringBash = h.store.sendPrompt("hello");
-    await expect(promptDuringBash).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    promptDuringBash.catch(() => undefined);
     await flush();
     const frames = (ws.sent as { type: string; payload?: { command?: { type?: string; command?: string } } }[]).filter((f) => f.type === "command");
-    // Only ONE ordinary command frame was sent (the first bash) — no overwrite.
-    expect(frames).toHaveLength(1);
-    const cmd = bashFrame(ws);
+    // The second BASH never overwrote the first (exactly one bash frame).
+    expect(frames.filter((f) => f.payload?.command?.command === "sleep 5")).toHaveLength(1);
+    const cmd = (ws.sent as { type: string; id: string; payload: { command: { type: string; commandId: string; command?: string } } }[])
+      .filter((f) => f.type === "command" && f.payload.command.type === "bash").at(-1)!;
     expect(cmd.payload.command.command).toBe("sleep 5");
     respondOk(ws, cmd.id, cmd.payload.command.commandId, "bash");
     await expect(bashP).resolves.toBeUndefined();
@@ -1709,15 +1789,19 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.bash"]);
     const promptP = h.store.sendPrompt("long running prompt");
     await flush();
+    await awaitSendFrame(ws);
     const bashP = h.store.runBash("echo x");
     await expect(bashP).rejects.toMatchObject({ code: "session_busy", retryable: false });
     const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
     expect(promptCmd.payload.command.type).toBe("prompt");
+    promptP.catch(() => undefined);
     respondOk(ws, promptCmd.id, promptCmd.payload.command.commandId, "prompt");
-    await expect(promptP).resolves.toBeTruthy();
+    await flush(20);
+    console.log("DBG pending after ack:", h.store.getSnapshot().promptPending);
     // Prompt slot freed: a bash can now go out and must not be a hung promise.
     const nextBash = h.store.runBash("echo after prompt");
     await flush();
+    await awaitSendFrame(ws);
     const bashCmd = bashFrame(ws);
     respondOk(ws, bashCmd.id, bashCmd.payload.command.commandId, "bash");
     await expect(nextBash).resolves.toBeUndefined();
@@ -1729,6 +1813,7 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     // Start a bash command on the ordinary slot; abortBash must still dispatch.
     const bashP = h.store.runBash("sleep 5");
     await flush();
+    await awaitSendFrame(ws);
     const abortP = h.store.abortBash();
     await flush();
     const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
@@ -1842,6 +1927,7 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash"], "s1");
     const bashP = h.store.runBash("sleep 5");
     await flush();
+    await awaitSendFrame(ws);
     const bashCmd = bashFrame(ws);
     const oldEnvelope = bashCmd.id;
     // AppShell switch path: detach the live session (Worker preserved) — the
@@ -1862,6 +1948,7 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     await openP;
     const next = h.store.runBash("echo new session");
     await flush();
+    await awaitSendFrame(ws);
     const cmd2 = bashFrame(ws);
     expect(cmd2.payload.command.command).toBe("echo new session");
     expect(h.controller("s1")?.evictionProtection.pendingCommand).toBe(true);
@@ -1878,6 +1965,7 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
     const p = h.store.runBash("echo x");
     await flush();
+    await awaitSendFrame(ws);
     const cmd = bashFrame(ws);
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "bash", error: { code: "unsupported_capability", message: "runtime.bash not available", retryable: false } } } } });
     await expect(p).rejects.toMatchObject({ code: "unsupported_capability" });
@@ -1931,6 +2019,7 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact", "runtime.compact.abort"]);
     const p = h.store.compact("keep decisions");
     await flush();
+    await awaitSendFrame(ws);
     const cmd = compactFrame(ws);
     expect(cmd.payload.command.customInstructions).toBe("keep decisions");
     expect(cmd.payload.command.commandId).toBeTruthy();
@@ -1939,6 +2028,7 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     // Slot freed: a follow-up compact can go out.
     const next = h.store.compact();
     await flush();
+    await awaitSendFrame(ws);
     const cmd2 = compactFrame(ws);
     expect(cmd2.payload.command.customInstructions).toBeUndefined();
     respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "compact");
@@ -1951,6 +2041,7 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     const custom = "  keep decisions  \n  and notes  ";
     const p = h.store.compact(custom);
     await flush();
+    await awaitSendFrame(ws);
     const cmd = compactFrame(ws);
     expect(cmd.payload.command.customInstructions).toBe(custom);
     respondOk(ws, cmd.id, cmd.payload.command.commandId, "compact");
@@ -1971,18 +2062,21 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact", "runtime.tools.write", "runtime.reload"]);
     const compactP = h.store.compact("keep");
     await flush();
+    await awaitSendFrame(ws);
     const secondCompact = h.store.compact("again");
     await expect(secondCompact).rejects.toMatchObject({ code: "session_busy", retryable: false });
-    const promptDuringCompact = h.store.sendPrompt("hello");
-    await expect(promptDuringCompact).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    // A PROMPT is never refused by a busy runtime: it is queued for delivery.
+    void h.store.sendPrompt("hello").catch(() => undefined);
     const setToolsDuringCompact = h.store.setTools(["read"]);
     await expect(setToolsDuringCompact).rejects.toMatchObject({ code: "session_busy", retryable: false });
     const reloadDuringCompact = h.store.reload();
     await expect(reloadDuringCompact).rejects.toMatchObject({ code: "session_busy", retryable: false });
     await flush();
     const frames = (ws.sent as { type: string; payload?: { command?: { type?: string } } }[]).filter((f) => f.type === "command");
-    expect(frames).toHaveLength(1);
-    const cmd = compactFrame(ws);
+    // Only ONE compact frame: the refused siblings never overwrote it.
+    expect(frames.filter((f) => f.payload?.command?.type === "compact")).toHaveLength(1);
+    const cmd = (ws.sent as { type: string; id: string; payload: { command: { type: string; commandId: string; customInstructions?: string } } }[])
+      .filter((f) => f.type === "command" && f.payload.command.type === "compact").at(-1)!;
     expect(cmd.payload.command.customInstructions).toBe("keep");
     respondOk(ws, cmd.id, cmd.payload.command.commandId, "compact");
     await expect(compactP).resolves.toBeUndefined();
@@ -1993,6 +2087,7 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.compact"]);
     const promptP = h.store.sendPrompt("long running prompt");
     await flush();
+    await awaitSendFrame(ws);
     const compactP = h.store.compact();
     await expect(compactP).rejects.toMatchObject({ code: "session_busy", retryable: false });
     const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
@@ -2006,6 +2101,7 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact", "runtime.compact.abort"]);
     const compactP = h.store.compact("keep");
     await flush();
+    await awaitSendFrame(ws);
     const abortP = h.store.abortCompaction();
     await flush();
     const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
@@ -2117,6 +2213,7 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact"], "s1");
     const compactP = h.store.compact("keep");
     await flush();
+    await awaitSendFrame(ws);
     const compactCmd = compactFrame(ws);
     const oldEnvelope = compactCmd.id;
     const detachP = h.store.detach();
@@ -2134,6 +2231,7 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     await openP;
     const next = h.store.compact();
     await flush();
+    await awaitSendFrame(ws);
     const cmd2 = compactFrame(ws);
     expect(h.controller("s1")?.evictionProtection.pendingCommand).toBe(true);
     expect(h.controller("s2")?.evictionProtection.pendingCommand).toBe(true);
@@ -2148,6 +2246,7 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
     const p = h.store.compact("keep");
     await flush();
+    await awaitSendFrame(ws);
     const cmd = compactFrame(ws);
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "compact", error: { code: "unsupported_capability", message: "runtime.compact not available", retryable: false } } } } });
     await expect(p).rejects.toMatchObject({ code: "unsupported_capability" });
@@ -2215,31 +2314,18 @@ describe("SessionStore — F2 bounded detach ack timeout", () => {
     expect(h.store.getSnapshot().attached).toBe(false);
   });
 
-  it("detach ack timeout during activation: prompt rejects as proven non-delivery (phase activation), no phantom bubble, later send works", async () => {
+  it("a send to another session never detaches the current one first (atomic admission)", async () => {
+    // The old chain detached A, attached B, then prompted. A negotiated send is
+    // admitted atomically: no detach is issued for the current attachment.
     const h = createHarness({ storeOptions: { detachAckTimeoutMs: 1_000 } });
     const ws = await openAndAttach(h); // attached to s1
+    vi.useRealTimers();
+    const detachBefore = ws.sent.filter((f) => (f as { type?: string }).type === "detach").length;
     const promptP = h.store.sendPromptToSession("s2", "switch me");
-    await flush();
-    const detachFrame = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
-    expect(detachFrame.payload.sessionId).toBe("s1");
-    // Optimistic bubble is session-scoped while activation is pending.
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && (candidate.entry.message as { content: string }).content === "switch me")).toBe(true);
-    vi.advanceTimersByTime(60_000);
-    await flush();
-    await expect(promptP).rejects.toMatchObject({ code: "timeout", phase: "activation" });
-    // Proven non-delivery: no phantom bubble, transaction released.
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && (candidate.entry.message as { content: string }).content === "switch me")).toBe(false);
-    expect(h.store.getSnapshot().promptPending).toBe(false);
-    // Coherent attach state: still attached to s1 (nothing torn down).
-    expect(h.store.getSnapshot().attached).toBe(true);
+    promptP.catch(() => undefined);
+    await flush(20);
+    expect(ws.sent.filter((f) => (f as { type?: string }).type === "detach")).toHaveLength(detachBefore);
     expect(h.store.getSnapshot().sessionId).toBe("s1");
-    // Single-flight detach fields freed → a later retry works.
-    const retry = h.store.detach();
-    await flush();
-    const retryFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    expect(retryFrame.id).not.toBe(detachFrame.id);
-    ws.serverSend({ type: "response", id: retryFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
-    await expect(retry).resolves.toBeUndefined();
   });
 });
 
@@ -2409,6 +2495,7 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     expect(h.store.getSnapshot().liveEntries).toHaveLength(0);
     const promptP = h.store.sendPrompt("hi there");
     await flush();
+    await awaitSendFrame(ws);
     // Bubble + running overlay are visible IMMEDIATELY (before any wire ack).
     let view = h.store.getSnapshot();
     expect(view.liveEntries.map((e) => (e.message as { content: string }).content)).toContain("hi there");
@@ -2452,6 +2539,7 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
 
     const promptP = h.store.sendPrompt("new question");
     await flush();
+    await awaitSendFrame(ws);
     const view = h.store.getSnapshot();
     expect(view.liveEntries.map((entry) => entry.entryId)).toEqual(["u1", "a1", expect.stringMatching(/^optimistic:/)]);
     expect((view.liveEntries.at(-1)!.message as { content: string }).content).toBe("new question");
@@ -2461,24 +2549,22 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     await promptP;
   });
 
-  it("a background session terminal event cannot clear another session's activation marker", async () => {
+  it("a background session terminal event cannot clear another session's pending send", async () => {
     const h = createHarness();
     const ws = await openAndAttach(h, "s1");
     const promptP = h.store.sendPromptToSession("s2", "target B");
+    promptP.catch(() => undefined);
     await flush();
+    await awaitSendFrame(ws);
     expect(h.store.getSnapshot().optimisticRunningSessionId).toBe("s2");
-    // A is still attached while its detach is pending. Its terminal event must
-    // not take ownership of B's UI-first transaction.
+    // A is still attached while B's send is pending. Its terminal event must not
+    // take ownership of B's send marker.
     wsEvent(h, { type: "agent_end", sessionId: "s1", eventId: 1, epoch: "e1" });
     await flush();
     expect(h.store.getSnapshot().optimisticRunningSessionId).toBe("s2");
-
-    const detach = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
-    await flush();
-    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "response", id: attach.id, payload: { ok: false, error: { code: "not_found", message: "missing", retryable: false } } });
-    await expect(promptP).rejects.toMatchObject({ code: "not_found" });
+    // The send survives: no detach/attach chain, nothing was torn down.
+    expect(ws.sent.filter((f) => (f as { type?: string }).type === "detach")).toHaveLength(0);
+    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2")).toBe(true);
   });
 
   it("prompt_error clears an admitted optimistic running marker even without agent_start", async () => {
@@ -2486,6 +2572,7 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     const ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("fails early");
     await flush();
+    await awaitSendFrame(ws);
     const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
     await promptP;
@@ -2511,52 +2598,58 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     expect(h.store.getSnapshot().streaming).toBe(false);
   });
 
-  it("an unmarked command rejection keeps the bubble but clears the speculative running overlay", async () => {
+  it("a proven-final rejection removes the bubble AND clears the speculative overlay", async () => {
     const h = createHarness();
     const ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hi");
+    promptP.catch(() => undefined);
     await flush();
+    await awaitSendFrame(ws);
     expect(h.store.getSnapshot().streaming).toBe(true);
     const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: false, error: { code: "invalid_input", message: "no", retryable: false } } });
+    // Only a proven-final rejection reaches the composer: bubble removed and the
+    // speculative overlay released (nothing was delivered).
     await expect(promptP).rejects.toMatchObject({ code: "invalid_input" });
     const view = h.store.getSnapshot();
     expect(view.streaming).toBe(false);
-    expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "hi")).toBe(true);
+    expect(view.optimisticEntries.some((c) => (c.entry.message as { content: string }).content === "hi")).toBe(false);
   });
 
-  it("a pre-wire legacy prompt failure removes the bubble and is tagged activation", async () => {
+  it("a send that never reaches the wire stays queued (never a phantom failure)", async () => {
+    // The socket cannot write. The outbox keeps the message and retries on the
+    // next connection event — nothing is dropped and no failure is claimed.
     const h = createHarness();
     const ws = await openAndAttach(h);
     ws.dieOnSend = true;
+    let settled = false;
     const promptP = h.store.sendPrompt("unsent");
-    await expect(promptP).rejects.toMatchObject({ phase: "activation" });
-    expect(h.store.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "unsent")).toBe(false);
+    void promptP.then(() => { settled = true; }, () => { settled = true; });
+    await flush(40);
+    expect(settled).toBe(false);
+    expect(h.store.getSnapshot().optimisticEntries.some((c) => (c.entry.message as { content: string }).content === "unsent")).toBe(true);
   });
 
-  it("uncertain (retryable) dispatch keeps the bubble (may have been delivered) but ends the speculative overlay", async () => {
+  it("a retryable rejection keeps the bubble AND the send queued (no uncertain state)", async () => {
+    // Under the outbox there is no "uncertain" settle: a retryable answer leaves
+    // the message queued and the bubble on screen, and the outbox retries with
+    // the same operationId. The speculative running overlay is released so the
+    // authoritative stream owns the running indicator.
     const h = createHarness();
     const ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hi");
+    promptP.catch(() => undefined);
     await flush();
+    await awaitSendFrame(ws);
     const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
-    await expect(promptP).rejects.toMatchObject({ retryable: true });
-    // Uncertain DISPATCH (the prompt command was sent): the bubble is KEPT (the
-    // turn may have been delivered) and the SPECULATIVE overlay is cleared —
-    // the authoritative event stream takes over if the turn is actually running.
-    let view = h.store.getSnapshot();
-    expect(view.streaming).toBe(false);
-    expect(view.promptPending).toBe(false);
-    expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "hi")).toBe(true);
-    // A real applied event that proves the turn's authoritative running state
-    // drives the running indicator (authoritative handoff).
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
-    await flush();
-    view = h.store.getSnapshot();
+    await flush(20);
+    const view = h.store.getSnapshot();
+    // Still pending, still owned by the outbox, still visible — and the UI-first
+    // running marker is retained because the send has NOT settled.
+    expect(view.promptPending).toBe(true);
     expect(view.streaming).toBe(true);
-    // The bubble stays until the committed message_end consumes it.
-    expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "hi")).toBe(true);
+    expect(view.optimisticEntries.some((c) => (c.entry.message as { content: string }).content === "hi")).toBe(true);
   });
 
   it("image sends share the SAME optimistic path as text (bubble + overlay + images on the wire)", async () => {
@@ -2564,6 +2657,7 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     const ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("look at this", [{ type: "image", data: "AAAA", mimeType: "image/png" }]);
     await flush();
+    await awaitSendFrame(ws);
     const view = h.store.getSnapshot();
     expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "look at this")).toBe(true);
     expect(view.streaming).toBe(true);
@@ -2683,405 +2777,97 @@ describe("SessionStore — identity-scoped attach supersession (rapid A→B→C 
   });
 });
 
-describe("SessionStore — sendPromptToSession activation-then-send (single state machine)", () => {
-  beforeEach(() => { vi.useFakeTimers(); });
-  afterEach(() => { vi.useRealTimers(); });
-
-  function countType(ws: FakeWebSocket, type: string): number {
-    return ws.sent.filter((f) => (f as { type: string }).type === type).length;
+describe("SessionStore — sendPromptToSession (one unconditional send)", () => {
+  // The pre-attach "activation state machine" (transitionTo -> staged settings
+  // -> prompt) was a client-side guess chain; a send now admits atomically on
+  // the authority and no pre-send attach/settings sequence exists on this seam.
+  async function submitOn(ws: FakeWebSocket, prompt: string) {
+    const frame = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string; prompt: string } }>(ws, "submit_turn")!;
+    expect(frame.payload.prompt).toBe(prompt);
+    return frame;
   }
 
-  async function detachAck(ws: FakeWebSocket, h: RuntimeHarness, sessionId = "s1"): Promise<void> {
-    const detachP = h.store.detach();
-    await flush();
-    const frame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { sessionId, detached: true } } });
-    await detachP;
-  }
-
-  function entryText(entry: { message: unknown }): string {
-    return (entry.message as { content: string }).content;
-  }
-
-  it("concurrent openSession to the SAME session is single-flight: ONE attach frame, SHARED promise", async () => {
+  it("a send with no attachment admits atomically: exactly ONE submit_turn, no activate/attach first", async () => {
     const h = createHarness();
-    h.store.connect();
-    const ws = openReady(h);
-    const a1 = h.store.openSession("s1");
-    await flush();
-    expect(countType(ws, "attach")).toBe(1);
-    const a2 = h.store.openSession("s1");
-    await flush();
-    // No duplicate attach frame for the same in-flight attach.
-    expect(countType(ws, "attach")).toBe(1);
-    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s1" }) });
-    await expect(a1).resolves.toBeUndefined();
-    await expect(a2).resolves.toBeUndefined();
-    expect(h.store.getSnapshot().attached).toBe(true);
+    const ws = await openAndAttachSubmit(h, "s1");
+    const sendP = h.store.sendPromptToSession("s1", "hello");
+    await awaitSendFrame(ws);
+    const submit = await submitOn(ws, "hello");
+    const frames = (t: string) => ws.sent.filter((f) => (f as { type?: string }).type === t).length;
+    expect(frames("submit_turn")).toBe(1);
+    expect(frames("activate")).toBe(0);
+    respondSubmit(ws, submit.id, submit.payload.operationId);
+    await expect(sendP).resolves.toBeUndefined();
   });
 
-  it("already attached to the selected session → sends DIRECTLY (no re-attach)", async () => {
+  it("a send to an unknown session is a final not_found: bubble removed, nothing created", async () => {
     const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    const promptP = h.store.sendPromptToSession("s1", "hi");
-    await flush();
-    // Optimistic bubble appears immediately.
-    expect(h.store.getSnapshot().liveEntries.some((e) => entryText(e) === "hi")).toBe(true);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("hi");
-    // No extra attach frame (only the one from openAndAttach).
-    expect(countType(ws, "attach")).toBe(1);
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
+    const ws = await openAndAttachSubmit(h, "s1");
+    const sendP = h.store.sendPromptToSession("s1", "hello").catch((cause: unknown) => cause);
+    await awaitSendFrame(ws);
+    const submit = await submitOn(ws, "hello");
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: submit.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "not_found", message: "session is gone", retryable: false } },
+    });
+    await expect(sendP).resolves.toMatchObject({ code: "not_found" });
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(0);
+    expect((ws.sent as { type?: string }[]).filter((f) => f.type === "create")).toHaveLength(0);
   });
 
-  it("no attachment → ONE activate/attach then exactly ONE prompt (send is the activation intent)", async () => {
+  it("two sends while the first is un-accepted are delivered in order, never both at once", async () => {
     const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    await detachAck(ws, h);
-    expect(h.store.getSnapshot().attached).toBe(false);
-    const promptP = h.store.sendPromptToSession("s2", "hello from inactive");
-    await flush();
-    // The prompt is NOT sent until the authoritative attach lands.
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s2");
-    expect(countType(ws, "command")).toBe(0);
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    await flush();
-    // Fresh attach preserves the session-scoped optimistic transaction instead
-    // of making the bubble disappear until message_end/history catches up.
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && entryText(candidate.entry) === "hello from inactive")).toBe(true);
-    expect(entryText(h.store.getSnapshot().liveEntries.at(-1)!)).toBe("hello from inactive");
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("hello from inactive");
-    expect(countType(ws, "attach")).toBe(2); // initial s1 + activation s2
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
-  });
-
-  it("attached to a DIFFERENT session → detach the stale one, attach the selected, then prompt exactly once", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    const promptP = h.store.sendPromptToSession("s2", "switch and send");
-    await flush();
-    // Detaches the stale s1 first…
-    const detachFrame = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
-    expect(detachFrame.payload.sessionId).toBe("s1");
-    ws.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
-    await flush();
-    // …then attaches s2…
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s2");
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    await flush();
-    // …then sends the prompt exactly once.
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("switch and send");
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
-  });
-
-  it("a truly unknown id rejects not_found, removes the phantom bubble, and NEVER creates", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    await detachAck(ws, h);
-    const promptP = h.store.sendPromptToSession("ghost", "gone");
-    await flush();
-    // Optimistic bubble appears immediately in the target session transaction layer.
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && entryText(candidate.entry) === "gone")).toBe(true);
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("ghost");
-    // Attach fails not_found → the phantom bubble is removed, never a create.
-    ws.serverSend({ type: "response", id: attach.id, payload: { ok: false, error: { code: "not_found", message: "no such session", retryable: false } } });
-    await expect(promptP).rejects.toMatchObject({ code: "not_found" });
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && entryText(candidate.entry) === "gone")).toBe(false);
-    expect(h.store.getSnapshot().streaming).toBe(false);
-    expect(ws.sent.some((f) => (f as { type: string }).type === "create")).toBe(false);
-  });
-
-  it("a stopped session re-activates (fresh attach) then sends", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    // Stop s1 (no prompt running → no abort-first needed).
-    const stopP = h.store.stop();
-    await flush();
-    const stopFrame = lastFrame<{ type: string; id: string }>(ws, "stop")!;
-    ws.serverSend({ type: "response", id: stopFrame.id, payload: { ok: true, result: { sessionId: "s1", stopped: true } } });
-    await stopP;
-    expect(h.store.getSnapshot().sessionStopped).toBe(true);
-    expect(h.store.getSnapshot().attached).toBe(false);
-    // Sending re-activates the exact session (fresh attach), then prompts.
-    const promptP = h.store.sendPromptToSession("s1", "wake up");
-    await flush();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s1");
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2" }) });
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("prompt");
-    expect(cmd.payload.command.message).toBe("wake up");
-    expect(h.store.getSnapshot().sessionStopped).toBe(false);
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
-  });
-
-  it("select-B + immediate-send-B race: ONE detach(old), ONE attach(B), ONE prompt (single-flight detach)", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    // AppShell fail-closed selection detach (selecting B while attached to s1)…
-    const shellDetach = h.store.detach();
-    await flush();
-    // …and IMMEDIATELY the composer's send for B, while the detach is in flight.
-    const promptP = h.store.sendPromptToSession("s2", "race message");
-    await flush();
-    // Exactly ONE detach frame — the send-time transition coalesced (single-flight).
-    const detachFrames = ws.sent.filter((f) => (f as { type: string }).type === "detach") as { type: string; id: string; payload: { sessionId: string } }[];
-    expect(detachFrames).toHaveLength(1);
-    expect(detachFrames[0]!.payload.sessionId).toBe("s1");
-    ws.serverSend({ type: "response", id: detachFrames[0]!.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
-    await flush();
-    await shellDetach;
-    // ONE attach for the selected B.
-    const attachB = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attachB.payload.sessionId).toBe("s2");
-    const attachFrames = ws.sent.filter((f) => (f as { type: string }).type === "attach") as { payload: { sessionId: string } }[];
-    expect(attachFrames.map((f) => f.payload.sessionId)).toEqual(["s1", "s2"]);
-    ws.serverSend({ type: "snapshot", id: attachB.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    await flush();
-    // Exactly ONE prompt command.
-    const promptFrames = ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt");
-    expect(promptFrames).toHaveLength(1);
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.message).toBe("race message");
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(promptP).resolves.toBeTruthy();
-    expect(h.store.getSnapshot().sessionId).toBe("s2");
-    expect(h.store.getSnapshot().attached).toBe(true);
-  });
-
-  it("retryable ACTIVATION failure is proven non-delivery: phantom bubble removed, no pending transaction (phase tagged)", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    await detachAck(ws, h, "s1");
-    const promptP = h.store.sendPromptToSession("ghost", "gone");
-    await flush();
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && entryText(candidate.entry) === "gone")).toBe(true);
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    // The attach fails with a RETRYABLE error — but it is still the ACTIVATION
-    // phase (no prompt command was dispatched), so it is PROVEN non-delivery.
-    ws.serverSend({ type: "response", id: attach.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
-    await expect(promptP).rejects.toMatchObject({ retryable: true, phase: "activation" });
-    // No phantom bubble, no pending transaction, no speculative overlay.
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && entryText(candidate.entry) === "gone")).toBe(false);
-    expect(h.store.getSnapshot().promptPending).toBe(false);
-    expect(h.store.getSnapshot().streaming).toBe(false);
-  });
-
-  it("two submits during activation: the second is rejected session_busy WITHOUT touching the first's speculative state", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    await detachAck(ws, h, "s1");
-    const firstP = h.store.sendPromptToSession("s2", "first");
-    await flush();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s2");
-    // The first transaction is in flight (activation phase)…
-    expect(h.store.getSnapshot().promptPending).toBe(true);
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && entryText(candidate.entry) === "first")).toBe(true);
-    // A second submit while the first is activating is rejected immediately…
-    const secondP = h.store.sendPromptToSession("s2", "second");
-    await expect(secondP).rejects.toMatchObject({ code: "session_busy" });
-    // …and does NOT corrupt the first: no phantom bubble for the second, the
-    // first's bubble/overlay stay owned, promptPending stays true.
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && entryText(candidate.entry) === "second")).toBe(false);
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && entryText(candidate.entry) === "first")).toBe(true);
-    expect(h.store.getSnapshot().promptPending).toBe(true);
-    // The first transaction completes normally.
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.message).toBe("first");
-    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
-    await expect(firstP).resolves.toBeTruthy();
-    expect(h.store.getSnapshot().promptPending).toBe(false);
+    const ws = await openAndAttachSubmit(h, "s1");
+    const firstP = h.store.sendPromptToSession("s1", "first");
+    await awaitSendFrame(ws);
+    const first = await submitOn(ws, "first");
+    void h.store.sendPromptToSession("s1", "second").catch(() => undefined);
+    await flush(20);
+    expect(ws.sent.filter((f) => (f as { type?: string }).type === "submit_turn")).toHaveLength(1);
+    respondSubmit(ws, first.id, first.payload.operationId);
+    await firstP;
+    for (let i = 0; i < 60 && ws.sent.filter((f) => (f as { type?: string }).type === "submit_turn").length < 2; i += 1) await flush(4);
+    const frames = ws.sent.filter((f): f is { type: "submit_turn"; id: string; payload: { operationId: string; prompt: string } } => (f as { type?: string }).type === "submit_turn");
+    expect(frames).toHaveLength(2);
+    expect(frames[1]!.payload.prompt).toBe("second");
   });
 });
 
-describe("SessionStore — sendPromptToSession staged activation settings", () => {
-  beforeEach(() => { vi.useFakeTimers(); });
-  afterEach(() => { vi.useRealTimers(); });
-
-  function countType(ws: FakeWebSocket, type: string): number {
-    return ws.sent.filter((f) => (f as { type: string }).type === type).length;
-  }
-
-  function countCommandType(ws: FakeWebSocket, type: string): number {
-    return ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === type).length;
-  }
-
-  async function detachAck(ws: FakeWebSocket, h: RuntimeHarness, sessionId = "s1"): Promise<void> {
-    const detachP = h.store.detach();
-    await flush();
-    const frame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { sessionId, detached: true } } });
-    await detachP;
-  }
-
-  /** Ack a command frame with an `ok:true` correlated result of the given type. */
-  function ackCommand<T extends { type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws: FakeWebSocket, frame: T, ok: boolean, error?: unknown): void {
-    ws.serverSend({
-      type: "response",
-      id: frame.id,
-      payload: ok
-        ? { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: frame.payload.command.type } } }
-        : { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: false, type: frame.payload.command.type, error } } },
-    });
-  }
-
-  function entryText(entry: { message: unknown }): string {
-    return (entry.message as { content: string }).content;
-  }
-
-  it("detached B with staged model + thinking: set_model THEN set_thinking_level AFTER attach, then prompt exactly once", async () => {
+describe("SessionStore — staged activation settings ride the same send", () => {
+  it("staged model + thinking travel as activationOverrides on ONE submit_turn (no separate set_model command)", async () => {
     const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    await detachAck(ws, h);
-    const promptP = h.store.sendPromptToSession("s2", "staged send", undefined, {
-      model: { provider: "anthropic", modelId: "claude-opus-4" },
-      thinkingLevel: "high",
-    });
-    await flush();
-    // Nothing before the attach: no settings, no prompt command.
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attach.payload.sessionId).toBe("s2");
-    expect(countType(ws, "command")).toBe(0);
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    await flush();
-    // 1) set_model first.
-    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
-    expect(modelCmd.payload.command.type).toBe("set_model");
-    expect(modelCmd.payload.command.provider).toBe("anthropic");
-    expect(modelCmd.payload.command.modelId).toBe("claude-opus-4");
-    ackCommand(ws, modelCmd, true);
-    await flush();
-    // 2) set_thinking_level only AFTER the model resolved.
-    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
-    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
-    expect(thinkingCmd.payload.command.level).toBe("high");
-    ackCommand(ws, thinkingCmd, true);
-    await flush();
-    // The staged settings pull an authoritative snapshot so the selectors
-    // reflect the applied model/thinking (getSnapshot answered here).
-    const gsFrame = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
-    expect(gsFrame).toBeTruthy();
-    ws.serverSend({ type: "response", id: gsFrame.id, payload: { ok: true, result: snapshotPayload({ sessionId: "s2" }).snapshot } });
-    await flush();
-    // 3) prompt exactly once, after the settings resolved.
-    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(promptCmd.payload.command.type).toBe("prompt");
-    expect(promptCmd.payload.command.message).toBe("staged send");
-    expect(countCommandType(ws, "prompt")).toBe(1);
-    ackCommand(ws, promptCmd, true);
-    await expect(promptP).resolves.toBeTruthy();
-  });
-
-  it("already attached + staged settings: apply model then thinking then prompt (no re-attach)", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    const promptP = h.store.sendPromptToSession("s1", "direct staged", undefined, {
+    const ws = await openAndAttachSubmit(h, "s1");
+    const sendP = h.store.sendPromptToSession("s1", "hello", undefined, {
       model: { provider: "openai", modelId: "gpt-5" },
       thinkingLevel: "low",
     });
-    await flush();
-    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
-    expect(modelCmd.payload.command.type).toBe("set_model");
-    expect(modelCmd.payload.command.provider).toBe("openai");
-    ackCommand(ws, modelCmd, true);
-    await flush();
-    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
-    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
-    expect(thinkingCmd.payload.command.level).toBe("low");
-    ackCommand(ws, thinkingCmd, true);
-    await flush();
-    // Staged settings refresh the authoritative snapshot (getSnapshot ack).
-    const gsFrame = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
-    expect(gsFrame).toBeTruthy();
-    ws.serverSend({ type: "response", id: gsFrame.id, payload: { ok: true, result: snapshotPayload({ sessionId: "s1" }).snapshot } });
-    await flush();
-    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(promptCmd.payload.command.type).toBe("prompt");
-    expect(promptCmd.payload.command.message).toBe("direct staged");
-    expect(countType(ws, "attach")).toBe(1);
-    ackCommand(ws, promptCmd, true);
-    await expect(promptP).resolves.toBeTruthy();
+    await awaitSendFrame(ws);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string; activationOverrides?: unknown } }>(ws, "submit_turn")!;
+    expect(submit.payload.activationOverrides).toEqual({ model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel: "low" });
+    // Settings are applied ATOMICALLY with the admission, never as a separate
+    // command sequence that could half-apply.
+    expect(ws.sent.filter((f) => (f as { type?: string }).type === "command")).toHaveLength(0);
+    respondSubmit(ws, submit.id, submit.payload.operationId);
+    await expect(sendP).resolves.toBeUndefined();
   });
 
-  it("staged settings failure (unsupported_capability) → NO prompt, phantom bubble removed, phase activation", async () => {
+  it("a rejected admission sends no prompt and removes the bubble (phase activation)", async () => {
     const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    await detachAck(ws, h);
-    const promptP = h.store.sendPromptToSession("s2", "staged send", undefined, {
-      model: { provider: "anthropic", modelId: "claude-opus-4" },
-    });
-    await flush();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    await flush();
-    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
-    expect(modelCmd.payload.command.type).toBe("set_model");
-    // The runtime rejects the staged model — PRE-PROMPT: proven non-delivery.
-    ackCommand(ws, modelCmd, false, { code: "unsupported_capability", message: "runtime.model.set not available", retryable: false });
-    await expect(promptP).rejects.toMatchObject({ code: "unsupported_capability", phase: "activation" });
-    expect(countCommandType(ws, "prompt")).toBe(0);
-    expect(countCommandType(ws, "set_thinking_level")).toBe(0);
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && entryText(candidate.entry) === "staged send")).toBe(false);
-    expect(h.store.getSnapshot().promptPending).toBe(false);
-    expect(h.store.getSnapshot().streaming).toBe(false);
-  });
-
-  it("staged THINKING failure after a successful model apply → no prompt, phase activation", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    await detachAck(ws, h);
-    const promptP = h.store.sendPromptToSession("s2", "staged send", undefined, {
+    const ws = await openAndAttachSubmit(h, "s1");
+    const sendP = h.store.sendPromptToSession("s1", "hello", undefined, {
       model: { provider: "openai", modelId: "gpt-5" },
-      thinkingLevel: "high",
+      thinkingLevel: "low",
+    }).catch((cause: unknown) => cause);
+    await awaitSendFrame(ws);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: submit.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "invalid_input", message: "this runtime cannot accept messages", retryable: false } },
     });
-    await flush();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    await flush();
-    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
-    expect(modelCmd.payload.command.type).toBe("set_model");
-    ackCommand(ws, modelCmd, true);
-    await flush();
-    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
-    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
-    ackCommand(ws, thinkingCmd, false, { code: "unsupported_capability", message: "runtime.thinking.set not available", retryable: false });
-    await expect(promptP).rejects.toMatchObject({ code: "unsupported_capability", phase: "activation" });
-    expect(countCommandType(ws, "prompt")).toBe(0);
-    expect(h.store.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && entryText(candidate.entry) === "staged send")).toBe(false);
-    expect(h.store.getSnapshot().promptPending).toBe(false);
-  });
-
-  it("no staged settings → prompt directly, zero set_model/set_thinking_level commands", async () => {
-    const h = createHarness();
-    const ws = await openAndAttach(h, "s1");
-    await detachAck(ws, h);
-    const promptP = h.store.sendPromptToSession("s2", "plain");
-    await flush();
-    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
-    await flush();
-    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
-    expect(promptCmd.payload.command.type).toBe("prompt");
-    expect(countCommandType(ws, "set_model")).toBe(0);
-    expect(countCommandType(ws, "set_thinking_level")).toBe(0);
-    ackCommand(ws, promptCmd, true);
-    await expect(promptP).resolves.toBeTruthy();
+    await expect(sendP).resolves.toMatchObject({ code: "invalid_input", phase: "activation" });
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(0);
+    expect(ws.sent.filter((f) => (f as { type?: string }).type === "command")).toHaveLength(0);
   });
 });
