@@ -21,18 +21,24 @@ npm install -g @fffattiger/pix-cli
 pix start
 ```
 
-Your browser opens to `http://127.0.0.1:30141` with the pix UI. Useful flags:
+`pix start` runs pix in the background and returns once it is ready at `http://127.0.0.1:30141` (add `--open` to launch your browser). Useful flags:
 
 ```bash
-pix start --port 30142 --hostname 0.0.0.0 --no-open
+pix start --port 30142 --hostname 0.0.0.0 --open
+pix start --foreground   # stay attached to the terminal (systemd/launchd/Docker)
 ```
 
 To manage the running services:
 
 ```bash
-pix status   # sessiond / host health
-pix down --all
+pix status            # sessiond + host state, URL and log path
+pix logs --follow     # background host output
+pix restart           # restart the web host; sessions keep running
+pix stop              # stop the web host; sessions keep running
+pix stop --all        # also stop the session daemon (ends running sessions)
 ```
+
+`pix restart --all` also restarts the session daemon, and `pix update --restart` relaunches the background host on the new version.
 
 ### Windows (preview)
 

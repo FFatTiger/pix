@@ -49,15 +49,23 @@ async function capture(fn: () => Promise<number>): Promise<Capture> {
   }
 }
 
-/** Run a command function with PIX_SESSIOND_DIR pointed at `dir`. */
+/**
+ * Run a command function with PIX_SESSIOND_DIR pointed at `dir` (and the CLI
+ * state dir beside it, so the host section never reads the operator's real
+ * background-host record).
+ */
 async function withDir<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   const prev = process.env[SESSIOND_DIR_ENV];
+  const prevCli = process.env.PIX_CLI_DIR;
   process.env[SESSIOND_DIR_ENV] = dir;
+  process.env.PIX_CLI_DIR = `${dir}-cli`;
   try {
     return await fn();
   } finally {
     if (prev === undefined) delete process.env[SESSIOND_DIR_ENV];
     else process.env[SESSIOND_DIR_ENV] = prev;
+    if (prevCli === undefined) delete process.env.PIX_CLI_DIR;
+    else process.env.PIX_CLI_DIR = prevCli;
   }
 }
 

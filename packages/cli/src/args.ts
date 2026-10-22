@@ -1,7 +1,8 @@
 /**
  * Minimal, dependency-free argument parsing for the pix CLI. Supports the flags
  * the composition root actually consumes (`--hostname`, `--port`, `--open`,
- * `--no-open`, `--all`, `--check`, `--restart`) in both `--flag value` and `--flag=value` forms. It
+ * `--no-open`, `--all`, `--check`, `--restart`, `--foreground`, `--follow`,
+ * `--lines`) in both `--flag value` and `--flag=value` forms. It
  * deliberately rejects unknown flags so a typo (e.g. `--post`) fails loudly
  * instead of silently binding to the wrong port.
  */
@@ -24,8 +25,8 @@ export interface ParsedFlags {
   boolFlags: Set<string>;
 }
 
-const VALUE_FLAGS = new Set(["--hostname", "--port"]);
-const BOOL_FLAGS = new Set(["--open", "--no-open", "--all", "--check", "--restart"]);
+const VALUE_FLAGS = new Set(["--hostname", "--port", "--lines"]);
+const BOOL_FLAGS = new Set(["--open", "--no-open", "--all", "--check", "--restart", "--foreground", "--follow"]);
 
 /**
  * Parse an argv array into positionals, value-flags and boolean flags. Throws
@@ -69,10 +70,10 @@ export function parseFlags(argv: string[]): ParsedFlags {
 }
 
 /** Parse host-bind options, applying defaults and validating the port range. */
-export function parseBindArgs(argv: string[]): BindOptions {
+export function parseBindArgs(argv: string[], defaults: { hostname: string; port: number } = { hostname: DEFAULT_HOSTNAME, port: DEFAULT_PORT }): BindOptions {
   const { flags, boolFlags } = parseFlags(argv);
-  const hostname = flags.get("--hostname") ?? DEFAULT_HOSTNAME;
-  const portRaw = flags.get("--port") ?? String(DEFAULT_PORT);
+  const hostname = flags.get("--hostname") ?? defaults.hostname;
+  const portRaw = flags.get("--port") ?? String(defaults.port);
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`invalid port: ${portRaw}`);

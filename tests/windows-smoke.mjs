@@ -156,7 +156,7 @@ async function main() {
   // ---- phase 4: full product entry (host reuses the daemon) ---------------
   const port = await freePort();
   const host = startProcess(
-    [join(ROOT, "scripts", "product-entry.mjs"), "start", "--hostname", "127.0.0.1", "--port", String(port), "--no-open"],
+    [join(ROOT, "scripts", "product-entry.mjs"), "start", "--foreground", "--hostname", "127.0.0.1", "--port", String(port), "--no-open"],
     env,
     "host",
   );
