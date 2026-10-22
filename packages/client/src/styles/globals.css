@@ -2400,13 +2400,18 @@ span.linenumber {
 /* Subagent activity: status pill above the composer, content-width and
    left-aligned; the expanded card opens upward from it. */
 .subagent-activity-card {
+  /* One width for the tab's home and the card it grows into, so the card is
+     never narrower than the tab; the viewport clamp keeps both on screen. */
+  --status-card-width: min(340px, calc(100vw - 92px));
   position: relative;
   z-index: 30;
   flex: 0 0 auto;
   width: 100%;
   max-width: 852px;
   margin: 0 auto -1px; /* the tab covers the composer top border */
-  padding: 0 16px;
+  /* Right reserve keeps the tab and the card clear of the composer's
+     top-right floating controls. */
+  padding: 0 calc(16px + var(--composer-floating-controls-reserve)) 0 16px;
 }
 
 .status-card-shell {
@@ -2418,9 +2423,53 @@ span.linenumber {
   align-items: center;
   justify-content: flex-start;
   min-width: 0;
-  max-width: calc(100% - 20px);
-  /* Keep the pill clear of the composer's top-right floating controls. */
-  padding-right: var(--composer-floating-controls-reserve);
+  /* The fillets are drawn on this box, so it is exactly as wide as the visible
+     edge: the tab when collapsed, the card when expanded. Its width animates
+     in step with the panel's clip, so the joint stays curved and on the edge
+     for the whole morph. `--status-tab-width` is measured from the tab, which
+     never sizes itself against this box, so there is no feedback loop. */
+  width: var(--status-tab-width, 120px);
+  max-width: var(--status-card-width);
+  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.subagent-activity-card[data-open="true"] .status-card-shell {
+  width: var(--status-card-width);
+  transition: width 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* The tab growing out of the composer edge: rounded top corners, open bottom.
+   The collapsed capsule and the expanded panel carry this same box, so the
+   edge keeps one shape across the whole transition. */
+.status-card-panel,
+.subagent-activity-capsule {
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: var(--bg-secondary);
+}
+
+/* Concave fillets where that edge meets the composer, so it flows out on both
+   sides. They live on the container both states draw their edge on: while
+   expanded, the card's edge is what they meet. The tab sits inset on the
+   composer's straight top edge (see .status-card-shell), so the composer
+   keeps all four rounded corners. */
+.status-card-shell::before,
+.status-card-shell::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  pointer-events: none;
+}
+.status-card-shell::before {
+  left: -8px;
+  background: radial-gradient(circle at 0 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
+}
+.status-card-shell::after {
+  right: -8px;
+  background: radial-gradient(circle at 100% 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
 }
 
 .status-card-panel {
@@ -2428,21 +2477,19 @@ span.linenumber {
      closed clip is exactly the tab's footprint, so the two never coexist.
      left: 0 because the capsule no longer indents itself — both sit on the
      shell's left edge, which the optical-alignment rule lines up with the
-     composer. */
+     composer.
+     Fixed width: the capsule caps itself at the same 340px (see
+     .subagent-activity-capsule), so the card is never narrower than the tab it
+     grows out of — no measuring, and it holds mid-morph. */
   position: absolute;
   bottom: 0;
   left: 0;
   z-index: 40;
   display: flex;
-  width: 340px;
-  max-width: min(340px, calc(100vw - 16px));
+  width: var(--status-card-width);
   max-height: min(64dvh, 32rem);
   overflow: hidden;
   flex-direction: column;
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  border-radius: 10px 10px 0 0;
-  background: var(--bg-secondary);
   box-shadow: 0 -6px 18px -10px color-mix(in srgb, #000 22%, transparent);
   clip-path: inset(calc(100% - 28px) calc(100% - var(--status-tab-width, 120px)) 0 0 round 10px 10px 0 0);
   opacity: 0;
@@ -2505,6 +2552,7 @@ span.linenumber {
 
 @media (prefers-reduced-motion: reduce) {
   .status-card-panel,
+  .status-card-shell,
   .status-card-panel .status-card-body {
     transition: none;
   }
@@ -2526,42 +2574,21 @@ span.linenumber {
   box-sizing: border-box;
   min-width: 0;
   height: 28px;
-  max-width: 100%;
+  /* The tab never outgrows the card it expands into; what does not fit in it
+     is ellipsized by the label. It is never squeezed by the shell either: the
+     shell's width follows this tab (see --status-tab-width), so the two would
+     otherwise constrain each other. */
+  max-width: var(--status-card-width);
+  flex: 0 0 auto;
   justify-content: flex-start;
   gap: 7px;
   margin-left: 0;
   padding: 0 12px;
-  /* A tab growing out of the composer: same surface and border, open bottom. */
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  border-radius: 10px 10px 0 0;
+  /* Border, radius and fill come from the shared tab/card edge rule above. */
   color: var(--text);
-  background: var(--bg-secondary);
   box-shadow: 0 -3px 8px -4px color-mix(in srgb, #000 16%, transparent);
   font-size: 12px;
 }
-
-/* Concave fillets where the tab meets the composer, so the edge flows out on
-   both sides. The tab sits inset on the composer's straight top edge (see
-   .status-card-shell), so the composer keeps all four rounded corners. */
-.subagent-activity-capsule::before,
-.subagent-activity-capsule::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  width: 8px;
-  height: 8px;
-  pointer-events: none;
-}
-.subagent-activity-capsule::before {
-  left: -8px;
-  background: radial-gradient(circle at 0 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
-}
-.subagent-activity-capsule::after {
-  right: -8px;
-  background: radial-gradient(circle at 100% 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
-}
-
 
 .status-capsule-label {
   min-width: 0;
@@ -3317,12 +3344,11 @@ span.linenumber {
 }
 
 @media (max-width: 640px) {
-  .status-card-panel {
-    /* The card grows out of the tab, so it stays left: 16px row padding +
-       20px tab inset on the left, and twice that inset (40px) to the
-       composer's right edge, so the asymmetry reads as intended. */
-    width: min(340px, calc(100vw - 92px));
-    max-width: calc(100vw - 92px);
+  .subagent-activity-card {
+    /* The card's viewport clamp already covers mobile: 16px row padding + 20px
+       tab inset on the left, twice that inset (40px) to the composer's right
+       edge. Holds the variable's mobile form in one place. */
+    --status-card-width: min(340px, calc(100vw - 92px));
   }
 }
 
@@ -4195,8 +4221,9 @@ html.pi-booted body::before {
   /* The status tab lives outside the composer region. The card's 16px left
      padding plus a 3px inset lands the tab on the shell's left edge
      (the shell hangs 13px past the region), and the same 18px minimap
-     gutter the composer region gets keeps the right edge on the column. */
-  .subagent-activity-card { max-width: 870px; padding: 0 34px 0 3px; }
+     gutter the composer region gets keeps the right edge on the column, plus
+     the floating-controls reserve both the tab and the card stop short of. */
+  .subagent-activity-card { max-width: 870px; padding: 0 calc(34px + var(--composer-floating-controls-reserve)) 0 3px; }
 }
 
 /* Assistant entry tab on the new-session page: the same "grows out of the
@@ -4437,27 +4464,24 @@ button.assistant-entry-chip:focus-visible { outline: 2px solid color-mix(in srgb
   box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
 }
 
-/* Status tab + right fillet + card: one material with the composer. The ring
-   runs along the tab's top and both sides and through the right fillet; the
-   seam against the composer stays open, so the two read as one shape. */
+/* Status tab + fillets + card: one material with the composer. The ring runs
+   along the shared edge's top and both sides and through both fillets; the
+   seam against the composer stays open, so the pieces read as one shape. */
 .subagent-activity-capsule,
-.subagent-activity-capsule:hover {
+.subagent-activity-capsule:hover,
+.status-card-panel {
   border-color: var(--composer-ring);
   background: var(--composer-bg);
   box-shadow: none;
+}
+.subagent-activity-capsule {
   transition: background 160ms ease, border-color 160ms ease;
 }
-.subagent-activity-capsule::before {
+.status-card-shell::before {
   background: radial-gradient(circle at 0 0, transparent 7px, var(--composer-ring) 7px, var(--composer-ring) 8px, var(--composer-bg) 8.5px);
 }
-.subagent-activity-capsule::after {
+.status-card-shell::after {
   background: radial-gradient(circle at 100% 0, transparent 7px, var(--composer-ring) 7px, var(--composer-ring) 8px, var(--composer-bg) 8.5px);
-}
-.status-card-panel {
-  border: 1px solid var(--composer-ring);
-  border-bottom: 0;
-  background: var(--composer-bg);
-  box-shadow: none;
 }
 .conversation-container:has(.subagent-activity-card[data-open="true"]) .chat-input-shell:focus-within,
 .conversation-container:has(.subagent-activity-card[data-open="true"]) .chat-input-shell.is-streaming:focus-within {

@@ -192,9 +192,22 @@ export function SubagentActivityCard({
 
   useLayoutEffect(() => {
     if (open) return;
-    const width = capsuleRef.current?.offsetWidth ?? 0;
-    setTabWidth((previous) => (previous === width ? previous : width));
-  });
+    const capsule = capsuleRef.current;
+    if (capsule === null) return;
+    // Sub-pixel accurate: the shell that carries the fillets takes exactly the
+    // tab's width, so a rounded measurement would leave the joint a fraction
+    // of a pixel inside the tab's edge.
+    const measure = (): void => {
+      const width = capsule.getBoundingClientRect().width;
+      setTabWidth((previous) => (previous === width ? previous : width));
+    };
+    measure();
+    // The tab's width follows its capped content and the viewport, so keep the
+    // shape box in step with it instead of sampling once after mount.
+    const observer = new ResizeObserver(measure);
+    observer.observe(capsule);
+    return () => observer.disconnect();
+  }, [open]);
 
   const toggle = (next: boolean): void => {
     setOpen(next);

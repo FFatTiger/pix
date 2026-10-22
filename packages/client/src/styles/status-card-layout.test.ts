@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { cssRule } from "./css-rule";
+import { cssRule, exactRule } from "./css-rule";
 
 function rule(css: string, selector: string): string {
   const found = cssRule(css, selector);
@@ -49,49 +49,44 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-card")).toContain("position: relative");
     expect(rule(css, ".subagent-activity-card")).toContain("max-width: 852px");
     expect(rule(css, ".subagent-activity-card")).toContain("margin: 0 auto -1px");
-    expect(rule(css, ".subagent-activity-card")).toContain("padding: 0 16px;");
+    expect(rule(css, ".subagent-activity-card")).toContain(
+      "padding: 0 calc(16px + var(--composer-floating-controls-reserve)) 0 16px;",
+    );
     // The tab grows into the card: same spot and material, open bottom; the
     // closed clip is the tab footprint (measured width), the open clip is full.
     expect(rule(css, ".status-card-panel")).toContain("bottom: 0");
     // Panel and capsule share the shell's left edge, so the card grows out
     // of the tab without a horizontal jump.
-    expect(rule(css, ".status-card-panel")).toContain("left: 0");
-    expect(rule(css, ".status-card-panel")).toContain("border-bottom: 0");
-    expect(rule(css, ".status-card-panel")).toContain("border-radius: 10px 10px 0 0");
-    expect(rule(css, ".status-card-panel")).toContain("background: var(--bg-secondary)");
-    expect(rule(css, ".status-card-panel")).toContain("clip-path: inset(calc(100% - 28px) calc(100% - var(--status-tab-width, 120px)) 0 0");
+    expect(rule(css, ".status-card-panel")).toContain("left: 0");    expect(rule(css, ".status-card-panel")).toContain("max-height: min(64dvh, 32rem)");    expect(rule(css, ".status-card-panel")).toContain("clip-path: inset(calc(100% - 28px) calc(100% - var(--status-tab-width, 120px)) 0 0");
     expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-panel')).toContain("clip-path: inset(0 0 0 0");
     expect(rule(css, '.subagent-activity-card[data-open="true"] .subagent-activity-capsule')).toContain("opacity: 0");
     expect(card).toContain("--status-tab-width");
     expect(card).toContain("status-card-header");
-    expect(rule(css, ".status-card-panel")).toContain("max-height: min(64dvh, 32rem)");
     expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-panel')).toContain("opacity: 1");
     expect(css).not.toContain('data-display-mode="panel"');
     // Expansion is transient internal state: no persisted display mode remains.
     expect(shell).not.toContain("statusCardDisplayMode");
     expect(shell).not.toContain("StatusCardDisplayMode");
     expect(card).not.toContain("displayMode");
-    // Capsule: content-width tab growing out of the composer — composer
-    // surface and border, rounded top corners, open bottom, concave fillets,
-    // a soft upward shadow, and it follows the composer's focus border.
-    expect(rule(css, ".subagent-activity-capsule")).not.toMatch(/^\s*width: 100%;/m);
-    expect(rule(css, ".subagent-activity-capsule")).toContain("height: 28px");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("border-radius: 10px 10px 0 0");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("border-bottom: 0");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("border: 1px solid var(--border)");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("background: var(--bg-secondary)");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("box-shadow: 0 -3px 8px -4px");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("margin-left: 0");
-    // The tab sits inset on the composer's straight top edge (past the 12px
-    // corner plus the 8px fillet) and fillets on both sides; the composer
-    // keeps all four rounded corners.
-    expect(rule(css, ".subagent-activity-capsule::before,\n.subagent-activity-capsule::after")).toBeDefined();
+    // Capsule: content-width tab growing out of the composer — the shared
+    // composer edge (border, radius, fill) plus an upward shadow, and it
+    // follows the composer's focus border.
+    expect(exactRule(css, ".subagent-activity-capsule")).toContain("height: 28px");
+    expect(exactRule(css, ".subagent-activity-capsule")).toContain("margin-left: 0");
+    // The tab and the expanded card carry one shared edge rule, and the
+    // concave fillets belong to the container both states draw it on, so the
+    // joint stays curved mid-morph instead of going square.
+    expect(rule(css, ".status-card-panel,\n.subagent-activity-capsule")).toContain("border-radius: 10px 10px 0 0");
+    expect(rule(css, ".status-card-panel,\n.subagent-activity-capsule")).toContain("border-bottom: 0");
+    expect(rule(css, ".status-card-shell::before,\n.status-card-shell::after")).toBeDefined();
+    expect(css).not.toContain(".subagent-activity-capsule::before");
+    expect(css).not.toContain(".subagent-activity-capsule::after");
     expect(rule(css, ".status-card-shell")).toContain("margin-left: 20px");
     expect(css).not.toContain("border-top-left-radius: 0");
     // Rest / hover / focus all come from the composer variables, so the tab
     // never paints its own fill or focus color.
-    expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("background: var(--composer-bg)");
-    expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("border-color: var(--composer-ring)");
+    expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover,\n.status-card-panel")).toContain("border-color: var(--composer-ring)");
+    expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover,\n.status-card-panel")).toContain("background: var(--composer-bg)");
     // Focus: the ring is a border (not an outer box-shadow), so the tab, which
     // overlaps the shell's top border by 1px, hides it exactly at the seam.
     expect(css).toContain(".chat-input-shell:focus-within,\n.chat-input-shell.is-streaming:focus-within {\n  border-color: var(--composer-ring);\n  box-shadow: 0 8px 28px -12px");
@@ -106,6 +101,31 @@ describe("status card composer-strip layout", () => {
     expect(shell).toContain("key={`status:${viewSessionId}`}");
   });
 
+  it("never expands narrower than the collapsed capsule", () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const css = readFileSync(join(root, "styles/globals.css"), "utf8");
+    const cardRule = rule(css, ".subagent-activity-card");
+    const shellRule = rule(css, ".status-card-shell");
+    const panelRule = rule(css, ".status-card-panel");
+
+    // One width variable feeds both states: the tab is capped by it, the card
+    // is exactly it, so "expanded narrower than collapsed" is unrepresentable.
+    expect(cardRule).toContain("--status-card-width: min(340px, calc(100vw - 92px))");
+    expect(exactRule(css, ".subagent-activity-capsule")).toContain("max-width: var(--status-card-width)");
+    expect(panelRule).toContain("width: var(--status-card-width)");
+    // The shell is the shape box both states draw their edge on, so it tracks
+    // whichever edge is visible; its width comes from the measured tab.
+    expect(shellRule).toContain("width: var(--status-tab-width, 120px)");
+    expect(shellRule).toContain("max-width: var(--status-card-width)");
+    expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-shell')).toContain(
+      "width: var(--status-card-width)",
+    );
+    // The label is the only thing that gives way.
+    expect(rule(css, ".status-capsule-label")).toContain("min-width: 0");
+    expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
+    expect(rule(css, ".status-capsule-count,\n.status-capsule-agents,\n.status-capsule-queue")).toContain("flex: 0 0 auto");
+  });
+
   it("reserves the composer's top-right floating controls so the pill never overlaps them", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
@@ -114,7 +134,7 @@ describe("status card composer-strip layout", () => {
     // One shared variable sizes the reserve (footprint derivation lives next
     // to its definition); the pill row consumes exactly that variable.
     expect(css).toContain("--composer-floating-controls-reserve: 72px");
-    expect(rule(css, ".status-card-shell")).toContain("padding-right: var(--composer-floating-controls-reserve)");
+    expect(rule(css, ".subagent-activity-card")).toContain("var(--composer-floating-controls-reserve)");
     // The floating group really sits at the composer's top-right (ChatInput),
     // so the reserve is the single knob keeping the two apart.
     expect(chatInput).toContain("top: -22");
@@ -122,8 +142,9 @@ describe("status card composer-strip layout", () => {
     // Attachment previews render inside the input box, so nothing can sit
     // between the status tab and the composer top edge.
     expect(chatInput.indexOf('className="chat-input-attachments"')).toBeGreaterThan(chatInput.indexOf("ref={inputShellRef}"));
-    // The pill itself can only shrink within the reserved row.
-    expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 100%");
+    // The pill itself can only shrink within the reserved row, and never past
+    // the card it expands into.
+    expect(exactRule(css, ".subagent-activity-capsule")).toContain("max-width: var(--status-card-width)");
   });
 
   it("caps the mobile card at min(340px, viewport - 92px)", () => {
@@ -131,9 +152,8 @@ describe("status card composer-strip layout", () => {
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
     const mobileStart = css.indexOf("@media (max-width: 640px)", css.indexOf(".subagent-transcript"));
     expect(mobileStart).toBeGreaterThanOrEqual(0);
-    const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf(".status-card-panel", mobileStart)) + 1);
-    expect(rule(mobile, ".status-card-panel")).toContain("width: min(340px, calc(100vw - 92px))");
-    expect(rule(mobile, ".status-card-panel")).toContain("max-width: calc(100vw - 92px)");
+    const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf(".subagent-activity-card", mobileStart)) + 1);
+    expect(rule(mobile, ".subagent-activity-card")).toContain("--status-card-width: min(340px, calc(100vw - 92px))");
   });
 
   it("replaces the desktop pane tabs with the icon rail (mobile keeps tabs)", () => {

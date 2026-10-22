@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/hooks/useI18n";
 import type { StatusTodoItem, SubagentActivity } from "@/lib/subagent-activity";
 import { SubagentActivityCard } from "./SubagentActivityCard";
@@ -51,6 +51,17 @@ function renderCard(
 }
 
 describe("SubagentActivityCard", () => {
+  // The tab reports its own width to the shared shape box; jsdom has no
+  // ResizeObserver and no layout, so the observer is a no-op here.
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  beforeEach(() => {
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub;
+  });
+
   afterEach(() => {
     cleanup();
   });
