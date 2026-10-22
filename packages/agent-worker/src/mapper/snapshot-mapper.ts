@@ -47,26 +47,25 @@ export class SnapshotMapper {
     const partial: StreamingAgentMessage | undefined =
       coreStreaming?.partialMessage ?? activeStream?.baseline;
 
+    // Core `isStreaming` means the agent run is active; the Protocol flag means
+    // a message is streaming. A run with no partial yet (it just started, e.g.
+    // right after a Stop sent the queued message) is a running prompt with no
+    // message stream — the same shape as an admission snapshot.
+    const messageStreaming = state.isStreaming && partial !== undefined;
     let streaming: ProtocolRuntimeSnapshot["streaming"];
-    if (state.isStreaming) {
-      if (partial !== undefined) {
-        const ids =
-          activeStream !== null
-            ? { streamId: activeStream.streamId, messageId: activeStream.messageId }
-            : this.runtimeMapper.activateFromPartial(partial);
-        streaming = {
-          active: true,
-          streamId: ids.streamId,
-          messageId: ids.messageId,
-          partialMessage: mapStreamingMessage(partial),
-          phase: messagePhase(coreStreaming?.phase),
-          ...(coreStreaming?.toolCallIds === undefined ? {} : { toolCallIds: [...coreStreaming.toolCallIds] }),
-        };
-      } else {
-        // Inconsistent core state (streaming flag without a partial). Emit a
-        // best-effort projection; the transport schema gate fails closed.
-        streaming = { active: true, phase: "streaming" };
-      }
+    if (messageStreaming) {
+      const ids =
+        activeStream !== null
+          ? { streamId: activeStream.streamId, messageId: activeStream.messageId }
+          : this.runtimeMapper.activateFromPartial(partial);
+      streaming = {
+        active: true,
+        streamId: ids.streamId,
+        messageId: ids.messageId,
+        partialMessage: mapStreamingMessage(partial),
+        phase: messagePhase(coreStreaming?.phase),
+        ...(coreStreaming?.toolCallIds === undefined ? {} : { toolCallIds: [...coreStreaming.toolCallIds] }),
+      };
     } else if (state.isBashRunning || state.isCompacting) {
       this.runtimeMapper.clearActiveStream();
       streaming = {
@@ -82,7 +81,9 @@ export class SnapshotMapper {
       sessionId: snapshot.sessionId,
       cwd: ctx.cwd,
       projectRoot: ctx.projectRoot,
-      state: mapRuntimeState(state),
+      state: messageStreaming === state.isStreaming
+        ? mapRuntimeState(state)
+        : { ...mapRuntimeState(state), isStreaming: false, isPromptRunning: true },
       capabilities: mapCapabilitySet(snapshot.capabilities),
       ...(streaming === undefined ? {} : { streaming }),
       // Protocol v2: the snapshot is control/reconnect state only — it never

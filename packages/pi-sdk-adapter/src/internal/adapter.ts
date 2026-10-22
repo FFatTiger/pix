@@ -271,6 +271,8 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private thinkingPinned = false;
   private pinnedThinkingLevel: RuntimeState["thinkingLevel"] | undefined;
   private queued: QueuedMessages = { steering: [], followUp: [] };
+  /** Completion of the turn this adapter launched last (settles after an abort too). */
+  private activeTurn: Promise<RuntimeTurnTerminal> | null = null;
   /** True while a switch_queued_delivery rebuild is in flight: intermediate SDK
    *  queue_update events (empty / partial mirrors) are suppressed and ONE final
    *  event is emitted from the settled queue, so consumers never observe the
@@ -534,9 +536,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           return this.failure(command.type, makeRuntimeError("unavailable", "queued-delivery switching is unavailable for this queue configuration"));
         }
         case "abort":
-          await this.driver.abort();
-          this.cancelPendingUi();
-          this.clearToolCorrelations();
+          await this.abortThenSendQueued();
           return { ok: true, type: "abort" };
         case "abort_bash": this.driver.abortBash(); return { ok: true, type: "abort_bash" };
         case "abort_compaction": this.driver.abortCompaction(); if (this.compaction) this.compaction = { ...this.compaction, status: "aborting" }; return { ok: true, type: "abort_compaction" };
@@ -952,7 +952,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     if (this.turnAdmissionBusy || this.modelMutationBusy) {
       return rejected(makeRuntimeError("session_busy", "a prompt admission is already in progress", { retryable: true }));
     }
-    if (typeof input.prompt !== "string" || input.prompt.trim().length === 0) {
+    if (typeof input.prompt !== "string" || (input.prompt.trim().length === 0 && (input.images?.length ?? 0) === 0)) {
       return rejected(makeRuntimeError("invalid_input", "prompt must be non-empty"));
     }
     const promptCapability = requiredCapabilityForCommand("prompt");
@@ -1091,6 +1091,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           this.activeTurnUserEntryId = undefined;
         }
       })();
+      this.activeTurn = completion;
       return { admission: { ok: true, snapshot }, completion };
     } catch (error) {
       // A partial override is truthful authority state; never roll it back or
@@ -1148,9 +1149,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     try {
       switch (interrupt.type) {
         case "abort":
-          await this.driver.abort();
-          this.cancelPendingUi();
-          this.clearToolCorrelations();
+          await this.abortThenSendQueued();
           break;
         case "abort_bash": this.driver.abortBash(); break;
         case "abort_compaction": this.driver.abortCompaction(); if (this.compaction) this.compaction = { ...this.compaction, status: "aborting" }; break;
@@ -1726,6 +1725,45 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   }
 
   /**
+   * Stop the running turn, THEN send what the user queued during it as the next
+   * turn. Left in place, the queue is drained right after the aborted tool
+   * batch: the message would be written into the dying turn and aborted
+   * unanswered. So it is taken out first and delivered once the stop settled;
+   * the first message starts the turn, the rest keep their queue kind.
+   */
+  private async abortThenSendQueued(): Promise<void> {
+    const state = this.driver.getState();
+    const pending = [
+      ...this.reconcileQueue(this.queued.steering, state.steering).map((turn) => ({ turn, kind: "steer" as const })),
+      ...this.reconcileQueue(this.queued.followUp, state.followUp).map((turn) => ({ turn, kind: "follow_up" as const })),
+    ];
+    if (pending.length > 0) {
+      this.driver.clearQueue();
+      this.queued = { steering: [], followUp: [] };
+    }
+    await this.driver.abort();
+    this.cancelPendingUi();
+    this.clearToolCorrelations();
+    if (pending.length === 0) return;
+    // The aborted turn must have settled (promptRunning released) so the first
+    // message starts a turn instead of being queued again behind it.
+    await this.activeTurn;
+    const requeue = async (items: typeof pending): Promise<void> => {
+      for (const { turn, kind } of items) {
+        if (kind === "steer") await this.driver.steer(turn.message, turn.images);
+        else await this.driver.followUp(turn.message, turn.images);
+      }
+      this.reconcileQueuedFromDriver();
+    };
+    const [first, ...rest] = pending;
+    const handle = await this.submitTurn({ prompt: first!.turn.message, ...(first!.turn.images === undefined ? {} : { images: first!.turn.images }) });
+    // A start that could not be admitted puts everything back in the queue:
+    // the user's messages are never dropped by Stop.
+    if (!handle.admission.ok) { await requeue(pending); return; }
+    if (rest.length > 0) await requeue(rest);
+  }
+
+  /**
    * A queued-delivery command that turned out to address an IDLE runtime. The
    * sender asked for a message, not for a no-op, so the same send identity
    * starts a turn instead of parking in a queue nothing will drain (the race
@@ -1742,8 +1780,9 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       ...(sendOperationIdOf(command.commandId ?? "") === undefined ? {} : { operationId: sendOperationIdOf(command.commandId ?? "") as string }),
     });
     if (!handle.admission.ok) return this.failure(command.type, handle.admission.error);
-    const terminal = await handle.completion;
-    if (!terminal.ok) return this.failure(command.type, terminal.error);
+    // Answer once the turn STARTED: the queued delivery is done. Waiting for the
+    // whole turn would hold the sender's admission (and sessiond's per-session
+    // submit lane) for as long as the reply takes.
     return { ok: true, type: command.type, disposition: "started" };
   }
 

@@ -53,3 +53,23 @@ describe("SnapshotMapper image capacity", () => {
     assert.ok(bytes <= MAX_RUNTIME_FRAME_BYTES);
   });
 });
+
+describe("SnapshotMapper run without a message stream", () => {
+  it("projects a run that has no partial yet as a running prompt, never an invalid frame", () => {
+    const mapper = new SnapshotMapper(new StatefulRuntimeMapper());
+    const snapshot = mapper.map(
+      {
+        sessionId: "sess-1",
+        state: { sessionId: "sess-1", isStreaming: true, isPromptRunning: true, isBashRunning: false, isCompacting: false, model: null, messageCount: 1 },
+        capabilities: createCapabilitySet([]),
+        streaming: { active: true, phase: "streaming" },
+      },
+      { cwd: "/workspace", projectRoot: "/workspace" },
+    );
+    assert.equal(snapshot.state.isStreaming, false);
+    assert.equal(snapshot.state.isPromptRunning, true);
+    assert.deepEqual(snapshot.streaming, { active: false, phase: "idle" });
+    const frame = { type: "worker.snapshot", payload: { sessionId: snapshot.sessionId, snapshot } };
+    assert.equal(WorkerToSessiondPushSchema.safeParse(frame).success, true);
+  });
+});
