@@ -2397,6 +2397,15 @@ span.linenumber {
   --composer-floating-controls-reserve: 72px;
 }
 
+/* Same footprint on a phone: ChatInput anchors the button at right: 12 there
+   instead of 20, so only the offset differs — 12 + 36px button + the same 16px
+   breathing room. The button does appear on mobile, so the reserve stays. */
+@media (max-width: 640px) {
+  :root {
+    --composer-floating-controls-reserve: 64px;
+  }
+}
+
 /* Subagent activity: status pill above the composer, content-width and
    left-aligned; the expanded card opens upward from it. */
 .subagent-activity-card {
@@ -2535,6 +2544,10 @@ span.linenumber {
   padding: 0 12px;
   border: 0;
   border-top: 1px solid transparent;
+  /* The header repeats the tab's content on the card's bottom edge, so it
+     clips the same way the tab does rather than letting a long queue summary
+     run past the card. */
+  overflow: hidden;
   color: var(--text);
   background: transparent;
   font-size: 12px;
@@ -2581,6 +2594,9 @@ span.linenumber {
 .subagent-activity-capsule {
   position: relative;
   box-sizing: border-box;
+  /* The tab is a fixed slice of the row: whatever its content wants past that
+     must shrink or ellipsize, never paint outside the edge. */
+  overflow: hidden;
   min-width: 0;
   height: 28px;
   /* The tab sizes to its content and stops only at the row's available width;
@@ -2599,7 +2615,11 @@ span.linenumber {
 }
 
 .status-capsule-label {
-  min-width: 0;
+  /* Yields first. The floor is what hands the remaining squeeze to the queue
+     summary: below it the label would only render an ellipsis anyway, so the
+     second shrink step starts there. */
+  flex: 1 1 auto;
+  min-width: 2.5em;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -2615,6 +2635,16 @@ span.linenumber {
   color: var(--text-dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+/* The queue summary is the longest phrase on the tab, so it is the second
+   thing to give way — after the label, never before the counts. */
+.status-capsule-queue {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .status-capsule-count + .status-capsule-agents::before,

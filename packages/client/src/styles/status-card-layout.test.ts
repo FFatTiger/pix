@@ -133,10 +133,18 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-shell')).toContain(
       "width: var(--status-card-width)",
     );
-    // Only the label gives way once the row itself runs out.
-    expect(rule(css, ".status-capsule-label")).toContain("min-width: 0");
-    expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
+    // Shrink order on the tab: the label gives way first, then the pending
+    // queue summary; the state counts never shrink. Nothing paints outside the
+    // tab, so a squeezed row ellipsizes instead of overflowing.
+    expect(exactRule(css, ".status-capsule-label")).toContain("flex: 1 1 auto");
+    expect(exactRule(css, ".status-capsule-label")).toContain("min-width: 2.5em");
+    expect(exactRule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
+    expect(exactRule(css, ".status-capsule-queue")).toContain("flex: 0 1 auto");
+    expect(exactRule(css, ".status-capsule-queue")).toContain("text-overflow: ellipsis");
+    expect(exactRule(css, ".status-capsule-queue")).toContain("min-width: 0");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents,\n.status-capsule-queue")).toContain("flex: 0 0 auto");
+    expect(exactRule(css, ".subagent-activity-capsule")).toContain("overflow: hidden");
+    expect(exactRule(css, ".status-card-header")).toContain("overflow: hidden");
   });
 
   it("reserves the composer's top-right floating controls so the pill never overlaps them", () => {
@@ -147,6 +155,11 @@ describe("status card composer-strip layout", () => {
     // One shared variable sizes the reserve (footprint derivation lives next
     // to its definition); the pill row consumes exactly that variable.
     expect(css).toContain("--composer-floating-controls-reserve: 72px");
+    // The button does appear on a phone, so the reserve stays — it only drops
+    // with the smaller right offset ChatInput uses there (20 → 12).
+    const mobileStart = css.indexOf("@media (max-width: 640px)", css.indexOf("--composer-floating-controls-reserve: 72px"));
+    const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf("--composer-floating-controls-reserve", mobileStart)) + 1);
+    expect(rule(mobile, ":root")).toContain("--composer-floating-controls-reserve: 64px");
     expect(rule(css, ".subagent-activity-card")).toContain("var(--composer-floating-controls-reserve)");
     // The floating group really sits at the composer's top-right (ChatInput),
     // so the reserve is the single knob keeping the two apart.
