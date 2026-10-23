@@ -6,7 +6,7 @@ import { pixLog } from "../log.js";
  * `pix status` — report sessiond lifecycle state (not running / stale lock /
  * running, with pid, instance id, endpoint and directory; reachability is a
  * real RPC ping, not pid-aliveness alone) and the background Host started by
- * `pix start` (pid, URL, log). Exit 1 when either is obstructed / unhealthy in
+ * `pix start --detach` (pid, URL, log). Exit 1 when either is obstructed / unhealthy in
  * a way scripts must not read as "down".
  */
 export async function statusCommand(deps: HostDaemonDeps = defaultHostDaemonDeps()): Promise<number> {
@@ -34,9 +34,12 @@ export async function statusCommand(deps: HostDaemonDeps = defaultHostDaemonDeps
   const host = await inspectHost(deps);
   switch (host.kind) {
     case "not-running":
+      // A foreground `pix start` / `pix host` keeps no record, so this is not
+      // "stopped": only "nothing was started with --detach".
+      pixLog("host: no background host");
+      break;
     case "stale":
-      // A foreground `pix start --foreground` / `pix host` keeps no record.
-      pixLog("host: stopped (no background host)");
+      pixLog(`host: no background host (recorded pid ${host.record.pid} has exited)`);
       break;
     case "running":
       pixLog("host: running (healthy)");

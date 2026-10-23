@@ -8,7 +8,7 @@ const FOLLOW_POLL_MS = 500;
 
 /**
  * `pix logs [--lines N] [--follow]` — print the background Host log (stdout
- * and stderr of the Host started by `pix start`). `--follow` keeps streaming
+ * and stderr of the Host started by `pix start --detach`). `--follow` keeps streaming
  * appended output until interrupted.
  */
 export async function logsCommand(argv: string[]): Promise<number> {
@@ -29,7 +29,7 @@ export async function logsCommand(argv: string[]): Promise<number> {
   }
   const path = hostLogPath();
   if (!existsSync(path)) {
-    pixErr(`no host log yet (${path}); start the host with \`pix start\``);
+    pixErr(`no host log yet (${path}); start the host with \`pix start --detach\``);
     return 1;
   }
   const tail = tailFile(path, lines);

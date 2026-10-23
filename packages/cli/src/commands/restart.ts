@@ -15,7 +15,7 @@ export async function restartCommand(argv: string[]): Promise<number> {
   let all: boolean;
   try {
     const parsed = parseFlags(argv);
-    if (parsed.positional.length > 0 || parsed.boolFlags.has("--foreground")) {
+    if (parsed.positional.length > 0) {
       throw new Error("usage: pix restart [--all] [--hostname H] [--port P] [--open|--no-open]");
     }
     all = parsed.boolFlags.has("--all");

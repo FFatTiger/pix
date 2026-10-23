@@ -1,8 +1,9 @@
 /**
  * Minimal, dependency-free argument parsing for the pix CLI. Supports the flags
  * the composition root actually consumes (`--hostname`, `--port`, `--open`,
- * `--no-open`, `--all`, `--check`, `--restart`, `--foreground`, `--follow`,
- * `--lines`) in both `--flag value` and `--flag=value` forms. It
+ * `--no-open`, `--all`, `--check`, `--restart`, `--follow`, `--lines`) in
+ * both `--flag value` and `--flag=value` forms (`pix start` strips its own
+ * `--detach` first). It
  * deliberately rejects unknown flags so a typo (e.g. `--post`) fails loudly
  * instead of silently binding to the wrong port.
  */
@@ -26,7 +27,7 @@ export interface ParsedFlags {
 }
 
 const VALUE_FLAGS = new Set(["--hostname", "--port", "--lines"]);
-const BOOL_FLAGS = new Set(["--open", "--no-open", "--all", "--check", "--restart", "--foreground", "--follow"]);
+const BOOL_FLAGS = new Set(["--open", "--no-open", "--all", "--check", "--restart", "--follow"]);
 
 /**
  * Parse an argv array into positionals, value-flags and boolean flags. Throws

@@ -526,7 +526,7 @@ async function verifyInstalledClient({ prefix, pixBin, env }) {
     });
   });
   const origin = `http://127.0.0.1:${port}`;
-  const host = spawnChild(pixBin, ["start", "--foreground", "--hostname", "127.0.0.1", "--port", String(port), "--no-open"], { env, stdio: ["ignore", "ignore", "pipe"] });
+  const host = spawnChild(pixBin, ["start", "--hostname", "127.0.0.1", "--port", String(port), "--no-open"], { env, stdio: ["ignore", "ignore", "pipe"] });
   const hostExit = exitCodePromise(host);
   let hostErr = "";
   host.stderr.on("data", (c) => { hostErr += c; });

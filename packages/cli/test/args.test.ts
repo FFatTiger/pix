@@ -44,6 +44,9 @@ test("parseBindArgs rejects invalid port", () => {
 
 test("parseBindArgs rejects unknown flag", () => {
   assert.throws(() => parseBindArgs(["--bogus"]), /unknown flag/);
+  // `--detach` belongs to `pix start` alone (it strips it before parsing):
+  // `pix host --detach` must fail loudly, not run in the foreground.
+  assert.throws(() => parseBindArgs(["--detach"]), /unknown flag: --detach/);
 });
 
 test("parseBindArgs rejects value flag without value", () => {

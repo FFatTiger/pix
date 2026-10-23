@@ -11,7 +11,7 @@ export async function stopServices(all: boolean, deps: HostDaemonDeps = defaultH
   const host = await stopHostBackground(deps);
   let code = 0;
   if (host.action === "not-running") {
-    pixLog("host: stopped (no background host)");
+    pixLog("host: no background host");
   } else if (host.action === "stopped") {
     pixLog(`host: stopped (pid ${host.pid}${host.forced ? ", forced after timeout" : ""})`);
   } else if (host.action === "refused") {
@@ -41,7 +41,7 @@ export async function stopServices(all: boolean, deps: HostDaemonDeps = defaultH
 }
 
 /**
- * `pix stop [--all]` — stop the background Host started by `pix start`.
+ * `pix stop [--all]` — stop the background Host started by `pix start --detach`.
  * Sessions keep running in sessiond unless `--all` is given.
  */
 export async function stopCommand(argv: string[]): Promise<number> {

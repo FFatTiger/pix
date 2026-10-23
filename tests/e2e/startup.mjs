@@ -355,7 +355,6 @@ async function main() {
     firstHost = startProcess([
       "scripts/product-entry.mjs",
       "start",
-      "--foreground",
       "--hostname",
       "127.0.0.1",
       "--port",

@@ -321,7 +321,7 @@ async function main() {
   };
 
   const boot = async () => {
-    const proc = startProcess(["scripts/product-entry.mjs", "start", "--foreground", "--hostname", "127.0.0.1", "--port", String(port), "--no-open"], env);
+    const proc = startProcess(["scripts/product-entry.mjs", "start", "--hostname", "127.0.0.1", "--port", String(port), "--no-open"], env);
     let health;
     try {
       health = await waitHealthy(origin);

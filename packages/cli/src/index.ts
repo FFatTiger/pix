@@ -47,15 +47,14 @@ export function resolveCliVersion(fromUrl: string = import.meta.url): string {
 function printHelp(): void {
   pixLog("usage: pix <command> [options]");
   pixLog("commands:");
-  pixLog("  start [--hostname H] [--port P] [--open|--no-open] [--foreground]");
-  pixLog("                                      ensure sessiond + start the host in the background");
-  pixLog("                                      (--foreground keeps it attached, for service managers)");
+  pixLog("  start [--hostname H] [--port P] [--open|--no-open] [--detach]");
+  pixLog("                                      ensure sessiond + boot host (--detach: in the background)");
   pixLog("  stop [--all]                        stop the background host (--all also stops sessiond)");
   pixLog("  restart [--all] [--hostname H] [--port P] [--open]");
   pixLog("                                      restart the background host (--all also restarts sessiond)");
   pixLog("  status                              report sessiond + background host state");
   pixLog("  logs [--lines N] [--follow]         print the background host log");
-  pixLog("  host  [--hostname H] [--port P] [--open|--no-open]  run the host in the foreground (needs sessiond)");
+  pixLog("  host  [--hostname H] [--port P] [--open|--no-open]  boot host only (needs sessiond)");
   pixLog("  down --all                          stop sessiond only (requires --all)");
   pixLog("  sessiond                            run sessiond in the foreground");
   pixLog("  update [version] [--check] [--restart]  install the latest (or given) release from npm");

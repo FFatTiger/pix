@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import test from "node:test";
 import { existsSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -102,9 +103,69 @@ test("a child that exits before ready fails honestly and leaves no record", asyn
     assert.equal(result.action, "failed");
     assert.ok(result.action === "failed");
     assert.match(result.reason, /exited before becoming ready \(code 3\)/);
+    assert.ok(result.logFile !== undefined, "a child failure points at its log");
     assert.match(tailFile(result.logFile, 5), /EADDRINUSE/);
     assert.equal(readHostRecord(env).kind, "missing");
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a port already served by a host we did not start fails fast without spawning", async () => {
+  // e.g. a foreground `pix start` on the same port: a child would only die
+  // on the port or the lock while that host answers health.
+  let spawned = false;
+  const { root, env, deps } = await fixtureDeps("ok");
+  const port = await freePort();
+  const other = spawn(process.execPath, [FIXTURE, String(port), "ok"], { env, stdio: "ignore" });
+  const otherExited = new Promise((resolve) => other.once("exit", resolve));
+  const hostArgv = deps.hostArgv;
+  deps.hostArgv = (options) => {
+    spawned = true;
+    return hostArgv(options);
+  };
+  try {
+    const url = hostUrl("127.0.0.1", port);
+    for (let i = 0; i < 100 && !(await deps.fetchHealth(url)); i += 1) await deps.sleep(50);
+    assert.equal(await deps.fetchHealth(url), true, "the other host serves the port");
+    const result = await startHostBackground({ hostname: "127.0.0.1", port, open: false }, deps);
+    assert.ok(result.action === "failed");
+    assert.match(result.reason, /already served by a pix host not started with --detach/);
+    assert.equal(spawned, false);
+    assert.equal(readHostRecord(env).kind, "missing");
+  } finally {
+    other.kill("SIGTERM");
+    await otherExited;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("health from another host is not readiness unless the child holds the Host-dir lock", async () => {
+  // Another host starts answering on the port after the pre-check, while the
+  // child dies without ever taking the lock: never "started".
+  let probes = 0;
+  const { root, env, deps } = await fixtureDeps("crash", { fetchHealth: async () => (probes += 1) > 1 });
+  try {
+    const result = await startHostBackground({ hostname: "127.0.0.1", port: await freePort(), open: false }, deps);
+    assert.ok(result.action === "failed");
+    assert.match(result.reason, /exited before becoming ready \(code 3\)/);
+    assert.equal(readHostRecord(env).kind, "missing");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a running background host at another address is not reported as started", async () => {
+  const { root, deps } = await fixtureDeps("ok");
+  const port = await freePort();
+  try {
+    const started = await startHostBackground({ hostname: "127.0.0.1", port, open: false }, deps);
+    assert.ok(started.action === "started");
+    const moved = await startHostBackground({ hostname: "127.0.0.1", port: port + 1, open: false }, deps);
+    assert.ok(moved.action === "failed");
+    assert.match(moved.reason, new RegExp(`already running at http://127\\.0\\.0\\.1:${port};.*pix restart`));
+  } finally {
+    await stopHostBackground(deps);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -116,12 +177,21 @@ test("a child that never becomes healthy is terminated at the readiness bound", 
     killed = { pid, signal };
     process.kill(pid, signal);
   };
+  // The record exists while the child starts, so an interrupted launcher
+  // still leaves a Host that `pix stop` / `pix status` can find.
+  const recordDuringWait: string[] = [];
+  const sleep = deps.sleep;
+  deps.sleep = async (ms) => {
+    recordDuringWait.push(readHostRecord(env).kind);
+    return sleep(ms);
+  };
   try {
     const result = await startHostBackground({ hostname: "127.0.0.1", port: await freePort(), open: false }, deps);
     assert.equal(result.action, "failed");
     assert.ok(result.action === "failed");
     assert.match(result.reason, /did not become ready/);
     assert.equal(killed?.signal, "SIGTERM");
+    assert.ok(recordDuringWait.length > 0 && recordDuringWait.every((kind) => kind === "ok"));
     assert.equal(readHostRecord(env).kind, "missing");
   } finally {
     await rm(root, { recursive: true, force: true });

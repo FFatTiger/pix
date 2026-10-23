@@ -1,6 +1,6 @@
 /**
- * Background Host lifecycle for `pix start` / `stop` / `restart` / `status` /
- * `logs`.
+ * Background Host lifecycle for `pix start --detach` / `stop` / `restart` /
+ * `status` / `logs`.
  *
  * The Host is the thin web layer; sessiond (the session authority) is managed
  * separately by `supervise.ts`. A background Host is a detached
@@ -256,20 +256,33 @@ export function tailFile(path: string, lines: number): string {
 export type StartHostResult =
   | { action: "started"; record: HostRecord }
   | { action: "already-running"; record: HostRecord }
-  | { action: "failed"; reason: string; logFile: string };
+  /** `logFile` is set when its tail explains the failure. */
+  | { action: "failed"; reason: string; logFile?: string };
 
 /**
  * Start the Host in the background (sessiond must already be pingable).
- * Resolves once the child answers health, or fails with the child's exit /
- * timeout — a child that never became healthy is terminated, never left
- * running behind a failure.
+ * Resolves once the child holds the Host-dir lock and answers health, or
+ * fails with the child's exit / timeout — a child that never became healthy
+ * is terminated, never left running behind a failure. The record is written
+ * as soon as the child exists, so a launcher interrupted during the wait
+ * leaves a Host that `pix stop` / `pix status` can still find.
  */
 export async function startHostBackground(
   options: BindOptions,
   deps: HostDaemonDeps = defaultHostDaemonDeps(),
 ): Promise<StartHostResult> {
+  const url = hostUrl(options.hostname, options.port);
   const state = await inspectHost(deps);
-  if (state.kind === "running") return { action: "already-running", record: state.record };
+  if (state.kind === "running") {
+    if (state.record.hostname === options.hostname && state.record.port === options.port) {
+      return { action: "already-running", record: state.record };
+    }
+    return {
+      action: "failed",
+      reason: `a background host is already running at ${state.record.url}; `
+        + `move it with \`pix restart --hostname ${options.hostname} --port ${options.port}\``,
+    };
+  }
   if (state.kind === "unresponsive") {
     return {
       action: "failed",
@@ -282,6 +295,16 @@ export async function startHostBackground(
   // pid), so it is discarded. A different Host that really holds the lock
   // makes the new child fail with its own lock error, reported from the log.
   if (state.kind !== "not-running") clearHostRecord(deps.env);
+  // With no live record of ours, a pix host already answering here is a
+  // foreground `pix start` or another instance; a child would only die on
+  // the port or the lock.
+  if (await deps.fetchHealth(url)) {
+    return {
+      action: "failed",
+      reason: `${url} is already served by a pix host not started with --detach `
+        + "(a foreground `pix start` or another instance); stop it or use another --port",
+    };
+  }
 
   const dir = ensureCliDir(deps.env);
   const logFile = join(dir, LOG_FILE);
@@ -308,42 +331,45 @@ export async function startHostBackground(
   });
   child.unref();
 
-  const url = hostUrl(options.hostname, options.port);
-  const deadline = deps.now() + READY_TIMEOUT_MS;
-  while (true) {
-    if (spawnError !== undefined) {
-      return { action: "failed", reason: `could not spawn the host: ${spawnError.message}`, logFile };
-    }
-    if (exited !== undefined) {
-      return {
-        action: "failed",
-        reason: `host exited before becoming ready (${exited.signal ?? `code ${exited.code}`})`,
-        logFile,
-      };
-    }
-    if (child.pid !== undefined && (await deps.fetchHealth(url))) break;
-    if (deps.now() >= deadline) {
-      if (child.pid !== undefined) {
-        try {
-          deps.kill(child.pid, "SIGTERM");
-        } catch {
-          // already gone
-        }
-      }
-      return { action: "failed", reason: `host did not become ready within ${READY_TIMEOUT_MS / 1000}s`, logFile };
-    }
-    await deps.sleep(POLL_MS);
-  }
-  const record: HostRecord = {
-    pid: child.pid!,
+  const record: HostRecord | undefined = child.pid === undefined ? undefined : {
+    pid: child.pid,
     hostname: options.hostname,
     port: options.port,
     url,
     logFile,
     startedAt: deps.now(),
   };
-  writeHostRecord(record, deps.env);
-  return { action: "started", record };
+  if (record !== undefined) writeHostRecord(record, deps.env);
+  const fail = (reason: string): StartHostResult => {
+    clearHostRecord(deps.env);
+    return { action: "failed", reason, logFile };
+  };
+  const deadline = deps.now() + READY_TIMEOUT_MS;
+  while (true) {
+    if (spawnError !== undefined) return fail(`could not spawn the host: ${spawnError.message}`);
+    if (exited !== undefined) {
+      return fail(`host exited before becoming ready (${exited.signal ?? `code ${exited.code}`})`);
+    }
+    // Ready = the child holds the Host-dir lock AND answers health: health
+    // alone may come from a Host that started serving this port after the
+    // check above while the child dies on the lock.
+    // ponytail: a Host with ANOTHER PIX_HOST_DIR that starts serving this port inside the
+    // child's lock-then-listen window still passes; closing it needs an identity in /v1/health.
+    if (record !== undefined && readHostLockPid(deps.env) === record.pid && (await deps.fetchHealth(url))) {
+      return { action: "started", record };
+    }
+    if (deps.now() >= deadline) {
+      if (record !== undefined) {
+        try {
+          deps.kill(record.pid, "SIGTERM");
+        } catch {
+          // already gone
+        }
+      }
+      return fail(`host did not become ready within ${READY_TIMEOUT_MS / 1000}s`);
+    }
+    await deps.sleep(POLL_MS);
+  }
 }
 
 export type StopHostResult =

@@ -1,4 +1,4 @@
-import { parseBindArgs, parseFlags, type BindOptions } from "../args.js";
+import { parseBindArgs, type BindOptions } from "../args.js";
 import { ensureSessiond, locateSessiond } from "../supervise.js";
 import { defaultHostDaemonDeps, startHostBackground, tailFile, type HostDaemonDeps } from "../host-daemon.js";
 import { openBrowser, runHost } from "./host-runner.js";
@@ -6,7 +6,7 @@ import { pixLog, pixErr } from "../log.js";
 
 /**
  * Ensure sessiond, then start the Host in the background and report where it
- * listens. Shared by `start`, `restart` and `update --restart`.
+ * listens. Shared by `start --detach` and `restart`.
  */
 export async function launchBackground(
   options: BindOptions,
@@ -21,7 +21,7 @@ export async function launchBackground(
   const result = await startHostBackground(options, deps);
   if (result.action === "failed") {
     pixErr(result.reason);
-    const tail = tailFile(result.logFile, 20);
+    const tail = result.logFile === undefined ? "" : tailFile(result.logFile, 20);
     if (tail !== "") {
       pixErr(`last lines of ${result.logFile}:`);
       for (const line of tail.split("\n")) pixErr(`  ${line}`);
@@ -43,22 +43,21 @@ export async function launchBackground(
 /**
  * `pix start` — one-command boot. Ensures a pingable sessiond (reusing an
  * existing one, otherwise spawning a detached daemon and waiting for RPC
- * readiness), then starts the Hono Host serving the built client. By default
- * the Host runs in the background and the command returns once it is
- * healthy; `--foreground` keeps it attached to the terminal (service
- * managers, containers, test harnesses).
+ * readiness), then boots the Hono Host serving the built client in the
+ * foreground. `--detach` starts the Host in the background instead and
+ * returns once it is healthy (`pix stop` / `restart` / `logs` manage it).
  */
 export async function startCommand(argv: string[]): Promise<number> {
+  // `--detach` is start-only; every other command rejects it as unknown.
+  const detach = argv.includes("--detach");
   let options: BindOptions;
-  let foreground: boolean;
   try {
-    options = parseBindArgs(argv);
-    foreground = parseFlags(argv).boolFlags.has("--foreground");
+    options = parseBindArgs(argv.filter((arg) => arg !== "--detach"));
   } catch (error) {
     pixErr((error as Error).message);
     return 2;
   }
-  if (!foreground) return launchBackground(options);
+  if (detach) return launchBackground(options);
   try {
     await ensureSessiond(undefined, pixLog);
   } catch (error) {
