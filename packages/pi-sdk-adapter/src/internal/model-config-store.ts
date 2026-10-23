@@ -237,7 +237,9 @@ async function readSource(agentDir: string): Promise<{ text: string; raw: RawMod
   const modelsPath = join(agentDir, "models.json");
   let result;
   try {
-    result = await secureState.readStateDocument(modelsPath, { maxBytes: MODELS_MAX_BYTES });
+    // models.json is Pi-owned and often created 0644 (default umask): accept
+    // shared read bits, never shared write bits. Pix writes land 0600.
+    result = await secureState.readStateDocument(modelsPath, { maxBytes: MODELS_MAX_BYTES, allowSharedRead: true });
   } catch (error) {
     if (error instanceof LocalAuthorityError) {
       throw runtimeError("unavailable", "model configuration is unavailable");

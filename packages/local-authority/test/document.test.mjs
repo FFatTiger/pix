@@ -101,6 +101,13 @@ test("document: bounded read — symlink / non-regular / perms / hard-link / ove
   if (process.platform !== "win32") {
     chmodSync(path, 0o644);
     await expectReject(() => readStateDocument(path, { maxBytes: MAX }), "DOC_PERMISSIONS");
+    // allowSharedRead accepts group/other READ bits only; any write bit
+    // still fails closed.
+    assert.deepEqual(await readStateDocument(path, { maxBytes: MAX, allowSharedRead: true }), { content: "y" });
+    for (const mode of [0o664, 0o646, 0o666]) {
+      chmodSync(path, mode);
+      await expectReject(() => readStateDocument(path, { maxBytes: MAX, allowSharedRead: true }), "DOC_PERMISSIONS");
+    }
   }
 
   // Hard-linked document. nlink is real on NTFS too.

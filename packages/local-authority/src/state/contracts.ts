@@ -121,6 +121,13 @@ export interface EnsurePrivateDirectoryResult {
 export interface ReadStateDocumentOptions {
   /** Upper bound on the document bytes (fail-closed). */
   maxBytes: number;
+  /**
+   * Accept group/other READ bits (e.g. a 0644 file). Only for documents another
+   * tool owns and creates with the default umask (Pi's models.json): Pix still
+   * refuses group/other WRITE bits, and its own atomic writes land 0600.
+   * Pix-owned state documents never set this.
+   */
+  allowSharedRead?: boolean;
 }
 
 export interface WriteStateDocumentOptions {

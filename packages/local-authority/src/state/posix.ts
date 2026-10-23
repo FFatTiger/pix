@@ -731,10 +731,12 @@ export async function readStateDocument(
   if (info.size > options.maxBytes) {
     throw new LocalAuthorityError("DOC_OVERSIZE", "State document exceeds the size bound");
   }
-  // Wrong permission: no group/other read/write access on the document.
+  // Wrong permission: no group/other read/write access on the document
+  // (`allowSharedRead` relaxes only the read bits; write bits stay refused).
   // win32: files carry no POSIX group/other bits (mode reads 0o666); the check
   // is POSIX-only (nlink/symlink/regular-file checks stay cross-platform).
-  if (securePathPlatform(platform) === "posix" && (info.mode & 0o077) !== 0) {
+  const forbiddenBits = options.allowSharedRead === true ? 0o022 : 0o077;
+  if (securePathPlatform(platform) === "posix" && (info.mode & forbiddenBits) !== 0) {
     throw new LocalAuthorityError("DOC_PERMISSIONS", "State document permissions are unsafe");
   }
   // Hard-linked document: extra names could alias a file we must not rewrite.

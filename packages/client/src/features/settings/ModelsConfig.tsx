@@ -1134,9 +1134,16 @@ export function ModelsConfig() {
     // must not replace an in-progress draft or a newly typed one-way API key.
     refetchOnReconnect: false,
   });
-  if (!can("models.configure")) return <p className="workspace-hint">{t("desktop.modelsConfigUnavailable")}</p>;
-  if (query.isLoading) return <p className="workspace-hint">{t("desktop.modelsLoading")}</p>;
-  if (query.isError) return <p className="workspace-hint workspace-hint--error" role="alert">{describeModelsConfigError(query.error, t)}</p>;
+  // Status states sit in a section so they align with the page header.
+  if (!can("models.configure")) return <SettingsSection><p className="workspace-hint">{t("desktop.modelsConfigUnavailable")}</p></SettingsSection>;
+  if (query.isLoading) return <SettingsSection><p className="workspace-hint">{t("desktop.modelsLoading")}</p></SettingsSection>;
+  if (query.isError) {
+    return (
+      <SettingsSection>
+        <p className="workspace-hint workspace-hint--error" role="alert">{describeModelsConfigError(query.error, t)}</p>
+      </SettingsSection>
+    );
+  }
   return query.data ? <ModelsEditor snapshot={query.data} /> : null;
 }
 
