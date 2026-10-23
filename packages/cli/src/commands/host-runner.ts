@@ -76,7 +76,7 @@ export function resolveCatalogAgentDir(env: NodeJS.ProcessEnv = process.env): st
  */
 
 /** Best-effort browser launch; never fatal — `--no-open` is the safe default. */
-function openBrowser(url: string): void {
+export function openBrowser(url: string): void {
   try {
     let child;
     if (process.platform === "darwin") {

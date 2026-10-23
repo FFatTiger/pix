@@ -1,12 +1,16 @@
 import { inspectSessiond } from "../supervise.js";
+import { defaultHostDaemonDeps, inspectHost, type HostDaemonDeps } from "../host-daemon.js";
 import { pixLog } from "../log.js";
 
 /**
- * `pix status` — report sessiond lifecycle state: not running / stale lock /
- * running, with pid, instance id, endpoint and directory. When a live pid is
- * found, reachability is confirmed by a real RPC ping (not pid-aliveness alone).
+ * `pix status` — report sessiond lifecycle state (not running / stale lock /
+ * running, with pid, instance id, endpoint and directory; reachability is a
+ * real RPC ping, not pid-aliveness alone) and the background Host started by
+ * `pix start --detach` (pid, URL, log). Exit 1 when either is obstructed / unhealthy in
+ * a way scripts must not read as "down".
  */
-export async function statusCommand(): Promise<number> {
+export async function statusCommand(deps: HostDaemonDeps = defaultHostDaemonDeps()): Promise<number> {
+  let code = 0;
   const status = await inspectSessiond();
   if (status.obstructed) {
     // A live listener without a lock, an unsafe lock, or a live-but-unreachable
@@ -14,10 +18,8 @@ export async function statusCommand(): Promise<number> {
     // honestly and exit non-zero so scripts do not treat the directory as down.
     pixLog("sessiond: obstructed");
     pixLog(`  reason: ${status.obstruction ?? "sessiond state is unsafe"}`);
-    pixLog(`  directory: ${status.directory}`);
-    return 1;
-  }
-  if (status.pid === undefined) {
+    code = 1;
+  } else if (status.pid === undefined) {
     pixLog("sessiond: not running");
   } else if (!status.alive) {
     pixLog("sessiond: not running (stale lock)");
@@ -28,5 +30,36 @@ export async function statusCommand(): Promise<number> {
     pixLog(`  endpoint: ${status.endpoint}`);
   }
   pixLog(`  directory: ${status.directory}`);
-  return 0;
+
+  const host = await inspectHost(deps);
+  switch (host.kind) {
+    case "not-running":
+      // A foreground `pix start` / `pix host` keeps no record, so this is not
+      // "stopped": only "nothing was started with --detach".
+      pixLog("host: no background host");
+      break;
+    case "stale":
+      pixLog(`host: no background host (recorded pid ${host.record.pid} has exited)`);
+      break;
+    case "running":
+      pixLog("host: running (healthy)");
+      break;
+    case "unresponsive":
+      pixLog("host: running but not responding");
+      code = 1;
+      break;
+    case "unverified":
+      pixLog(`host: unknown (${host.reason}; recorded pid ${host.record.pid})`);
+      code = 1;
+      break;
+    case "corrupt":
+      pixLog(`host: unknown (unreadable record ${host.path})`);
+      code = 1;
+      break;
+  }
+  if (host.kind === "running" || host.kind === "unresponsive") {
+    pixLog(`  pid: ${host.record.pid}  url: ${host.record.url}`);
+    pixLog(`  logs: ${host.record.logFile}`);
+  }
+  return code;
 }

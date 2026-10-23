@@ -171,5 +171,6 @@ wine /opt/node-win/node.exe /srv/pix/packages/cli/bin/pix.mjs down --all
 - **同用户攻击面**：win32 无 POSIX mode/O_NOFOLLOW；与 POSIX 相同的 no-openat 竞态残留 + chmod 不可用 → 隐私依赖用户 profile ACL（跨用户边界仍由 NTFS 保证）。
 - **pid 复用/僵尸句柄**：win32 pid 复用快；已退出但句柄未释放的 pid 会被 `kill(pid,0)` 短暂判活（fail-closed 方向）。
 - **detached daemon 与 Job**：`pix start` 的 daemon 不 breakaway 父 Job；在 CI/被托管进程树下可能随父进程树终止（正常终端使用无影响）。
+- **后台 Host 的停止**：`pix start --detach` 把 Host 作为 detached 子进程放到后台（日志写到 `~/.pi/pix/cli/host.log`）。`pix stop` 先核对 Host-dir 锁里记录的 pid 再发信号；win32 上 `SIGTERM` 等同 TerminateProcess，Host 来不及释放锁，下次启动会按"持有者 pid 已退出"回收这把锁。服务托管或 CI 直接用前台的 `pix start`。
 - **rename 回退的非原子窗口**（win32 仅在 EPERM 类失败时触发）：目标短暂不存在；发生在持锁单写者路径。
 - **管道名大小写**：目录拼写大小写不同 → 不同管道名（默认派生路径稳定，理论边缘）。

@@ -3,7 +3,9 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { npmExecutable, resolveNpmRegistryLatestUrl, UPDATE_PACKAGE_NAME as PACKAGE } from "@fffattiger/pix-host";
 import { parseFlags } from "../args.js";
-import { inspectSessiond, shutdownSessiond } from "../supervise.js";
+import { inspectSessiond } from "../supervise.js";
+import { readHostRecord } from "../host-daemon.js";
+import { stopServices } from "./stop.js";
 import { resolveCliVersion } from "../index.js";
 import { pixErr, pixLog } from "../log.js";
 
@@ -61,8 +63,9 @@ async function fetchLatestVersion(): Promise<string | null> {
 /**
  * `pix update [version] [--check] [--restart]` — install the latest (or the
  * given) pix release from npm into the same global prefix this CLI runs from.
- * Running services keep the old code until restarted; `--restart` stops
- * sessiond, the host must be restarted by whoever runs `pix start`.
+ * Running services keep the old code until restarted; `--restart` stops the
+ * background host and sessiond and relaunches the host on the new version
+ * (a foreground `pix start` must be restarted by whoever runs it).
  */
 export async function updateCommand(argv: string[]): Promise<number> {
   let parsed;
@@ -117,17 +120,35 @@ export async function updateCommand(argv: string[]): Promise<number> {
   pixLog(`installed pix ${target}`);
 
   const status = await inspectSessiond();
-  if (!status.alive) return 0;
+  const previousHost = readHostRecord();
+  if (!status.alive && previousHost.kind !== "ok") return 0;
   if (!parsed.boolFlags.has("--restart")) {
     pixLog(`the running pix is still ${current}; restarting interrupts running sessions`);
-    pixLog("to switch: stop `pix start` (or its service), run `pix down --all`, then `pix start`");
+    pixLog(previousHost.kind === "ok"
+      ? "to switch: run `pix restart --all`"
+      : "to switch: stop `pix start` (or its service), run `pix down --all`, then `pix start`");
     return 0;
   }
-  const stopped = await shutdownSessiond();
-  if (stopped.action === "terminated" || stopped.action === "already-down") {
+  const stopped = await stopServices(true);
+  if (stopped !== 0) return stopped;
+  if (previousHost.kind !== "ok") {
     pixLog(`sessiond stopped; restart \`pix start\` (or its service) to run ${target}`);
     return 0;
   }
-  pixErr(`could not stop sessiond: ${stopped.reason}`);
-  return 1;
+  // The background host is relaunched from a FRESH process so it loads the
+  // newly installed code (this process still runs the old one).
+  const relaunched = spawnSync(process.execPath, [
+    join(packageRoot, "bin", "pix.mjs"),
+    "start",
+    "--detach",
+    "--hostname",
+    previousHost.record.hostname,
+    "--port",
+    String(previousHost.record.port),
+  ], { stdio: "inherit" });
+  if (relaunched.error !== undefined || relaunched.status !== 0) {
+    pixErr(`could not restart the host on ${target}; run \`pix start --detach\``);
+    return 1;
+  }
+  return 0;
 }

@@ -26,3 +26,10 @@ test("the update check has no hardcoded registry URL (resolves npm's effective o
   assert.doesNotMatch(source, /registry\.npmjs\.org/, "no hardcoded public registry in the CLI update path");
   assert.match(source, /resolveNpmRegistryLatestUrl/, "the latest lookup goes through the shared npm-registry resolver");
 });
+
+test("update --restart relaunches the background host detached", () => {
+  // A plain `pix start` runs in the foreground: through spawnSync it would
+  // block the update until the new host exits.
+  const source = readFileSync(new URL("../../src/commands/update.ts", import.meta.url), "utf8");
+  assert.match(source, /"start",\s*"--detach",/);
+});

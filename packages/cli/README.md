@@ -11,12 +11,15 @@ npm install -g @fffattiger/pix-cli
 pix start
 ```
 
-pix opens at `http://127.0.0.1:30141` by default.
+pix serves at `http://127.0.0.1:30141` by default; `pix start` stays attached to the terminal (sessions keep running when it stops).
 
 ```bash
-pix status
-pix down --all
-pix start --port 30142 --hostname 0.0.0.0 --no-open
+pix start --port 30142 --hostname 0.0.0.0 --open
+pix start --detach         # run the host in the background
+pix status                 # sessiond + background host state
+pix logs --follow          # background host output
+pix restart                # restart the background host; sessions keep running
+pix stop                   # stop the background host; `--all` also stops sessiond
 ```
 
 Documentation and source: https://github.com/FFatTiger/pix
