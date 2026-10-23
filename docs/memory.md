@@ -14,8 +14,9 @@ Pix 的长期记忆是一个全局设置（settings.json 的 `pixMemoryProvider`
 
 - **默认（从未设置且没有 Lore）**：本地记忆。
 - **已配置过 Lore 再升级到本版本**（`~/.lore/config.json` 或环境变量里已有服务地址 + token）：`pixMemoryProvider` 缺省时自动解析为 **Lore（已连接）**，用户不用重新填写，也不会被切到本地记忆。设置页直接显示服务地址与连接状态。
-- **未配置 Lore 时选择 Lore**：页面给出三个入口——注册 SaaS（中文 https://loremem.com/zh-cn ，英文 https://loremem.com ）、自己部署（安装文档中文 https://loremem.com/zh-cn/documents/installation/install-lore ，英文 https://loremem.com/documents/installation/install-lore ）、连接已有服务器（https://loremem.com/zh-cn/documents/installation/manual-configuration ）。填「服务地址」（默认 `https://api.loremem.com`）和「API Token」（密码框，已保存的值不回显），点「测试连接」（`GET <base>/api/health` + Bearer）通过后才能保存启用。启用时不安装任何东西——扩展已捆绑。
-- **Lore 连不上 / Token 失效**：测试给出明确原因（地址无效 / 非本机 http / 缺 Token / Token 被拒 / 连不上），可「重新测试」或改选本地记忆。**绝不静默回退到本地记忆**——那会造成记忆分裂。已选 Lore 的机器上，服务端保存（`PUT /v1/settings/memory`）也要求连接已配置（fail-closed）。
+- **未配置 Lore 时选择 Lore**：先选「部署方式」——「Lore 云服务」或「自部署」（已保存地址等于 `https://api.loremem.com` 或尚未配置时默认云服务，否则默认自部署）。云服务只给注册入口（ https://app.loremem.com/login ）和「API Token」，地址固定为 `https://api.loremem.com`；自部署给安装文档（中文 https://loremem.com/zh-cn/documents/installation/install-lore ，英文 https://loremem.com/documents/installation/install-lore ）、连接已有服务器（https://loremem.com/zh-cn/documents/installation/manual-configuration ）与「服务地址」输入。已保存的 Token 只对已保存的地址生效，换地址需要重新填写。点「测试连接」（`GET <base>/api/health` + Bearer）通过后才能保存启用。启用时不安装任何东西——扩展已捆绑。
+- **http 与 https**：公网地址必须 https；明文 http 只允许本机（loopback）、局域网（10/8、172.16/12、192.168/16、169.254/16）、Tailscale（100.64/10、`*.ts.net`）、IPv6 ULA / link-local，以及 mDNS `.local` 主机名。保存与测试使用同一判断（adapter `lore-config-store.ts`）。
+- **Lore 连不上 / Token 失效**：测试给出明确原因（地址无效 / 公网地址用了 http / 缺 Token / Token 被拒 / 连不上；测试请求本身失败——限流、Host 不可达、超时——同样显示原因，从不静默），可「重新测试」或改选本地记忆。**绝不静默回退到本地记忆**——那会造成记忆分裂。已选 Lore 的机器上，服务端保存（`PUT /v1/settings/memory`）也要求连接已配置（fail-closed）。
 - **Lore → 本地记忆**：`~/.lore/config.json` 原样保留，方便以后切回；Lore 扩展（包括用户自己在 `~/.pi/agent/extensions/` 装的那份）在 Pix 会话里不再加载。Lore 里的记忆不会迁移到本地文件。
 - **本地记忆 → Lore**：`~/.pi/agent/memory` 里的本地记忆文件原样保留，不会上传。
 - **切换生效时机**：新会话立即生效；已运行的会话保持当前已加载的后端，`/reload` 或重启后跟上（与其他全局设置一致）。设置页不展示这些说明。助手提示词的「记忆」一节按当前提供者逐回合解析。
