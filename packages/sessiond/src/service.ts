@@ -65,7 +65,7 @@ import { AsyncMutex } from "./internal/mutex.js";
 import { SessionOperationCoordinator, SessionTitleOverlay } from "./internal/session-operation-coordinator.js";
 import { createClosedGate, ndjsonQueuedBytes, subscriberOverflowError } from "./internal/subscriber-queue.js";
 import { SnapshotProjection } from "./projection.js";
-import type { WorkerConnection, WorkerProcessFactory, WorkerStartInput } from "./worker.js";
+import type { WorkerConnection, WorkerExit, WorkerProcessFactory, WorkerStartInput } from "./worker.js";
 
 export interface ActivationContext {
   cwd: string;
@@ -1524,8 +1524,11 @@ export class SessiondService {
     }
   }
 
-  private handleWorkerExit(record: RecordState, activationId: string, exit: { error?: import("@fffattiger/pix-protocol").ProtocolError }): void {
+  private handleWorkerExit(record: RecordState, activationId: string, exit: WorkerExit): void {
     if (record.activationId !== activationId || this.records.get(record.sessionId) !== record || record.expectedExitReason !== undefined) return;
+    // The crash event only reaches attached clients; this line is the one
+    // durable trace of why a session's worker died (stderr tail is redacted).
+    console.error(`${new Date().toISOString()} [sessiond] worker for ${record.sessionId} exited unexpectedly (code ${exit.code ?? "-"}, signal ${exit.signal ?? "-"}): ${exit.error?.message ?? "no detail"}`);
     this.crash(record, exit.error);
   }
 

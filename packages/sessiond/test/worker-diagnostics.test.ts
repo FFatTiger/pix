@@ -182,6 +182,30 @@ test("workerPids keeps a crashed record's pid until exact cleanup, then stop rem
   }
 });
 
+test("an unexpected worker exit leaves one durable log line with code, signal and reason", async () => {
+  const workers = new FakeWorkerFactory({ readyDelayMs: 0 });
+  const service = harness(workers);
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    await service.activate("a");
+    workers.workers[0]!.crash({ code: "worker_unavailable", message: "stdout writer queue overflowed", retryable: true });
+    await waitUntil(() => service.diagnostics().workersByStatus.crashed === 1);
+    const crashLines = lines.filter((line) => line.includes("exited unexpectedly"));
+    assert.equal(crashLines.length, 1);
+    assert.match(crashLines[0]!, /^\d{4}-\d\d-\d\dT\S+ \[sessiond\] worker for a exited unexpectedly \(code 1, signal -\): stdout writer queue overflowed$/);
+    // An expected stop is not a crash and logs nothing.
+    lines.length = 0;
+    await service.activate("b");
+    await service.stop("b");
+    assert.equal(lines.filter((line) => line.includes("exited unexpectedly")).length, 0);
+  } finally {
+    console.error = original;
+    await service.shutdown();
+  }
+});
+
 test("workerPids stop cleanup removes the record and pid", async () => {
   const service = harness(pidFactory([77]));
   try {

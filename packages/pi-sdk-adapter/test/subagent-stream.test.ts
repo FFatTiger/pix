@@ -8,6 +8,8 @@ import { MAX_SUBAGENT_TASK_ID_LENGTH } from "@fffattiger/pix-runtime-core";
 import {
   isTrackedChildSessionId,
   projectSubagentStreamEvent,
+  SubagentDeltaThrottle,
+  type ThrottleClock,
 } from "../src/internal/subagent-projection.js";
 import { subscribeSubagentChildEvents, type SubagentChildEventPayload } from "../src/internal/sdk-runtime.js";
 
@@ -134,5 +136,100 @@ describe("subagent in-process stream bridge", () => {
       /SUBAGENT_CHILD_EVENT_CHANNEL\s*=\s*["']pi-claude-subagents:child-event["']/,
       "bundled plugin channel drifted from the adapter subscription",
     );
+  });
+
+  describe("child delta throttle", () => {
+    function fakeClock(): ThrottleClock & { advance(ms: number): void; pending(): number } {
+      let now = 0;
+      let seq = 0;
+      const timers = new Map<number, { at: number; callback: () => void }>();
+      return {
+        now: () => now,
+        setTimeout: (callback, ms) => {
+          seq += 1;
+          timers.set(seq, { at: now + ms, callback });
+          return seq;
+        },
+        clearTimeout: handle => { timers.delete(handle as number); },
+        advance(ms) {
+          now += ms;
+          for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+            if (timer.at > now || !timers.has(id)) continue;
+            timers.delete(id);
+            timer.callback();
+          }
+        },
+        pending: () => timers.size,
+      };
+    }
+    const update = (text: string) => ({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text }] } });
+    const text = (event: unknown) => (event as ReturnType<typeof update>).message.content[0]!.text;
+
+    it("forwards the first update, then at most one latest update per interval", () => {
+      const clock = fakeClock();
+      const out: string[] = [];
+      const throttle = new SubagentDeltaThrottle((_child, event) => out.push(text(event)), clock, 250);
+      throttle.push(child, update("a"));
+      for (const t of ["ab", "abc", "abcd"]) {
+        clock.advance(10);
+        throttle.push(child, update(t));
+      }
+      assert.deepEqual(out, ["a"]);
+      clock.advance(219);
+      assert.deepEqual(out, ["a"]);
+      clock.advance(1);
+      assert.deepEqual(out, ["a", "abcd"]);
+      // 1000 token updates over one second produce ~4 frames, not 1000.
+      for (let i = 0; i < 1000; i++) {
+        clock.advance(1);
+        throttle.push(child, update(`x${i}`));
+      }
+      clock.advance(250);
+      assert.ok(out.length <= 8, `expected a handful of frames, got ${out.length}`);
+      assert.equal(out.at(-1), "x999");
+      assert.equal(clock.pending(), 0);
+    });
+
+    it("message_end drops the pending update and goes out immediately, in order", () => {
+      const clock = fakeClock();
+      const out: string[] = [];
+      const throttle = new SubagentDeltaThrottle((_child, event) => out.push(`${(event as { type: string }).type}:${text(event)}`), clock, 250);
+      throttle.push(child, update("a"));
+      clock.advance(10);
+      throttle.push(child, update("ab"));
+      throttle.push(child, { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "abc" }] } });
+      assert.deepEqual(out, ["message_update:a", "message_end:abc"]);
+      clock.advance(1000);
+      assert.deepEqual(out, ["message_update:a", "message_end:abc"], "a stale update never follows the terminal");
+      // The next message starts a fresh gate.
+      throttle.push(child, update("n"));
+      assert.equal(out.at(-1), "message_update:n");
+    });
+
+    it("gates children independently and passes other event types through", () => {
+      const clock = fakeClock();
+      const out: string[] = [];
+      const throttle = new SubagentDeltaThrottle((c, event) => out.push(`${c}:${(event as { type: string }).type}`), clock, 250);
+      throttle.push("c1", update("a"));
+      throttle.push("c2", update("a"));
+      throttle.push("c1", update("ab"));
+      throttle.push("c1", { type: "tool_execution_start" });
+      assert.deepEqual(out, ["c1:message_update", "c2:message_update", "c1:tool_execution_start"]);
+      clock.advance(250);
+      assert.deepEqual(out.slice(3), ["c1:message_update"]);
+    });
+
+    it("dispose cancels pending updates and ignores later pushes", () => {
+      const clock = fakeClock();
+      const out: unknown[] = [];
+      const throttle = new SubagentDeltaThrottle((_c, event) => out.push(event), clock, 250);
+      throttle.push(child, update("a"));
+      throttle.push(child, update("ab"));
+      throttle.dispose();
+      assert.equal(clock.pending(), 0);
+      clock.advance(1000);
+      throttle.push(child, update("abc"));
+      assert.equal(out.length, 1);
+    });
   });
 });

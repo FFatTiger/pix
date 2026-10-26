@@ -62,6 +62,88 @@ export function projectSubagentStreamEvent(input: {
   return undefined;
 }
 
+/**
+ * A child's `message_update` carries the WHOLE accumulated message, once per
+ * token. Forwarding every one sent ~150 full-text frames a second through
+ * worker → sessiond → browser during a long child thinking run, which killed
+ * the parent worker (with every child in it) and overflowed the browser
+ * socket (Pix 0.3.18). Keep only the latest update per child and forward at
+ * most one per interval; `message_end` drops the pending update and goes out
+ * at once, so the terminal state is never delayed or reordered.
+ */
+export const SUBAGENT_DELTA_INTERVAL_MS = 250;
+
+export interface ThrottleClock {
+  now(): number;
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const systemClock: ThrottleClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+interface DeltaGate {
+  last: number;
+  pending?: unknown;
+  timer?: unknown;
+}
+
+export class SubagentDeltaThrottle {
+  private readonly gates = new Map<string, DeltaGate>();
+  private disposed = false;
+
+  constructor(
+    private readonly forward: (childSessionId: string, event: unknown) => void,
+    private readonly clock: ThrottleClock = systemClock,
+    private readonly intervalMs = SUBAGENT_DELTA_INTERVAL_MS,
+  ) {}
+
+  push(childSessionId: string, event: unknown): void {
+    if (this.disposed) return;
+    const type = event !== null && typeof event === "object" ? (event as { type?: unknown }).type : undefined;
+    if (type === "message_end") {
+      this.drop(childSessionId);
+      this.forward(childSessionId, event);
+      return;
+    }
+    if (type !== "message_update") {
+      this.forward(childSessionId, event);
+      return;
+    }
+    const now = this.clock.now();
+    const gate = this.gates.get(childSessionId);
+    if (gate === undefined || (gate.timer === undefined && now - gate.last >= this.intervalMs)) {
+      this.gates.set(childSessionId, { last: now });
+      this.forward(childSessionId, event);
+      return;
+    }
+    gate.pending = event;
+    if (gate.timer !== undefined) return;
+    gate.timer = this.clock.setTimeout(() => {
+      if (this.disposed || this.gates.get(childSessionId) !== gate) return;
+      const pending = gate.pending;
+      gate.timer = undefined;
+      gate.pending = undefined;
+      gate.last = this.clock.now();
+      this.forward(childSessionId, pending);
+    }, Math.max(0, this.intervalMs - (now - gate.last)));
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    for (const childSessionId of [...this.gates.keys()]) this.drop(childSessionId);
+  }
+
+  private drop(childSessionId: string): void {
+    const gate = this.gates.get(childSessionId);
+    if (gate?.timer !== undefined) this.clock.clearTimeout(gate.timer);
+    this.gates.delete(childSessionId);
+  }
+}
+
 export interface SubagentWatchTarget {
   readonly directory: string;
   /** null watches every direct child; otherwise only these exact basenames. */

@@ -48,6 +48,7 @@ import {
   nextSubagentProjection,
   projectSubagentStreamEvent,
   readSubagentObservation,
+  SubagentDeltaThrottle,
   type SubagentObservation,
 } from "./subagent-projection.js";
 import { SubagentArtifactObserver } from "./subagent-observer.js";
@@ -780,10 +781,15 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     const events = this.subagentEvents;
     if (!events) return;
     const generation = this.subagentStreamGeneration;
-    this.subagentStreamUnsubscribe = subscribeSubagentChildEvents({
+    const throttle = new SubagentDeltaThrottle((childSessionId, event) => this.handleSubagentStreamEvent(generation, childSessionId, event));
+    const unsubscribe = subscribeSubagentChildEvents({
       events,
-      onEvent: payload => this.handleSubagentStreamEvent(generation, payload.childSessionId, payload.event),
+      onEvent: payload => throttle.push(payload.childSessionId, payload.event),
     });
+    this.subagentStreamUnsubscribe = () => {
+      unsubscribe();
+      throttle.dispose();
+    };
   }
 
   private uninstallSubagentStreamBridge(): void {
