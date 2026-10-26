@@ -627,6 +627,8 @@ export class FakeWorkerConnection implements WorkerConnection {
   emit(message: WorkerToSessiondMessage): void { if (!this.closed) for (const listener of [...this.messageListeners]) listener(structuredClone(message)); }
   emitEvent(event: RuntimeEventData): void { this.emit({ type: "worker.event", payload: { sessionId: event.sessionId, event } }); }
   crash(error = { code: "worker_unavailable" as const, message: "fake crash", retryable: true }): void { if (this.closed) return; for (const listener of [...this.exitListeners]) listener({ code: 1, error }); }
+  /** Raw process exit exactly as the real connection reports it (e.g. after a worker.fatal: code only, no error). */
+  exitProcess(exit: WorkerExit): void { if (this.closed) return; for (const listener of [...this.exitListeners]) listener(exit); }
 
   private emitResult(id: string, sessionId: string, commandId: string, result: RuntimeCommandOutcome): void {
     this.emit({ type: "worker.commandResult", id, payload: { sessionId, result: { commandId, result } } });

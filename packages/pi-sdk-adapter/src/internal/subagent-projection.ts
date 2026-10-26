@@ -70,6 +70,8 @@ export function projectSubagentStreamEvent(input: {
  * socket (Pix 0.3.18). Keep only the latest update per child and forward at
  * most one per interval; `message_end` drops the pending update and goes out
  * at once, so the terminal state is never delayed or reordered.
+ * ponytail: caps frequency (~4/s per child), not bytes — each frame still
+ * carries the full partial; send text deltas if child messages get huge.
  */
 export const SUBAGENT_DELTA_INTERVAL_MS = 250;
 
@@ -80,7 +82,8 @@ export interface ThrottleClock {
 }
 
 const systemClock: ThrottleClock = {
-  now: () => Date.now(),
+  // Monotonic: a wall-clock step back must not freeze the stream for the jump.
+  now: () => performance.now(),
   setTimeout: (callback, ms) => setTimeout(callback, ms),
   clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
@@ -104,7 +107,8 @@ export class SubagentDeltaThrottle {
   push(childSessionId: string, event: unknown): void {
     if (this.disposed) return;
     const type = event !== null && typeof event === "object" ? (event as { type?: unknown }).type : undefined;
-    if (type === "message_end") {
+    const role = type === "message_end" ? ((event as { message?: { role?: unknown } }).message?.role) : undefined;
+    if (type === "message_end" && role === "assistant") {
       this.drop(childSessionId);
       this.forward(childSessionId, event);
       return;

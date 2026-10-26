@@ -190,11 +190,21 @@ test("an unexpected worker exit leaves one durable log line with code, signal an
   console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
   try {
     await service.activate("a");
-    workers.workers[0]!.crash({ code: "worker_unavailable", message: "stdout writer queue overflowed", retryable: true });
+    // Production order for a worker-side fatal: worker.fatal first, then a bare exit code 1.
+    const worker = workers.workers[0]!;
+    worker.emit({ type: "worker.fatal", payload: { sessionId: "a", error: { code: "internal", message: "stdout writer failed:\n  stdout writer queue overflowed", retryable: false } } });
     await waitUntil(() => service.diagnostics().workersByStatus.crashed === 1);
+    worker.exitProcess({ code: 1 });
     const crashLines = lines.filter((line) => line.includes("exited unexpectedly"));
     assert.equal(crashLines.length, 1);
-    assert.match(crashLines[0]!, /^\d{4}-\d\d-\d\dT\S+ \[sessiond\] worker for a exited unexpectedly \(code 1, signal -\): stdout writer queue overflowed$/);
+    assert.match(crashLines[0]!, /^\d{4}-\d\d-\d\dT\S+ \[sessiond\] worker for a exited unexpectedly \(code 1, signal -\): stdout writer failed: stdout writer queue overflowed$/);
+    // An exit that carries its own error (stderr tail) logs that error.
+    lines.length = 0;
+    await service.stop("a");
+    await service.activate("c");
+    workers.workers.at(-1)!.crash({ code: "worker_unavailable", message: "worker exited with code 134: FATAL heap", retryable: true });
+    await waitUntil(() => service.diagnostics().workersByStatus.crashed === 1);
+    assert.match(lines.find((line) => line.includes("exited unexpectedly"))!, /worker for c exited unexpectedly \(code 1, signal -\): worker exited with code 134: FATAL heap$/);
     // An expected stop is not a crash and logs nothing.
     lines.length = 0;
     await service.activate("b");

@@ -197,6 +197,9 @@ describe("subagent in-process stream bridge", () => {
       throttle.push(child, update("a"));
       clock.advance(10);
       throttle.push(child, update("ab"));
+      throttle.push(child, { type: "message_end", message: { role: "toolResult", content: [{ type: "text", text: "tool" }] } });
+      assert.deepEqual(out, ["message_update:a", "message_end:tool"], "a non-assistant end passes through and keeps the pending update");
+      out.pop();
       throttle.push(child, { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "abc" }] } });
       assert.deepEqual(out, ["message_update:a", "message_end:abc"]);
       clock.advance(1000);

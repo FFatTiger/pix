@@ -437,6 +437,8 @@ interface RecordState {
   unsubscribeWorker: () => void;
   unsubscribeExit: () => void;
   expectedExitReason?: string;
+  /** Why the record crashed (worker.fatal or a sessiond-side crash); the exit log falls back to it. */
+  crashError?: import("@fffattiger/pix-protocol").ProtocolError;
   startupReject?: (error: Error) => void;
   lastActivity: number;
   lifecycle: AsyncMutex;
@@ -1528,12 +1530,16 @@ export class SessiondService {
     if (record.activationId !== activationId || this.records.get(record.sessionId) !== record || record.expectedExitReason !== undefined) return;
     // The crash event only reaches attached clients; this line is the one
     // durable trace of why a session's worker died (stderr tail is redacted).
-    console.error(`${new Date().toISOString()} [sessiond] worker for ${record.sessionId} exited unexpectedly (code ${exit.code ?? "-"}, signal ${exit.signal ?? "-"}): ${exit.error?.message ?? "no detail"}`);
+    // A worker.fatal (e.g. stdout queue overflow) crashes the record BEFORE the
+    // exit, which then carries no error of its own: fall back to that reason.
+    const reason = (exit.error ?? record.crashError)?.message.replace(/\s+/g, " ").trim() || "no detail";
+    console.error(`${new Date().toISOString()} [sessiond] worker for ${record.sessionId} exited unexpectedly (code ${exit.code ?? "-"}, signal ${exit.signal ?? "-"}): ${reason}`);
     this.crash(record, exit.error);
   }
 
   private crash(record: RecordState, error?: import("@fffattiger/pix-protocol").ProtocolError): void {
     if (record.status === "crashed") return;
+    if (error !== undefined) record.crashError = error;
     const eventData: RuntimeEventData = { type: "worker_crashed", sessionId: record.sessionId, ...(error === undefined ? {} : { error }) };
     this.acceptEvent(record, eventData);
     record.status = "crashed";
