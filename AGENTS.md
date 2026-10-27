@@ -147,7 +147,7 @@ installed at runtime:
 - `pi-claude-subagents` 0.4.0 (embedder interfaces are native: persist-before-return
   + `pi-claude-subagents:child-event` stream channel — no patch step),
   `pi-smart-compact` 10.3.0, `pi-memory` 0.4.2 (exit summary forced off,
-  `memory_search` filtered — no qmd), `@local/lore-pi-extension` 1.5.1
+  `memory_search` filtered — no qmd), `@local/lore-pi-extension` 1.12.4
   (GitHub Release `FFatTiger/lore` `lore-pi.zip`), `@juicesharp/rpiv-todo`
   2.11.0, `@juicesharp/rpiv-ask-user-question` 2.11.0.
 - Upgrading a bundled plugin = replacing the vendored tgz + lockfile in the

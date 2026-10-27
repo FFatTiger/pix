@@ -333,6 +333,7 @@ export const enLocale = {
     "desktop.pluginSourceLocal": "Local",
     "desktop.skillSourceUser": "User directory",
     "desktop.skillSourceSettings": "Settings path",
+    "desktop.skillSourceLore": "Lore skills",
     "desktop.skillSourcePlugin": "Plugin {name}",
     "desktop.sendKeyCtrlEnter": "Ctrl+Enter",
     "desktop.markdownListContinue": "List continuation",

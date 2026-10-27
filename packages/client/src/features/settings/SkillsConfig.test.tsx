@@ -108,6 +108,7 @@ describe("SkillsConfig global disk catalogs", () => {
       if (url === "/v1/skills") return json({ skills: [
         { name: "user-skill", enabled: true, source: { kind: "user" } },
         { name: "settings-skill", enabled: true, source: { kind: "settings" } },
+        { name: "lore-skill", enabled: true, source: { kind: "lore" } },
         { name: "plugin-skill", enabled: true, source: { kind: "plugin", packageName: "demo-pkg" } },
         { name: "legacy-skill", enabled: true },
       ] });
@@ -118,6 +119,7 @@ describe("SkillsConfig global disk catalogs", () => {
     expect(await screen.findByText("user-skill"));
     expect(screen.getByText("User directory")).toBeTruthy();
     expect(screen.getByText("Settings path")).toBeTruthy();
+    expect(screen.getByText("Lore skills")).toBeTruthy();
     expect(screen.getByText("Plugin demo-pkg")).toBeTruthy();
     // Legacy payloads without a source render no badge.
     const legacyRow = screen.getByText("legacy-skill").closest("li")!;

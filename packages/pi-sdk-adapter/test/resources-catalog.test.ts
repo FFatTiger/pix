@@ -668,6 +668,47 @@ describe("global resource catalog", () => {
     }
   });
 
+  it("lists only marked Lore work copies when Lore is the selected provider", async () => {
+    const { root, agentDir, homeDir } = await fixture();
+    const loreHome = join(root, "lore");
+    const skillDir = join(loreHome, "skills", "project-123", "lore-skill");
+    try {
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(join(skillDir, "SKILL.md"), "---\nname: lore-skill\ndescription: Synced Lore skill\n---\n# Lore", "utf8");
+      await writeFile(join(skillDir, ".lore-skill-marker.json"), JSON.stringify({
+        schema: "lore.skill.workcopy.v1",
+        project_id: "project-123",
+        skill_id: "skill-123",
+        name: "lore-skill",
+        version: "7",
+      }), "utf8");
+      await mkdir(join(loreHome, "skills", "project-123", "unmanaged"), { recursive: true });
+      await writeFile(join(loreHome, "skills", "project-123", "unmanaged", "SKILL.md"), "---\nname: unmanaged\n---\n# unmanaged", "utf8");
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({ pixMemoryProvider: "lore" }), "utf8");
+
+      const catalog = createPiSdkGlobalResourceCatalog({ agentDir, homeDir, loreHome });
+      const skills = await catalog.listSkills();
+      assert.deepEqual(skills.find((skill) => skill.name === "lore-skill"), {
+        name: "lore-skill",
+        description: "Synced Lore skill",
+        enabled: true,
+        version: "7",
+        source: { kind: "lore" },
+      });
+      assert.equal(skills.some((skill) => skill.name === "unmanaged"), false);
+      assert.deepEqual((await catalog.listCommands()).find((command) => command.name === "skill:lore-skill"), {
+        name: "skill:lore-skill",
+        description: "Synced Lore skill",
+        source: "skill",
+      });
+
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({ pixMemoryProvider: "local" }), "utf8");
+      assert.equal((await createPiSdkGlobalResourceCatalog({ agentDir, homeDir, loreHome }).listSkills()).some((skill) => skill.name === "lore-skill"), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reads commented settings with trailing commas without rewriting the file", async () => {
     const { root, agentDir, homeDir } = await fixture();
     const packageDir = join(agentDir, "jsonc-package");

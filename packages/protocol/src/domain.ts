@@ -331,6 +331,7 @@ export const SkillSourceInfoSchema = z.union([
   z.strictObject({ kind: z.literal("user") }),
   z.strictObject({ kind: z.literal("settings") }),
   z.strictObject({ kind: z.literal("plugin"), packageName: NonEmptyStringSchema }),
+  z.strictObject({ kind: z.literal("lore") }),
 ]);
 export type SkillSourceInfo = z.infer<typeof SkillSourceInfoSchema>;
 

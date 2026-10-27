@@ -31,7 +31,7 @@ function fixture(t) {
   put("node_modules/pi-smart-compact/package.json", { name: "pi-smart-compact", version: "10.3.0", peerDependencies: { "@earendil-works/pi-coding-agent": ">=0.87.1", "@oh-my-pi/pi-mnemopi": "18.3.1", typebox: "*" }, peerDependenciesMeta: { "@oh-my-pi/pi-mnemopi": { optional: true } } });
   put("node_modules/pi-smart-compact/dist/index.js", "// smart compact\n");
   put("node_modules/pi-memory/package.json", { name: "pi-memory", version: "0.4.2" });
-  put("node_modules/@local/lore-pi-extension/package.json", { name: "@local/lore-pi-extension", version: "1.5.0" });
+  put("node_modules/@local/lore-pi-extension/package.json", { name: "@local/lore-pi-extension", version: "1.12.4" });
   put("node_modules/@juicesharp/rpiv-todo/package.json", { name: "@juicesharp/rpiv-todo", version: "2.11.0" });
   put("node_modules/@juicesharp/rpiv-ask-user-question/package.json", { name: "@juicesharp/rpiv-ask-user-question", version: "2.11.0" });
   put("node_modules/dev-only/index.js", "must not ship\n");

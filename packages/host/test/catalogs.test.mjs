@@ -925,7 +925,8 @@ test("GET /v1/skills passes the bounded source field through; unknown shapes fai
         { name: "user-skill", enabled: true, source: { kind: "user" } },
         { name: "settings-skill", enabled: true, source: { kind: "settings" } },
         { name: "plugin-skill", enabled: false, source: { kind: "plugin", packageName: "pkg-a" } },
-        { name: "legacy-skill", enabled: true },
+        { name: "lore-skill", enabled: true, source: { kind: "lore" } },
+        { name: "legacy-skill", enabled: true }
       ],
     }),
     trust: fakeTrust({ isTrusted: async () => true }),
@@ -937,7 +938,8 @@ test("GET /v1/skills passes the bounded source field through; unknown shapes fai
       { name: "user-skill", enabled: true, source: { kind: "user" } },
       { name: "settings-skill", enabled: true, source: { kind: "settings" } },
       { name: "plugin-skill", enabled: false, source: { kind: "plugin", packageName: "pkg-a" } },
-      { name: "legacy-skill", enabled: true },
+      { name: "lore-skill", enabled: true, source: { kind: "lore" } },
+      { name: "legacy-skill", enabled: true }
     ],
   });
 
@@ -945,6 +947,7 @@ test("GET /v1/skills passes the bounded source field through; unknown shapes fai
     { kind: "weird" },
     { kind: "plugin" },
     { kind: "plugin", packageName: "" },
+    { kind: "lore", extra: 1 },
     { kind: "user", extra: 1 },
     "user",
     null,

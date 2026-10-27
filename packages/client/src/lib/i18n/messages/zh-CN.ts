@@ -333,6 +333,7 @@ export const zhCNLocale = {
     "desktop.pluginSourceLocal": "本地",
     "desktop.skillSourceUser": "用户目录",
     "desktop.skillSourceSettings": "设置路径",
+    "desktop.skillSourceLore": "Lore 技能",
     "desktop.skillSourcePlugin": "插件 {name}",
     "desktop.sendKeyCtrlEnter": "Ctrl+Enter",
     "desktop.markdownListContinue": "列表自动延续",

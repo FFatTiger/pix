@@ -16,7 +16,9 @@ function SkillSourceBadge({ source }: { source: SkillInfo["source"] }) {
     ? t("desktop.skillSourcePlugin", { name: source.packageName })
     : source.kind === "settings"
       ? t("desktop.skillSourceSettings")
-      : t("desktop.skillSourceUser");
+      : source.kind === "lore"
+        ? t("desktop.skillSourceLore")
+        : t("desktop.skillSourceUser");
   return <SettingsBadge>{label}</SettingsBadge>;
 }
 

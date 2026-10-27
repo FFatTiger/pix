@@ -24,7 +24,8 @@ export interface SlashCommandInfo {
 export type SkillSourceInfo =
   | { readonly kind: "user" }
   | { readonly kind: "settings" }
-  | { readonly kind: "plugin"; readonly packageName: string };
+  | { readonly kind: "plugin"; readonly packageName: string }
+  | { readonly kind: "lore" };
 
 export interface SkillInfo {
   name: string;
@@ -32,7 +33,7 @@ export interface SkillInfo {
   enabled: boolean;
   version?: string;
   updateAvailable?: boolean;
-  /** Origin of the skill (user skills dir / settings path / plugin package). */
+  /** Origin of the skill (user/settings/plugin/Lore native resource). */
   source?: SkillSourceInfo;
 }
 

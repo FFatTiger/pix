@@ -5,7 +5,7 @@ Pix 的长期记忆是一个全局设置（settings.json 的 `pixMemoryProvider`
 | 选择 | 加载的插件 | 说明 |
 |---|---|---|
 | 本地记忆 | `pi-memory` 0.4.2（vendor tgz） | 纯本地，所有会话共用 `~/.pi/agent/memory`（MEMORY.md、daily/、SCRATCHPAD.md）。强制 `PI_MEMORY_EXIT_SUMMARY=0`（Pix 频繁回收闲置 worker，退出总结只会浪费模型调用）；不附带 qmd，`memory_search` 在注册前即被移除（模型看不到一个只会报错的工具）。 |
-| Lore | `@local/lore-pi-extension` 1.5.1（GitHub Release `FFatTiger/lore` 的 `lore-pi.zip`，vendor tgz） | 使用 Lore 记忆服务。连接配置写在 `~/.lore/config.json`（`base_url` + `api_token`，权限 0600），与用户其他 Lore 客户端共用；也识别 `LORE_BASE_URL` / `LORE_API_TOKEN` / `LORE_HOME` 环境变量（sessiond 会把它们转发给 worker）。 |
+| Lore | `@local/lore-pi-extension` 1.12.4（GitHub Release `FFatTiger/lore` 的 `lore-pi.zip`，vendor tgz） | 使用 Lore 记忆服务。连接配置写在 `~/.lore/config.json`（`base_url` + `api_token`，权限 0600），与用户其他 Lore 客户端共用；也识别 `LORE_BASE_URL` / `LORE_API_TOKEN` / `LORE_HOME` 环境变量（sessiond 会把它们转发给 worker）。 |
 | 关闭 | 无 | 助手提示词里不出现「记忆」一节。 |
 
 设置入口：设置 → Agent 分组 → 记忆。能力（Capabilities）页**没有** pi-memory 或 Lore 的独立开关——记忆的选择只归这一页。
@@ -35,6 +35,13 @@ Pix 的长期记忆是一个全局设置（settings.json 的 `pixMemoryProvider`
 - 关闭：不输出这一节。
 
 （pi-memory 0.4.2 的实际工具名就是 `memory_read` / `memory_write`，另有 scratchpad / memory_forget / memory_restore / memory_status；`memory_search` 被 Pix 过滤。）
+
+## Lore 原生技能
+
+Lore 1.12.4 在会话启动时通过 Pi 的 `resources_discover` 事件，把同步到
+`~/.lore/skills/<project-id>/` 的原生技能目录交给 Pi；Pix 的只读技能目录也
+读取同一目录中带 `.lore-skill-marker.json` 且位于选定 Lore 提供方下的副本，
+并在设置页标注为「Lore 技能」。未带 Lore marker 的目录不会被 Pix 接管。
 
 ## 重复加载防护
 

@@ -59,6 +59,8 @@ import type {
 import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
 import type { PiSdkResourceStore } from "../resources/index.js";
 import { stripJsonComments } from "./models-json.js";
+import { resolveLoreHomeDir } from "./lore-config-store.js";
+import { readMemoryRuntimeStateSync } from "./memory-provider.js";
 // Shared corruption-safe trust logic (owned by the trust domain): a
 // malformed trust.json fails closed instead of throwing here.
 import { readTrustDecision } from "./trust-store.js";
@@ -84,6 +86,8 @@ export interface PiSdkGlobalResourceStoreOptions {
   agentDir?: string;
   /** Home dir for ~/.agents/skills auto-discovery; defaults like the SDK (env HOME). */
   homeDir?: string;
+  /** Lore state directory; defaults to LORE_HOME or ~/.lore. */
+  loreHome?: string;
 }
 
 interface LoadedResources {
@@ -108,16 +112,18 @@ function skillToCommand(skill: Pick<SkillInfo, "name" | "description">): SlashCo
   };
 }
 
-/** Bounded skill origin (mirrors the SDK's user/settings/package sources). */
+/** Bounded skill origin (mirrors SDK sources plus Lore's native work copies). */
 type SkillOrigin =
   | { readonly kind: "user" }
   | { readonly kind: "settings" }
-  | { readonly kind: "plugin"; readonly packageName: string };
+  | { readonly kind: "plugin"; readonly packageName: string }
+  | { readonly kind: "lore" };
 
 interface SkillEntry {
   readonly path: string;
   readonly origin: SkillOrigin;
   readonly enabled: boolean;
+  readonly version?: string;
 }
 
 /** Directory modes for loose .md collection, mirroring the SDK collectors:
@@ -801,6 +807,61 @@ function readSkillFile(
   };
 }
 
+const LORE_SKILL_MARKER = ".lore-skill-marker.json";
+const LORE_SKILL_SCHEMA = "lore.skill.workcopy.v1";
+
+interface LoreSkillMarker {
+  readonly schema?: unknown;
+  readonly project_id?: unknown;
+  readonly skill_id?: unknown;
+  readonly name?: unknown;
+  readonly version?: unknown;
+}
+
+function isContainedLorePath(filePath: string, loreHome: string): boolean {
+  const loreSkills = join(loreHome, "skills");
+  try {
+    const lexicalFile = resolve(filePath);
+    const lexicalSkills = resolve(loreSkills);
+    if (!isPathWithin(lexicalSkills, resolve(loreHome)) || !isPathWithin(lexicalFile, lexicalSkills)) return false;
+    const realHome = realpathSync(loreHome);
+    const realSkills = realpathSync(loreSkills);
+    const realFile = realpathSync(filePath);
+    return isPathWithin(realSkills, realHome) && isPathWithin(realFile, realSkills) && isPathWithin(realFile, realHome);
+  } catch {
+    return false;
+  }
+}
+
+/** Return metadata only for a marked, contained Lore work copy. */
+function readLoreSkillMarker(filePath: string, loreHome: string): { name: string; version: string } | undefined {
+  if (basename(filePath) !== "SKILL.md") return undefined;
+  if (!isContainedLorePath(filePath, loreHome)) return undefined;
+  const markerPath = join(dirname(filePath), LORE_SKILL_MARKER);
+  if (!isContainedLorePath(markerPath, loreHome)) return undefined;
+  let marker: LoreSkillMarker;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(markerPath, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    marker = parsed as LoreSkillMarker;
+  } catch {
+    return undefined;
+  }
+  if (
+    marker.schema !== LORE_SKILL_SCHEMA ||
+    typeof marker.project_id !== "string" ||
+    marker.project_id.trim() === "" ||
+    typeof marker.skill_id !== "string" ||
+    marker.skill_id.trim() === "" ||
+    typeof marker.name !== "string" ||
+    marker.name.trim() === "" ||
+    (typeof marker.version !== "string" && typeof marker.version !== "number")
+  ) {
+    return undefined;
+  }
+  return { name: marker.name as string, version: String(marker.version) };
+}
+
 /**
  * Global (user-scope) skill catalog aligned with the set the SDK runtime
  * actually loads, in the SDK's precedence order:
@@ -808,6 +869,8 @@ function readSkillFile(
  *  2. settings.json `skills` explicit paths (patterns included);
  *  3. `agentDir/skills` auto-discovery ("pi" mode);
  *  4. `~/.agents/skills` auto-discovery ("agents" mode).
+ *  5. Lore's marked `~/.lore/skills/<project-id>/` work copies when the Lore
+ *     memory provider is selected.
  * Dedup mirrors loadSkills: the same file reached twice (e.g. via the
  * `agentDir/skills` symlinks and `~/.agents/skills`) is skipped silently, and
  * for a name collision the earlier entry wins. Strictness stays pix's: cycles
@@ -816,6 +879,7 @@ function readSkillFile(
 function readGlobalSkills(
   agentDir: string,
   homeDir: string,
+  loreHome: string,
   settings: SettingsManager,
   packageManager: StaticCatalogPackageManager,
 ): SkillInfo[] {
@@ -879,6 +943,23 @@ function readGlobalSkills(
       });
     }
 
+    // Lore's native resource directory is active only when the Lore memory
+    // provider is selected. It is a managed projection, not a second user
+    // skills source: only marked work copies under ~/.lore/skills are admitted.
+    if (readMemoryRuntimeStateSync(agentDir).provider === "lore") {
+      const loreFiles = collector.collect(join(loreHome, "skills"), "agents");
+      for (const file of loreFiles) {
+        const marker = readLoreSkillMarker(file, loreHome);
+        if (marker === undefined) continue;
+        entries.push({
+          path: file,
+          origin: { kind: "lore" },
+          enabled: true,
+          version: marker.version,
+        });
+      }
+    }
+
     // Load + dedup: realpath identity silently, name first-wins (SDK order).
     const skills: SkillInfo[] = [];
     const seenNames = new Set<string>();
@@ -887,6 +968,10 @@ function readGlobalSkills(
       if (!entry.enabled) continue;
       const parsed = readSkillFile(entry.path, invalid);
       if (parsed === undefined) continue;
+      if (entry.origin.kind === "lore") {
+        const marker = readLoreSkillMarker(entry.path, loreHome);
+        if (marker === undefined || marker.name !== parsed.name) continue;
+      }
       let real: string;
       try {
         real = realpathSync(entry.path);
@@ -898,7 +983,11 @@ function readGlobalSkills(
       if (seenNames.has(parsed.name)) continue;
       seenNames.add(parsed.name);
       seenRealPaths.add(real);
-      skills.push({ ...parsed, source: entry.origin });
+      skills.push({
+        ...parsed,
+        ...(entry.version === undefined ? {} : { version: entry.version }),
+        source: entry.origin,
+      });
     }
     return skills;
   } catch (error) {
@@ -917,6 +1006,7 @@ export function createPiSdkGlobalResourceStore(
     throw makeRuntimeError("invalid_input", "global resource catalog requires an absolute agent dir");
   }
   const homeDir = options.homeDir ?? process.env.HOME ?? homedir();
+  const loreHome = options.loreHome ?? (options.homeDir === undefined ? resolveLoreHomeDir() : join(homeDir, ".lore"));
   let cached: LoadedResources | undefined;
   const discover = async (): Promise<LoadedResources> => {
     if (cached) return cached;
@@ -927,7 +1017,7 @@ export function createPiSdkGlobalResourceStore(
       agentDir,
       settingsManager,
     });
-    const skills = readGlobalSkills(agentDir, homeDir, settingsManager, packageManager);
+    const skills = readGlobalSkills(agentDir, homeDir, loreHome, settingsManager, packageManager);
     const packages = packageManager.listConfiguredPackages();
     cached = {
       skills,

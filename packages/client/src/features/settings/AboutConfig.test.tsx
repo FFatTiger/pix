@@ -14,7 +14,7 @@ const ABOUT = {
   arch: "arm64",
   plugins: [
     { id: "subagents", name: "pi-claude-subagents", version: "0.3.9" },
-    { id: "lore", name: "@local/lore-pi-extension", version: "1.5.1" },
+    { id: "lore", name: "@local/lore-pi-extension", version: "1.12.4" },
   ],
 };
 
@@ -69,7 +69,7 @@ describe("AboutConfig", () => {
     expect(screen.getByText("pi-claude-subagents")).toBeTruthy();
     expect(screen.getByText("0.3.9")).toBeTruthy();
     expect(screen.getByText("@local/lore-pi-extension")).toBeTruthy();
-    expect(screen.getByText("1.5.1")).toBeTruthy();
+    expect(screen.getByText("1.12.4")).toBeTruthy();
     // No auto-request: the update probe fires only on the explicit click.
     expect(calls.some((entry) => entry.startsWith("POST /v1/about/check-update"))).toBe(false);
   });

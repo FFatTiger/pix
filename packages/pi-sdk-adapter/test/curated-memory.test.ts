@@ -23,7 +23,7 @@ function extension(path: string, toolNames: readonly string[], commands: readonl
 
 const PI_MEMORY_TOOLS = ["memory_write", "scratchpad", "memory_read", "memory_forget", "memory_restore", "memory_search", "memory_status"];
 const LORE_CORE_TOOLS = ["lore_status", "lore_boot", "lore_get_node", "lore_search", "lore_list_domains", "lore_create_node", "lore_update_node", "lore_delete_node", "lore_move_node"];
-const LORE_SKILL_TOOLS = ["lore_skill_list", "lore_skill_search", "lore_skill_get", "lore_skill_create", "lore_skill_update", "lore_skill_delete", "lore_skill_status"];
+const LORE_SKILL_TOOLS = ["lore_skill_list", "lore_skill_search", "lore_skill_create", "lore_skill_update", "lore_skill_delete", "lore_skill_import"];
 
 describe("memory curated plugins", () => {
   it("bundled roots resolve the vendored pi-memory and lore packages", () => {
