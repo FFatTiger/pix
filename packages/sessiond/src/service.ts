@@ -293,12 +293,18 @@ interface TurnOperationRecord {
   admission: SubmitTurnAdmission;
   status: TurnStatus;
   dispatched: boolean;
+  /** Drain context is not a correlated model-reply result. */
+  queueDrainError?: ProtocolError;
+  queueDrainWaitForLifecycle?: boolean;
+  queueDrainObserved?: boolean;
   subscribers: Set<TurnSubscriber>;
   terminalPush?: SessiondTurnStatusPush;
   terminalFinalization?: { revision: number; promise: Promise<void> };
 }
 
 interface PendingSnapshot {
+  /** Own drain refresh replies must not recursively schedule another refresh. */
+  reconcileQueued?: boolean;
   isCurrent?: () => boolean;
   resolve: (snapshot: RuntimeSnapshot) => void;
   reject: (error: Error) => void;
@@ -388,6 +394,7 @@ interface RecordState {
   pendingInterrupts: Map<string, PendingInterrupt>;
   /** Phase 3 accepted/uncertain operation ledger; never FIFO-evicted. */
   turnOperations: Map<string, TurnOperationRecord>;
+  queuedReconciliation?: { dirty: boolean };
   pendingTurnAdmissions: Map<string, PendingTurnAdmission>;
   /** Phase 2B bounded read lane: pending worker-bound reads keyed by dispatch id. */
   pendingReads: Map<string, PendingRead>;
@@ -1069,6 +1076,7 @@ export class SessiondService {
           if (record.journal.lastEventId === 0) record.journalBaseSnapshot = record.projection.snapshot();
           this.broadcastRunningChanged(record.sessionId);
           if (pending) { clearTimeout(pending.timer); record.pendingSnapshots.delete(message.id!); pending.resolve(record.projection.snapshot()); }
+          if (pending?.reconcileQueued !== false) this.reconcileQueuedTurns(record);
         } catch (error) {
           if (pending) {
             clearTimeout(pending.timer);
@@ -1204,11 +1212,26 @@ export class SessiondService {
         const status = message.payload;
         if (status.sessionId !== record.sessionId || status.epoch !== record.epoch) return;
         const operation = record.turnOperations.get(status.operationId);
-        if (!operation || operation.turnId !== status.turnId || operation.epoch !== status.epoch) return;
+        if (!operation || operation.epoch !== status.epoch) return;
+        // A queued command may cause the adapter to start an internal turn and
+        // report that turn under this operation id. Its turn id is deliberately
+        // not adopted: the service owns the synthetic queued identity. A
+        // terminal frame is only a drain signal; authority still decides the
+        // queued operation's own terminal state below.
+        if (!operation.dispatched) {
+          if (status.state === "completed" || status.state === "failed") {
+            operation.queueDrainObserved = true;
+            if (status.error) operation.queueDrainError = status.error;
+            this.reconcileQueuedTurns(record);
+          }
+          return;
+        }
+        if (operation.turnId !== status.turnId) return;
         if (operation.status.state === "completed" || operation.status.state === "failed") return;
         if (status.revision <= operation.status.revision) return;
         if (operation.terminalFinalization && status.revision <= operation.terminalFinalization.revision) return;
         if (status.state === "completed" || status.state === "failed") {
+          if (status.error) this.rememberQueuedDrainError(record, status.error);
           void this.finalizeTurnAuthority(record, operation, status);
           break;
         }
@@ -1480,6 +1503,13 @@ export class SessiondService {
         record.journalBaseEventId = appended.evicted.at(-1)!.eventId;
       }
       this.push(record, { type: "event", event: appended.event });
+      if (data.type === "prompt_error" && data.error) this.rememberQueuedDrainError(record, data.error);
+      if (data.type === "prompt_done" || data.type === "prompt_error" || data.type === "agent_settled" || data.type === "queue_update") {
+        for (const operation of record.turnOperations.values()) {
+          if (!operation.dispatched && operation.epoch === record.epoch && operation.queueDrainWaitForLifecycle) operation.queueDrainObserved = true;
+        }
+        this.reconcileQueuedTurns(record);
+      }
       if (data.type === "extension_ui_request") this.assistantOps?.scheduleSettleCheck();
       if (data.type !== "running_sessions_changed" && (wasTurnRunning !== this.isTurnRunning(record) || wasWaitingUser !== this.isWaitingUser(record))) {
         this.broadcastRunningChanged(record.sessionId);
@@ -1566,6 +1596,7 @@ export class SessiondService {
   }
 
   private settleAllPendingTurns(record: RecordState, message: string): void {
+    delete record.queuedReconciliation;
     for (const pending of record.pendingTurnAdmissions.values()) {
       clearTimeout(pending.timer);
       pending.resolve(this.rejectedTurn(pending.sessionId, pending.operationId, "uncertain", { code: "worker_unavailable", message, retryable: true }, pending.epoch, record.journal.lastEventId));
@@ -2237,7 +2268,7 @@ export class SessiondService {
       // resend after a worker restart / epoch rollover answers duplicate instead
       // of delivering the same message twice.
       const receipt = await this.readDurableReceipt(record, input.operationId);
-      if (receipt !== undefined) return this.duplicateFromReceipt(record, input.operationId, receipt);
+      if (receipt !== undefined) return this.duplicateFromReceipt(record, input.operationId, receipt, fingerprint);
       // No-busy contract: a session that is already running gets the message
       // QUEUED through the authoritative steer / follow_up command path.
       if (this.isTurnRunning(record)) return this.queueWhileRunning(record, input, fingerprint);
@@ -2380,6 +2411,7 @@ export class SessiondService {
     const command: RuntimeCommand = delivery === "steer"
       ? { commandId: queuedSendCommandId(input.operationId), type: "steer", message: input.prompt, ...(input.images === undefined ? {} : { images: [...input.images] }) }
       : { commandId: queuedSendCommandId(input.operationId), type: "follow_up", message: input.prompt, ...(input.images === undefined ? {} : { images: [...input.images] }) };
+    const sessionId = record.sessionId;
     const epoch = record.epoch;
     const turnId = `turn:${randomUUID()}`;
     const status: TurnStatus = { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, revision: 0, state: "running", disposition: "queued" };
@@ -2394,6 +2426,7 @@ export class SessiondService {
       dispatched: false,
       subscribers: new Set(),
     };
+    if (record.turnOperations.size >= this.turnOperationLimit) this.noteCapacityOverflow(record);
     record.turnOperations.set(input.operationId, operation);
     let outcome: CorrelatedRuntimeCommandResult;
     try {
@@ -2425,18 +2458,35 @@ export class SessiondService {
         retryable: !final,
       }, epoch, record.journal.lastEventId);
     }
+    const current = this.records.get(sessionId) === record && record.sessionId === sessionId &&
+      this.ownsLiveRecord(record, epoch) && record.turnOperations.get(input.operationId) === operation;
+    if (!current) {
+      // Delivery settled across stop/crash/rekey. Keep the outcome uncertain so
+      // the next live epoch can consult the durable receipt or retry safely;
+      // never install an accepted row into a replacement record.
+      return this.rejectedTurn(input.sessionId, input.operationId, "uncertain", {
+        code: "worker_unavailable", message: "queued delivery authority changed before acknowledgement", retryable: true,
+      }, epoch, record.journal.lastEventId);
+    }
+    if (operation.status.state !== "completed" && operation.status.state !== "failed") {
+      const disposition = outcome.result.type === "steer" || outcome.result.type === "follow_up" ? outcome.result.disposition : undefined;
+      operation.status = { ...operation.status, disposition: disposition ?? "queued" };
+      if (disposition === "started") operation.queueDrainWaitForLifecycle = true;
+    }
     const admission: SubmitTurnAdmission = {
       status: "accepted",
       delivery: "accepted",
-      sessionId: record.sessionId,
+      sessionId,
       epoch,
       revision: record.journal.lastEventId,
       operationId: input.operationId,
       turnId,
       snapshot: record.projection.snapshot(),
-      turnStatus: status,
+      turnStatus: operation.status,
     };
     operation.admission = admission;
+    // Admission owns delivery only. Never hold the submit lane for runtime drain.
+    this.reconcileQueuedTurns(record);
     return admission;
   }
 
@@ -2462,19 +2512,22 @@ export class SessiondService {
   }
 
   /** Answer a resend from the durable receipt: accepted, delivered exactly once. */
-  private duplicateFromReceipt(record: RecordState, operationId: string, receipt: DurableSendReceipt): SubmitTurnAdmission {
+  private duplicateFromReceipt(record: RecordState, operationId: string, receipt: DurableSendReceipt, fingerprint: string): SubmitTurnAdmission {
     const disposition: PromptDisposition = receipt.delivery === "started" ? "started" : "queued";
-    return {
-      status: "duplicate",
-      delivery: "accepted",
-      sessionId: record.sessionId,
-      epoch: record.epoch,
-      revision: record.journal.lastEventId,
-      operationId,
-      turnId: receipt.turnId,
-      turnStatus: { sessionId: record.sessionId, epoch: record.epoch, operationId, turnId: receipt.turnId, revision: 0, state: "running", disposition },
-      snapshot: record.projection.snapshot(),
+    const turnId = receipt.delivery === "started" ? receipt.turnId : `turn:${randomUUID()}`;
+    const status: TurnStatus = { sessionId: record.sessionId, epoch: record.epoch, operationId, turnId, revision: 0, state: "running", disposition };
+    const admission: SubmitTurnAdmission = {
+      status: "duplicate", delivery: "accepted", sessionId: record.sessionId, epoch: record.epoch,
+      revision: record.journal.lastEventId, operationId, turnId, turnStatus: status, snapshot: record.projection.snapshot(),
     };
+    const operation: TurnOperationRecord = {
+      operationId, fingerprint, epoch: record.epoch, turnId, dispatchId: `receipt:${record.epoch}:${randomUUID()}`,
+      admission, status, dispatched: false, queueDrainWaitForLifecycle: disposition === "started", subscribers: new Set(),
+    };
+    if (record.turnOperations.size >= this.turnOperationLimit) this.noteCapacityOverflow(record);
+    record.turnOperations.set(operationId, operation);
+    this.reconcileQueuedTurns(record);
+    return admission;
   }
 
   /** Dispatch one admitted new turn to the worker (the only "start a turn" path). */
@@ -2573,6 +2626,7 @@ export class SessiondService {
       }
       this.pushTurnStatus(operation, push);
       this.broadcastRunningChanged(sessionId);
+      this.reconcileQueuedTurns(record);
     });
     const promise = execution.finally(() => {
       if (operation.terminalFinalization === slot) delete operation.terminalFinalization;
@@ -2580,6 +2634,81 @@ export class SessiondService {
     slot = { revision: terminal.revision, promise };
     operation.terminalFinalization = slot;
     return promise;
+  }
+
+  private rememberQueuedDrainError(record: RecordState, error: ProtocolError): void {
+    for (const operation of record.turnOperations.values()) {
+      if (!operation.dispatched && operation.epoch === record.epoch && operation.status.state !== "completed" && operation.status.state !== "failed") operation.queueDrainError = error;
+    }
+  }
+
+  /**
+   * QUEUE-DRAIN: these operations have accepted command delivery, but no worker
+   * turn handle of their own. Completed means no longer outstanding after an
+   * authoritative runtime drain, not independently correlated reply success.
+   * Capture eligibility BEFORE each bounded refresh: an ack arriving during a
+   * refresh marks the single-flight dirty and requires a fresh authority read.
+   * An active result releases the flight and waits for a lifecycle/queue signal.
+   */
+  private reconcileQueuedTurns(record: RecordState): void {
+    const eligible = (operation: TurnOperationRecord): boolean => !operation.dispatched && operation.epoch === record.epoch &&
+      (operation.admission.status === "accepted" || operation.admission.status === "duplicate") &&
+      operation.status.state !== "completed" && operation.status.state !== "failed";
+    if (!this.ownsLiveRecord(record, record.epoch) || ![...record.turnOperations.values()].some(eligible)) return;
+    if (record.queuedReconciliation) {
+      record.queuedReconciliation.dirty = true;
+      return;
+    }
+    const sessionId = record.sessionId;
+    const epoch = record.epoch;
+    const slot = { dirty: true };
+    const isCurrent = (): boolean => this.records.get(sessionId) === record && record.sessionId === sessionId &&
+      this.ownsLiveRecord(record, epoch) && record.queuedReconciliation === slot;
+    record.queuedReconciliation = slot;
+    void Promise.resolve().then(async () => {
+      while (isCurrent() && slot.dirty) {
+        slot.dirty = false;
+        const captured = [...record.turnOperations.values()].filter(eligible).map((operation) => ({ operation, revision: operation.status.revision }));
+        if (captured.length === 0) return;
+        let error: ProtocolError | undefined;
+        try {
+          await this.snapshotOnRecord(record, isCurrent, false);
+        } catch (cause) {
+          error = { code: "unavailable", message: cause instanceof SessiondError && cause.code === "timeout"
+            ? "worker snapshot timed out during queued turn authority refresh"
+            : "snapshot authority refresh failed after queued delivery", retryable: true };
+        }
+        if (!isCurrent()) return;
+        // A newer ack/event may postdate this read. Refresh again before using
+        // an older idle answer to settle any captured operation.
+        if (!error && slot.dirty) continue;
+        const idle = this.isProjectionIdle(record);
+        const snapshot = error === undefined ? this.snapshotPush(record, "snapshot") : undefined;
+        const authority = snapshot === undefined ? undefined : {
+          sessionId: snapshot.sessionId, epoch: snapshot.epoch, lastEventId: snapshot.lastEventId, snapshot: snapshot.snapshot,
+        };
+        if (snapshot) this.push(record, snapshot);
+        for (const { operation, revision } of captured) {
+          if (!isCurrent()) return;
+          if (record.turnOperations.get(operation.operationId) !== operation || operation.status.revision !== revision || !eligible(operation)) continue;
+          if (!error && operation.status.disposition === "started" && !operation.queueDrainObserved) continue;
+          if (!error && !idle && operation.status.disposition !== "handled") continue;
+          const context = error ?? operation.queueDrainError;
+          operation.status = {
+            ...operation.status, revision: revision + 1, state: error !== undefined || context !== undefined ? "failed" : "completed",
+            ...(context === undefined ? {} : { error: context }),
+          };
+          this.pushTurnStatus(operation, { type: "turn_status", status: operation.status, ...(authority === undefined ? {} : { authority }) });
+        }
+        this.broadcastRunningChanged(sessionId);
+      }
+    }).finally(() => {
+      if (record.queuedReconciliation === slot) {
+        delete record.queuedReconciliation;
+        // An ack can arrive between the loop finishing and this microtask.
+        if (slot.dirty && this.records.get(sessionId) === record && record.sessionId === sessionId && this.ownsLiveRecord(record, epoch)) this.reconcileQueuedTurns(record);
+      }
+    });
   }
 
   private rejectedTurn(sessionId: string, operationId: string, delivery: "not_delivered" | "uncertain", error: ProtocolError, epoch?: string, revision?: number): Extract<SubmitTurnAdmission, { status: "rejected" }> {
@@ -2828,7 +2957,7 @@ export class SessiondService {
     return this.snapshotOnRecord(record);
   }
 
-  private async snapshotOnRecord(record: RecordState, ownsOperation: () => boolean = () => true): Promise<RuntimeSnapshot> {
+  private async snapshotOnRecord(record: RecordState, ownsOperation: () => boolean = () => true, reconcileQueued = true): Promise<RuntimeSnapshot> {
     const sessionId = record.sessionId;
     const epoch = record.epoch;
     const isCurrent = (): boolean => this.records.get(sessionId) === record && record.sessionId === sessionId &&
@@ -2841,7 +2970,7 @@ export class SessiondService {
       record.pendingSnapshots.delete(id);
       wait.reject(new SessiondError("timeout", "worker snapshot timed out", true));
     }, this.commandTimeoutMs);
-    const pending: PendingSnapshot = { isCurrent, resolve: wait.resolve, reject: wait.reject, timer };
+    const pending: PendingSnapshot = { isCurrent, reconcileQueued, resolve: wait.resolve, reject: wait.reject, timer };
     record.pendingSnapshots.set(id, pending);
     const sendFailed = (): void => {
       if (record.pendingSnapshots.get(id) !== pending || !isCurrent()) return;
@@ -3583,7 +3712,9 @@ export class SessiondService {
   private isTurnRunning(record: RecordState): boolean {
     const state = record.projection.snapshot().state;
     return state.isPromptRunning || state.isStreaming || state.isBashRunning || state.isCompacting ||
-      [...record.turnOperations.values()].some((operation) => operation.epoch === record.epoch && (
+      record.projection.snapshot().streaming?.active === true || (state.pendingMessageCount ?? 0) > 0 ||
+      (state.queuedMessages?.steering.length ?? 0) > 0 || (state.queuedMessages?.followUp.length ?? 0) > 0 ||
+      [...record.turnOperations.values()].some((operation) => operation.dispatched && operation.epoch === record.epoch && (
         operation.terminalFinalization !== undefined ||
         (operation.status.state !== "completed" && operation.status.state !== "failed" &&
           (record.pendingTurnAdmissions.has(operation.dispatchId) ||
@@ -3653,7 +3784,7 @@ export class SessiondService {
     if (this.records.get(record.sessionId) !== record) return false;
     if (record.status !== "ready") return false;
     if (!this.isProjectionIdle(record)) return false;
-    if (record.pendingCommands.size > 0 || record.pendingInterrupts.size > 0 || record.pendingReads.size > 0 || record.pendingTurnAdmissions.size > 0 || record.pendingSnapshots.size > 0 || record.authorityFinalizations.size > 0) return false;
+    if (record.pendingCommands.size > 0 || record.pendingInterrupts.size > 0 || record.pendingReads.size > 0 || record.pendingTurnAdmissions.size > 0 || record.pendingSnapshots.size > 0 || record.authorityFinalizations.size > 0 || record.queuedReconciliation !== undefined) return false;
     if (record.readQueue.length > 0 || record.activeReadId !== null) return false;
     for (const operation of record.turnOperations.values()) {
       if (operation.status.state !== "completed" && operation.status.state !== "failed") return false;

@@ -1583,3 +1583,258 @@ test("send race: a queued delivery whose turn already ended starts a turn instea
   assert.equal(ledger.calls >= 1, true);
   await service.shutdown();
 });
+
+// QUEUE-DRAIN: queued delivery has no worker.turnStatus correlation of its own.
+async function queuedDrainHarness(
+  options: ConstructorParameters<typeof SessiondService>[1] = {},
+  disposition: "queued" | "started" | "handled" = "queued",
+  workerOptions: Exclude<ConstructorParameters<typeof FakeWorkerFactory>[0], Function> = {},
+) {
+  const { service, workers } = makeService(options, { snapshot: promptCapSnapshot(), turnCompletion: "manual", ...workerOptions });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const first = await service.prepareSubmitTurn({ sessionId: "s", operationId: "A", prompt: "A" });
+  const firstPushes: SessiondTurnStatusPush[] = [];
+  await first.flushTo((push) => { firstPushes.push(push); });
+  const dispatch = worker.sent.find((message): message is Extract<SessiondToWorkerMessage, { type: "worker.submitTurn" }> => message.type === "worker.submitTurn")!;
+  const send = worker.send.bind(worker);
+  let holdAck = false;
+  let ack: (() => void) | undefined;
+  let commandSeen = deferred<void>();
+  worker.send = async (message) => {
+    if (message.type !== "worker.command" || (message.payload.command.type !== "steer" && message.payload.command.type !== "follow_up")) return send(message);
+    worker.sent.push(structuredClone(message));
+    const { sessionId, command } = message.payload;
+    const answer = () => worker.emit({ type: "worker.commandResult", id: message.id, payload: { sessionId, result: { commandId: command.commandId, result: { ok: true, type: command.type as "steer" | "follow_up", disposition } } } });
+    if (holdAck) ack = answer;
+    else queueMicrotask(answer);
+    commandSeen.resolve();
+  };
+  const submissions: Array<Awaited<ReturnType<typeof service.prepareSubmitTurn>>> = [first];
+  const pushes = new Map<string, SessiondTurnStatusPush[]>();
+  const request = (id: string) => ({ sessionId: "s", operationId: id, prompt: id });
+  const queue = async (id: string) => {
+    const prepared = await service.prepareSubmitTurn(request(id));
+    submissions.push(prepared);
+    const received: SessiondTurnStatusPush[] = [];
+    pushes.set(id, received);
+    await prepared.flushTo((push) => { received.push(push); });
+    return prepared;
+  };
+  const finish = (failed = false) => {
+    worker.emit({ type: "worker.turnStatus", payload: { sessionId: "s", epoch: dispatch.payload.epoch, operationId: "A", turnId: dispatch.payload.turnId, revision: 1, state: failed ? "failed" : "completed", disposition: "started", userEntryId: "A-entry", finalLeafId: "A-leaf", ...(failed ? { error: { code: "interrupted" as const, message: "interrupted", retryable: false } } : {}) } });
+  };
+  return { service, worker, first, firstPushes, pushes, submissions, request, queue, finish,
+    holdAck: () => { holdAck = true; commandSeen = deferred<void>(); },
+    commandSeen: () => commandSeen.promise,
+    releaseAck: () => { const answer = ack; ack = undefined; answer?.(); },
+  };
+}
+
+test("QUEUE-DRAIN: B/C stay pending at ack, then each terminal carries own identity and shared idle authority", async (t) => {
+  const h = await queuedDrainHarness();
+  t.after(() => h.service.shutdown());
+  const b = await h.queue("B");
+  const c = await h.queue("C");
+  await flushMicrotasks();
+  assert.deepEqual(h.pushes.get("B"), []);
+  assert.deepEqual(h.pushes.get("C"), []);
+  assert.equal(b.result.status, "accepted");
+  assert.equal(c.result.status, "accepted");
+  assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "busy");
+  const duplicate = await h.service.submitTurn(h.request("B"));
+  assert.equal(duplicate.status, "duplicate");
+  const conflict = await h.service.submitTurn({ ...h.request("B"), prompt: "different" });
+  assert.equal(conflict.status, "rejected");
+  if (conflict.status === "rejected") assert.equal(conflict.error.code, "conflict");
+  h.worker.setSnapshot(promptCapSnapshot());
+  h.finish();
+  await flushMicrotasks();
+  for (const id of ["B", "C"]) {
+    const received = h.pushes.get(id)!;
+    assert.equal(received.length, 1);
+    assert.equal(received[0]!.status.state, "completed");
+    assert.equal(received[0]!.status.operationId, id);
+    assert.equal(received[0]!.status.revision, 1);
+    assert.equal(received[0]!.status.disposition, "queued");
+    assert.equal(received[0]!.status.userEntryId, undefined);
+    assert.equal(received[0]!.status.finalLeafId, undefined);
+    assert.deepEqual(received[0]!.authority?.snapshot, promptCapSnapshot());
+  }
+  assert.deepEqual(h.pushes.get("B")![0]!.authority, h.pushes.get("C")![0]!.authority);
+  assert.equal(await b.closed, null);
+  assert.equal(await c.closed, null);
+  assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "ready");
+  const terminalDuplicate = await h.service.submitTurn(h.request("B"));
+  assert.equal(terminalDuplicate.status, "duplicate");
+  if (terminalDuplicate.status === "duplicate") assert.equal(terminalDuplicate.turnStatus.state, "completed");
+});
+
+for (const activity of ["queue", "external", "abort-relaunch"] as const) {
+  test(`QUEUE-DRAIN: ${activity} truth prevents premature settlement; later lifecycle signal drains without polling`, async (t) => {
+    const h = await queuedDrainHarness();
+    t.after(() => h.service.shutdown());
+    await h.queue("B");
+    await flushMicrotasks();
+    const active = promptCapSnapshot();
+    if (activity === "queue") {
+      active.state.queuedMessages = { steering: [], followUp: [{ message: "B" }] };
+      active.state.pendingMessageCount = 1;
+    } else {
+      active.state.isPromptRunning = true;
+    }
+    h.worker.setSnapshot(active);
+    h.finish(activity === "abort-relaunch");
+    await flushMicrotasks();
+    assert.deepEqual(h.pushes.get("B"), []);
+    assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "busy");
+    const requests = h.worker.sent.filter((message) => message.type === "worker.getSnapshot").length;
+    await flushMicrotasks();
+    assert.equal(h.worker.sent.filter((message) => message.type === "worker.getSnapshot").length, requests, "no idle polling loop");
+    h.worker.setSnapshot(promptCapSnapshot());
+    h.worker.emitEvent({ type: "prompt_done", sessionId: "s" });
+    await flushMicrotasks();
+    assert.equal(h.pushes.get("B")?.[0]?.status.state, activity === "abort-relaunch" ? "failed" : "completed");
+    if (activity === "abort-relaunch") assert.equal(h.pushes.get("B")?.[0]?.status.error?.code, "interrupted", "retain abort context, not per-message reply success");
+    assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "ready");
+  });
+}
+
+for (const disposition of ["started", "handled"] as const) {
+  test(`QUEUE-DRAIN: command ${disposition} disposition is retained and authority refreshed`, async (t) => {
+    const h = await queuedDrainHarness({}, disposition);
+    t.after(() => h.service.shutdown());
+    h.worker.setHoldPostCommandSnapshots(true);
+    const b = await h.queue("B");
+    if (b.result.status !== "accepted") throw new Error("expected accepted");
+    assert.equal(b.result.turnStatus.disposition, disposition);
+    await h.worker.waitForHeldSnapshot();
+    assert.deepEqual(h.pushes.get("B"), []);
+    h.worker.releaseHeldSnapshots();
+    await flushMicrotasks();
+    if (disposition === "started") {
+      assert.deepEqual(h.pushes.get("B"), [], "idle-race started waits for runtime drain");
+      h.worker.setSnapshot(promptCapSnapshot());
+      h.worker.emitEvent({ type: "prompt_done", sessionId: "s" });
+      h.finish();
+      h.worker.setHoldPostCommandSnapshots(false);
+      h.worker.releaseHeldSnapshots();
+      await flushMicrotasks();
+    }
+    assert.equal(h.pushes.get("B")?.[0]?.status.state, "completed");
+    assert.equal(h.pushes.get("B")?.[0]?.status.disposition, disposition);
+    assert.ok(h.pushes.get("B")?.[0]?.authority);
+  });
+}
+
+for (const preAckSnapshot of [false, true]) {
+  test(`QUEUE-DRAIN: completion during held ack (${preAckSnapshot ? "pre-ack snapshot held" : "late ack"}) cannot lose reconciliation`, async (t) => {
+    const h = await queuedDrainHarness();
+    t.after(() => h.service.shutdown());
+    h.holdAck();
+    const pending = h.queue("B");
+    await h.commandSeen();
+    h.worker.setSnapshot(promptCapSnapshot());
+    if (preAckSnapshot) h.worker.setHoldPostCommandSnapshots(true);
+    h.finish();
+    await flushMicrotasks();
+    if (preAckSnapshot) await h.worker.waitForHeldSnapshot();
+    h.releaseAck();
+    const b = await pending;
+    assert.equal(b.result.status, "accepted");
+    if (preAckSnapshot) {
+      assert.deepEqual(h.pushes.get("B"), []);
+      h.worker.setHoldPostCommandSnapshots(false);
+      h.worker.releaseHeldSnapshots();
+    }
+    await flushMicrotasks();
+    assert.equal(h.pushes.get("B")?.[0]?.status.state, "completed");
+    assert.equal(await b.closed, null);
+    assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "ready");
+  });
+}
+
+test("QUEUE-DRAIN: refresh timeout fails accepted queued rows and late snapshot cannot revive them", async (t) => {
+  const h = await queuedDrainHarness({ commandTimeoutMs: 25 }, "queued", { dropPostCommandSnapshots: true });
+  t.after(() => h.service.shutdown());
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const prepared = await h.queue("timeout");
+  t.mock.timers.tick(25);
+  await flushMicrotasks();
+  assert.equal(h.pushes.get("timeout")?.[0]?.status.state, "failed");
+  assert.equal(h.pushes.get("timeout")?.[0]?.status.error?.code, "unavailable");
+  assert.equal(prepared.result.status, "accepted");
+  assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "ready");
+});
+
+test("QUEUE-DRAIN: stop/crash invalidate held reconciliation and late replies cannot settle a replacement", async (t) => {
+  for (const mode of ["stop", "crash"] as const) {
+    const h = await queuedDrainHarness({}, "queued", { holdPostCommandSnapshots: true });
+    const prepared = await h.queue(`queued-${mode}`);
+    await h.worker.waitForHeldSnapshot();
+    const late = h.worker.captureMessageDelivery();
+    if (mode === "stop") await h.service.stop("s");
+    else h.worker.crash();
+    assert.equal(h.pushes.get(`queued-${mode}`)?.[0]?.status.state, "failed");
+    late({ type: "worker.snapshot", id: "late-queue-refresh", payload: { sessionId: "s", snapshot: promptCapSnapshot() } });
+    assert.equal(h.pushes.get(`queued-${mode}`)?.length, 1);
+    prepared.close();
+    await h.service.shutdown();
+  }
+  await t.test("rekey", async () => {
+    const h = await queuedDrainHarness({}, "queued", { holdPostCommandSnapshots: true });
+    await h.queue("queued-rekey");
+    await h.worker.waitForHeldSnapshot();
+    h.worker.emit({ type: "worker.sessionDiscovered", payload: { sessionId: "rekeyed", cwd: "/s", sessionFile: "/sessions/rekeyed.jsonl" } });
+    await flushMicrotasks();
+    assert.equal(h.pushes.get("queued-rekey")?.[0]?.status.state, "failed");
+    h.worker.releaseHeldSnapshots();
+    assert.equal(h.pushes.get("queued-rekey")?.length, 1);
+    await h.service.shutdown();
+  });
+});
+
+test("QUEUE-DRAIN: durable queued replay hydrates a synthetic operation, then terminal dedupe remains exact", async (t) => {
+  const ledger = receiptLedger([{ operationId: "durable-queued", turnId: "old-turn", delivery: "follow_up" }]);
+  const workers = new FakeWorkerFactory({ snapshot: promptCapSnapshot(), turnCompletion: "manual" });
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId) { return { cwd: `/${sessionId}`, projectRoot: `/${sessionId}` }; } },
+    workerFactory: workers,
+    sentMessages: ledger,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  t.after(() => service.shutdown());
+  await service.activate("s");
+  const replay = await service.submitTurn({ sessionId: "s", operationId: "durable-queued", prompt: "same" });
+  assert.equal(replay.status, "duplicate");
+  if (replay.status !== "duplicate") throw new Error("expected durable duplicate");
+  assert.equal(replay.turnStatus.disposition, "queued");
+  const second = await service.submitTurn({ sessionId: "s", operationId: "durable-queued", prompt: "different" });
+  assert.equal(second.status, "rejected");
+  if (second.status === "rejected") assert.equal(second.error.code, "conflict");
+  const worker = workers.workers[0]!;
+  worker.setSnapshot(promptCapSnapshot());
+  worker.emitEvent({ type: "prompt_done", sessionId: "s" });
+  await flushMicrotasks();
+  const terminal = await service.submitTurn({ sessionId: "s", operationId: "durable-queued", prompt: "same" });
+  assert.equal(terminal.status, "duplicate");
+  if (terminal.status === "duplicate") assert.equal(terminal.turnStatus.state, "completed");
+  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 0);
+});
+
+test("QUEUE-DRAIN: bounded ledger keeps active queued rows and prunes terminal rows", async (t) => {
+  const h = await queuedDrainHarness({ turnOperationLimit: 1 });
+  t.after(() => h.service.shutdown());
+  await h.queue("B");
+  await h.queue("C");
+  assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "busy");
+  h.worker.setSnapshot(promptCapSnapshot());
+  h.finish();
+  await flushMicrotasks();
+  assert.equal(h.pushes.get("B")?.[0]?.status.state, "completed");
+  assert.equal(h.pushes.get("C")?.[0]?.status.state, "completed");
+  const rollover = await h.service.submitTurn(h.request("D"));
+  assert.equal(rollover.status, "rejected");
+  if (rollover.status === "rejected") assert.equal(rollover.error.code, "epoch_changed");
+  assert.equal(h.worker.sent.filter((message) => message.type === "worker.rotateEpoch").length, 1);
+});
