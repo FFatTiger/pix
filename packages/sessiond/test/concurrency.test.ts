@@ -1880,6 +1880,90 @@ test("QUEUE-DRAIN: refresh timeout fails accepted queued rows and late snapshot 
   assert.equal(pushes.length, 1, "a late refresh cannot revive a terminal queued row");
 });
 
+for (const finishRunningTurn of [true, false]) {
+  test(`QUEUE-DRAIN: atomic queued admission snapshot never replaces the authority projection (${finishRunningTurn ? "idle before admission" : "still running"})`, async (t) => {
+    const { service, workers } = makeService({ commandTimeoutMs: 25 }, {
+      snapshot: promptCapSnapshot(),
+      turnCompletion: "manual",
+      queueSubmitWhileRunning: true,
+    });
+    t.after(() => service.shutdown());
+    await service.activate("s");
+    const worker = workers.workers[0]!;
+    const first = await service.submitTurn({ sessionId: "s", prompt: "first", operationId: "op-first" });
+    assert.equal(first.status, "accepted");
+    const firstDispatch = worker.sent.find((message): message is Extract<SessiondToWorkerMessage, { type: "worker.submitTurn" }> => message.type === "worker.submitTurn")!;
+
+    // Hold the atomic queue admission so the running turn can terminalize (or
+    // stay active) BEFORE sessiond sees the queue-time snapshot. This is the
+    // exact ordering where the admission snapshot is already stale.
+    const emit = worker.emit.bind(worker);
+    const held: Array<Parameters<typeof worker.emit>[0]> = [];
+    let holdQueuedAdmission = true;
+    worker.emit = (message) => {
+      if (holdQueuedAdmission && (
+        (message.type === "worker.submitTurnResult" && message.payload.result.operationId === "op-second") ||
+        (message.type === "worker.turnStatus" && message.payload.operationId === "op-second")
+      )) {
+        held.push(structuredClone(message));
+        return;
+      }
+      emit(message);
+    };
+    const admission = service.prepareSubmitTurn({
+      sessionId: "s",
+      prompt: "second",
+      operationId: "op-second",
+      activationOverrides: { model: { provider: "anthropic", modelId: "claude-sonnet-4" }, thinkingLevel: "high" },
+    });
+    await waitUntil(() => held.length === 2);
+    if (finishRunningTurn) {
+      // The running turn drains and its authoritative refresh makes the
+      // projection truthfully idle BEFORE the delayed queue admission arrives.
+      worker.setSnapshot(promptCapSnapshot());
+      worker.emit({ type: "worker.turnStatus", payload: { sessionId: "s", epoch: firstDispatch.payload.epoch, operationId: "op-first", turnId: firstDispatch.payload.turnId, revision: 1, state: "completed", disposition: "started" } });
+      await waitUntil(() => service.getSnapshot("s").state.isPromptRunning === false);
+    }
+    assert.equal(service.getSnapshot("s").state.isPromptRunning, !finishRunningTurn);
+
+    // The post-ack reconciliation refresh is the only remaining authority read;
+    // make it fail without inserting any idle/terminal projection of our own.
+    const send = worker.send.bind(worker);
+    let dropSnapshots = true;
+    worker.send = (message) => dropSnapshots && message.type === "worker.getSnapshot" ? Promise.resolve() : send(message);
+    holdQueuedAdmission = false;
+    for (const message of held.splice(0)) emit(message);
+
+    const prepared = await admission;
+    assert.equal(prepared.result.status, "accepted");
+    if (prepared.result.status !== "accepted") throw new Error("queued admission must be accepted");
+    assert.equal(prepared.result.turnStatus.disposition, "queued");
+    // The admission result itself keeps the truthful queue-time observation;
+    // only its projection authority is withheld.
+    assert.equal(prepared.result.snapshot.state.isPromptRunning, true);
+    assert.equal(prepared.result.snapshot.state.queuedMessages?.followUp.length, 1);
+    const pushes: SessiondTurnStatusPush[] = [];
+    await prepared.flushTo((push) => { pushes.push(push); });
+    await waitUntil(() => pushes.some((push) => push.status.state === "completed" || push.status.state === "failed"), 1_000);
+    const terminal = pushes.find((push) => push.status.state === "completed" || push.status.state === "failed")!;
+    assert.equal(terminal.status.state, "failed");
+    assert.equal(terminal.status.error?.code, "unavailable");
+    assert.equal(pushes.filter((push) => push.status.state === "completed" || push.status.state === "failed").length, 1, "the failed queued row terminalizes exactly once");
+    dropSnapshots = false;
+    if (finishRunningTurn) {
+      assert.equal(service.getSnapshot("s").state.isPromptRunning, false, "a stale queue-time admission must not resurrect activity");
+      assert.deepEqual(service.getSnapshot("s").state.queuedMessages, { steering: [], followUp: [] });
+      assert.equal(service.listRunning().sessions[0]?.workerStatus, "ready", "the failed queued row must not keep an idle runtime busy");
+      assert.deepEqual(service.runningStateSnapshot().busySessionIds, []);
+    } else {
+      assert.equal(service.getSnapshot("s").state.isPromptRunning, true, "a truly active projection must survive the failed refresh");
+      assert.equal(service.getSnapshot("s").state.queuedMessages?.followUp.length, 1);
+      assert.equal(service.listRunning().sessions[0]?.workerStatus, "busy");
+      assert.deepEqual(service.runningStateSnapshot().busySessionIds, ["s"]);
+    }
+  });
+}
+
 test("QUEUE-DRAIN: stop/crash invalidate held reconciliation and late replies cannot settle a replacement", async (t) => {
   for (const mode of ["stop", "crash"] as const) {
     const h = await queuedDrainHarness({}, "queued", { holdPostCommandSnapshots: true });

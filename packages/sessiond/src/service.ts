@@ -1200,12 +1200,22 @@ export class SessiondService {
         clearTimeout(pending.timer);
         record.pendingTurnAdmissions.delete(message.id);
         let result: SubmitTurnAdmission;
+        const operation = record.turnOperations.get(pending.operationId);
+        const isQueuedDelivery = operation?.queuedDelivery === true && operation.dispatchId === pending.dispatchId;
         if (workerResult.status === "accepted") {
           try {
-            record.projection.replace(workerResult.snapshot);
+            // A queued delivery's snapshot is a queue-time observation taken
+            // when the runtime parked the message behind the still-running
+            // turn. It is truthful admission evidence (and stays in `result`
+            // for client identity/display), but it is NOT authoritative for
+            // the session projection once delivery is queued: the running turn
+            // may have finished before this ack, and replacing the projection
+            // would resurrect its activity forever if the post-ack authority
+            // refresh fails. Lifecycle/authoritative snapshot reconciliation
+            // owns the projection from here. Never insert a fake idle either.
+            if (!isQueuedDelivery) record.projection.replace(workerResult.snapshot);
           } catch {
             result = this.rejectedTurn(pending.sessionId, pending.operationId, "not_delivered", { code: "worker_unavailable", message: "worker turn snapshot was rejected", retryable: true }, pending.epoch, record.journal.lastEventId);
-            const operation = record.turnOperations.get(pending.operationId);
             if (operation && operation.dispatchId === pending.dispatchId) {
               operation.admission = result;
               operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: result.error };
@@ -1215,8 +1225,6 @@ export class SessiondService {
             pending.resolve(result);
             return;
           }
-          const operation = record.turnOperations.get(pending.operationId);
-          const isQueuedDelivery = operation?.queuedDelivery === true && operation.dispatchId === pending.dispatchId;
           const status: TurnStatus = {
             ...workerResult.turnStatus,
             revision: 0,
@@ -1239,7 +1247,6 @@ export class SessiondService {
             try { record.projection.replace(workerResult.snapshot); } catch { /* truthful rejection remains; bad snapshot is omitted below */ }
           }
           result = { ...workerResult, revision: record.journal.lastEventId };
-          const operation = record.turnOperations.get(pending.operationId);
           if (operation && operation.dispatchId === pending.dispatchId && operation.queuedDelivery === true) {
             // The queued send was never admitted. Drop the optimistic row so a
             // retry with the same operationId can be attempted again; a worker
