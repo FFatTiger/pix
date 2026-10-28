@@ -2577,6 +2577,50 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     });
     expect(countType(ws, "command")).toBe(commandsBefore + 2);
   });
+
+  it("LIVE nonretryable model/thinking rejection surfaces fixed copy, keeps the old value, and stages nothing", async () => {
+    mountApp({ cwd: "/x", session: "A" });
+    const ws = await connectReady();
+    await mountLiveA(ws);
+    const commandsBefore = countType(ws, "command");
+
+    // Model: a proven nonretryable refusal is NOT pending intent. The selector
+    // must keep the authoritative value, no staged choice may survive, and the
+    // user sees fixed copy — never the raw backend message.
+    await pickModel("Claude Sonnet 4");
+    const modelCmd = lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    await act(async () => {
+      ws.serverSend({ type: "response", id: modelCmd.id, payload: { ok: false, error: { code: "unsupported_capability", message: "raw backend detail: provider refused", retryable: false } } });
+      await flush();
+    });
+    const modelAlert = screen.getByRole("alert").textContent ?? "";
+    expect(modelAlert).toContain("The model was not changed. The session still uses its previous model.");
+    expect(modelAlert).not.toContain("raw backend detail");
+    expect(screen.getByLabelText("Change model").textContent).toContain("GPT-5");
+    expect(screen.getByLabelText("Change model").textContent).not.toContain("Claude Sonnet 4");
+
+    // Thinking: same contract for invalid_input (also nonretryable).
+    await pickThinking("high");
+    const thinkingCmd = lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    await act(async () => {
+      ws.serverSend({ type: "response", id: thinkingCmd.id, payload: { ok: false, error: { code: "invalid_input", message: "raw backend detail: unknown level", retryable: false } } });
+      await flush();
+    });
+    const thinkingAlert = screen.getByRole("alert").textContent ?? "";
+    expect(thinkingAlert).toContain("Thinking effort was not changed. The session still uses its previous setting.");
+    expect(thinkingAlert).not.toContain("raw backend detail");
+    expect(screen.getByLabelText("Thinking effort").textContent).not.toContain("high");
+
+    // No rejected value was retained as staged intent: the next send carries
+    // the unchanged live model baseline and NO thinking override.
+    const textarea = document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")!;
+    await act(async () => { fireEvent.change(textarea, { target: { value: "after rejected controls" } }); await flush(); });
+    await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
+    const submit = await waitForSubmitTurn(ws);
+    expect(submit.payload.activationOverrides?.thinkingLevel).toBeUndefined();
+    expect(submit.payload.activationOverrides?.model).toEqual({ provider: "openai", modelId: "gpt-5" });
+    expect(countType(ws, "command")).toBe(commandsBefore + 2);
+  });
 });
 
 // --- negotiated runtime.submit-turn.v1: atomic model carry + admitted bridge ---

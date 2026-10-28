@@ -92,6 +92,13 @@ export interface FakeWorkerOptions {
    * turn these were queued for has already ended (the admission race).
    */
   queuedSendFindsIdleTurn?: boolean;
+  /**
+   * Mirror the adapter's busy `submitTurn` path: apply activation overrides,
+   * park the message in the requested runtime queue, and answer an immediate
+   * queued completion (admission + terminal turnStatus with disposition
+   * `queued`). The current prompt keeps running.
+   */
+  queueSubmitWhileRunning?: boolean;
 }
 
 /**
@@ -190,11 +197,47 @@ export class FakeWorkerConnection implements WorkerConnection {
       }
       case "worker.submitTurn": {
         const { sessionId, epoch, operationId, turnId, request } = message.payload;
+        const wasRunning = this.liveSnapshot.state.isPromptRunning === true || this.liveSnapshot.state.isStreaming === true;
         if (request.activationOverrides?.model !== undefined) {
           this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, model: { provider: request.activationOverrides.model.provider, id: request.activationOverrides.model.modelId } } };
         }
         if (request.activationOverrides?.thinkingLevel !== undefined) {
           this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, thinkingLevel: request.activationOverrides.thinkingLevel, thinkingLevelPinned: true } };
+        }
+        if (wasRunning && this.options.queueSubmitWhileRunning === true) {
+          const list = request.whenBusy === "steer" ? "steering" : "followUp";
+          const queue = this.liveSnapshot.state.queuedMessages ?? { steering: [], followUp: [] };
+          this.liveSnapshot = {
+            ...this.liveSnapshot,
+            state: {
+              ...this.liveSnapshot.state,
+              queuedMessages: { ...queue, [list]: [...queue[list], { message: request.prompt }] },
+              pendingMessageCount: (this.liveSnapshot.state.pendingMessageCount ?? 0) + 1,
+            },
+          };
+          this.emitEvent({
+            type: "queue_update",
+            sessionId,
+            steering: [...this.liveSnapshot.state.queuedMessages!.steering],
+            followUp: [...this.liveSnapshot.state.queuedMessages!.followUp],
+          });
+          const admissionSnapshot = structuredClone(this.liveSnapshot);
+          const emitQueuedAdmission = (): void => {
+            if (this.closed) return;
+            this.emit({
+              type: "worker.submitTurnResult",
+              id: message.id,
+              payload: {
+                sessionId, epoch, operationId, dispatchId: message.id, fingerprint: message.payload.fingerprint,
+                result: { status: "accepted", delivery: "accepted", sessionId, epoch, revision: 0, operationId, turnId, snapshot: admissionSnapshot, turnStatus: { sessionId, epoch, operationId, turnId, revision: 0, state: "admitted" } },
+              },
+            });
+            this.emit({ type: "worker.turnStatus", payload: { sessionId, epoch, operationId, turnId, revision: 1, state: "completed", disposition: "queued" } });
+          };
+          const admissionDelay = this.options.submitAdmissionDelayMs ?? 0;
+          if (admissionDelay > 0) setTimeout(emitQueuedAdmission, admissionDelay);
+          else queueMicrotask(emitQueuedAdmission);
+          return;
         }
         this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, isPromptRunning: !this.options.submitSnapshotIdle } };
         const admissionSnapshot = structuredClone(this.liveSnapshot);

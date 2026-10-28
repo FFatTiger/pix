@@ -293,6 +293,15 @@ interface TurnOperationRecord {
   admission: SubmitTurnAdmission;
   status: TurnStatus;
   dispatched: boolean;
+  /**
+   * True when a send was delivered through the atomic worker `submitTurn`
+   * path while the runtime was already running. The adapter applies the send's
+   * activation overrides inside that admission, then parks the message in the
+   * runtime queue. Its immediate queued completion acknowledges the queue
+   * write only; the operation stays a queued row until authoritative drain
+   * evidence terminalizes it.
+   */
+  queuedDelivery?: boolean;
   /** Drain context is not a correlated model-reply result. */
   queueDrainError?: ProtocolError;
   /** Monotonic record sequence of the latest drain evidence (lifecycle or idle snapshot). */
@@ -1095,7 +1104,7 @@ export class SessiondService {
           // NOT lifecycle evidence, so it can never by itself satisfy a queued
           // row acknowledged after the snapshot.
           if (this.isProjectionIdle(record)) {
-            this.noteQueuedDrainEvidence(record, (operation) => !operation.dispatched, { lifecycle: false });
+            this.noteQueuedDrainEvidence(record, (operation) => this.isQueuedOperation(operation), { lifecycle: false });
           }
           this.broadcastRunningChanged(record.sessionId);
           if (pending) { clearTimeout(pending.timer); record.pendingSnapshots.delete(message.id!); pending.resolve(record.projection.snapshot()); }
@@ -1206,9 +1215,19 @@ export class SessiondService {
             pending.resolve(result);
             return;
           }
-          const status: TurnStatus = { ...workerResult.turnStatus, revision: 0 };
-          result = { ...workerResult, revision: record.journal.lastEventId, turnStatus: status };
           const operation = record.turnOperations.get(pending.operationId);
+          const isQueuedDelivery = operation?.queuedDelivery === true && operation.dispatchId === pending.dispatchId;
+          const status: TurnStatus = {
+            ...workerResult.turnStatus,
+            revision: 0,
+            // An atomic submit that queued behind a running turn answers an
+            // immediate worker completion. Until that ack arrives this is a
+            // queued row, not a started turn: project it as running/queued so
+            // the client keeps the message pending instead of seeing a fake
+            // terminal before the runtime consumes it.
+            ...(isQueuedDelivery ? { state: "running" as const, disposition: "queued" as const } : {}),
+          };
+          result = { ...workerResult, revision: record.journal.lastEventId, turnStatus: status };
           if (operation && operation.dispatchId === pending.dispatchId) {
             operation.admission = result;
             operation.status = status;
@@ -1221,7 +1240,12 @@ export class SessiondService {
           }
           result = { ...workerResult, revision: record.journal.lastEventId };
           const operation = record.turnOperations.get(pending.operationId);
-          if (operation && operation.dispatchId === pending.dispatchId) {
+          if (operation && operation.dispatchId === pending.dispatchId && operation.queuedDelivery === true) {
+            // The queued send was never admitted. Drop the optimistic row so a
+            // retry with the same operationId can be attempted again; a worker
+            // ledger/durable receipt still prevents a duplicate delivery.
+            record.turnOperations.delete(operation.operationId);
+          } else if (operation && operation.dispatchId === pending.dispatchId) {
             operation.admission = result;
             operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: workerResult.error };
             this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
@@ -1236,6 +1260,39 @@ export class SessiondService {
         if (status.sessionId !== record.sessionId || status.epoch !== record.epoch) return;
         const operation = record.turnOperations.get(status.operationId);
         if (!operation || operation.epoch !== status.epoch) return;
+        // An atomic queued submit has a real worker turn identity, but its
+        // immediate worker completion is only the queue-write ack. Keep the row
+        // pending; a genuine terminal (disposition started/handled) means the
+        // runtime was idle and this send actually became a turn, so it falls
+        // through to the normal turn authority below.
+        if (operation.queuedDelivery === true) {
+          if (operation.turnId !== status.turnId) return;
+          if (status.state === "completed" || status.state === "failed") {
+            if (status.disposition === "queued") {
+              if (operation.status.state === "completed" || operation.status.state === "failed") return;
+              operation.status = {
+                ...operation.status,
+                revision: Math.max(operation.status.revision, status.revision),
+                state: "running",
+                disposition: "queued",
+                ...(status.error === undefined ? {} : { error: status.error }),
+              };
+              operation.queueAckEvidence = record.queueEvidenceSequence;
+              operation.queueEvidenceBeforeAck = operation.queueDrainEvidence !== undefined;
+              this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+              this.reconcileQueuedTurns(record);
+              return;
+            }
+            operation.queuedDelivery = false;
+          } else {
+            if (operation.status.state === "completed" || operation.status.state === "failed") return;
+            if (status.revision <= operation.status.revision) return;
+            operation.status = status;
+            this.pushTurnStatus(operation, { type: "turn_status", status });
+            this.broadcastRunningChanged(record.sessionId);
+            return;
+          }
+        }
         // A queued command may cause the adapter to start an internal turn and
         // report that turn under this operation id. Its turn id is deliberately
         // not adopted: the service owns the synthetic queued identity. A
@@ -1262,7 +1319,7 @@ export class SessiondService {
           // reconciliation distinguish evidence observed before an ack from
           // evidence observed after it; an idle projection alone never proves
           // a message delivered after an earlier terminal was consumed.
-          this.noteQueuedDrainEvidence(record, (queued) => !queued.dispatched, {
+          this.noteQueuedDrainEvidence(record, (queued) => this.isQueuedOperation(queued), {
             lifecycle: true,
             ...(status.error === undefined ? {} : { error: status.error }),
           });
@@ -1539,7 +1596,7 @@ export class SessiondService {
       this.push(record, { type: "event", event: appended.event });
       if (data.type === "prompt_error" && data.error) this.rememberQueuedDrainError(record, data.error);
       if (data.type === "prompt_done" || data.type === "prompt_error" || data.type === "agent_settled" || data.type === "queue_update") {
-        this.noteQueuedDrainEvidence(record, (operation) => !operation.dispatched, {
+        this.noteQueuedDrainEvidence(record, (operation) => this.isQueuedOperation(operation), {
           lifecycle: true,
           ...(data.type === "prompt_error" && data.error ? { error: data.error } : {}),
         });
@@ -2435,11 +2492,13 @@ export class SessiondService {
   }
 
   /**
-   * Deliver a message into a RUNNING session through the authoritative queued
-   * command path (steer / follow_up) instead of rejecting it. The command
-   * carries the send's operationId inside its command id, so the adapter writes
-   * the same durable receipt identity a new turn would write, and a resend of
-   * the same operationId dedupes against it.
+   * Deliver a message into a RUNNING session instead of rejecting it.
+   *
+   * A send with activation intent rides the atomic worker `submitTurn` path
+   * (the adapter applies model/thinking before parking the message); a plain
+   * send rides the authoritative steer/follow_up command path. Both carry the
+   * send's operationId as durable receipt identity, and a resend of the same
+   * operationId dedupes against it.
    */
   private async queueWhileRunning(
     record: RecordState,
@@ -2447,6 +2506,16 @@ export class SessiondService {
     fingerprint: string,
   ): Promise<SubmitTurnAdmission | { pending: Promise<SubmitTurnAdmission> }> {
     const delivery = input.whenBusy ?? "follow_up";
+    // A queued send that carries activation intent must ride the SAME atomic
+    // submitTurn seam a new turn uses: the adapter applies the model/thinking
+    // overrides inside the admission transaction (an ordinary set_model is
+    // correctly refused while a prompt runs) and then parks the message in the
+    // runtime queue. Its immediate queued completion only acknowledges the
+    // queue write; the operation remains a queued row until authoritative
+    // drain evidence.
+    if (input.activationOverrides?.model !== undefined || input.activationOverrides?.thinkingLevel !== undefined) {
+      return this.dispatchTurn(record, { ...input, whenBusy: delivery }, fingerprint, { queuedDelivery: true });
+    }
     const command: RuntimeCommand = delivery === "steer"
       ? { commandId: queuedSendCommandId(input.operationId), type: "steer", message: input.prompt, ...(input.images === undefined ? {} : { images: [...input.images] }) }
       : { commandId: queuedSendCommandId(input.operationId), type: "follow_up", message: input.prompt, ...(input.images === undefined ? {} : { images: [...input.images] }) };
@@ -2585,14 +2654,25 @@ export class SessiondService {
     return admission;
   }
 
-  /** Dispatch one admitted new turn to the worker (the only "start a turn" path). */
-  private dispatchTurn(record: RecordState, input: RuntimeSubmitTurnParams, fingerprint: string): { pending: Promise<SubmitTurnAdmission> } {
+  /** Dispatch one admitted new turn to the worker (the only "start a turn" path).
+   *  `queuedDelivery` marks an atomic submit that is expected to queue behind a
+   *  running turn; its immediate worker completion is only a queue-write ack. */
+  private dispatchTurn(
+    record: RecordState,
+    input: RuntimeSubmitTurnParams,
+    fingerprint: string,
+    options: { queuedDelivery?: boolean } = {},
+  ): { pending: Promise<SubmitTurnAdmission> } {
     const epoch = record.epoch;
     const turnId = `turn:${randomUUID()}`;
     const dispatchId = `turn-dispatch:${epoch}:${randomUUID()}`;
     const initialStatus: TurnStatus = { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, revision: 0, state: "admitted" };
     const placeholder = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "timeout", message: "turn admission is pending", retryable: true }, epoch, record.journal.lastEventId);
-    const operation: TurnOperationRecord = { operationId: input.operationId, fingerprint, epoch, turnId, dispatchId, admission: placeholder, status: initialStatus, dispatched: true, subscribers: new Set() };
+    const operation: TurnOperationRecord = {
+      operationId: input.operationId, fingerprint, epoch, turnId, dispatchId,
+      admission: placeholder, status: initialStatus, dispatched: true, subscribers: new Set(),
+      ...(options.queuedDelivery === true ? { queuedDelivery: true } : {}),
+    };
     record.turnOperations.set(input.operationId, operation);
     const wait = deferred<SubmitTurnAdmission>();
     const timer = setTimeout(() => {
@@ -2600,9 +2680,16 @@ export class SessiondService {
       if (!pending) return;
       record.pendingTurnAdmissions.delete(dispatchId);
       const uncertain = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "timeout", message: "worker turn admission timed out", retryable: true }, epoch, record.journal.lastEventId);
-      operation.admission = uncertain;
-      operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
-      this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+      if (options.queuedDelivery === true) {
+        // Nothing was acknowledged as queued. Drop the optimistic row so a
+        // same-operation retry can be admitted (the worker ledger and durable
+        // receipt still prevent a duplicate delivery).
+        if (record.turnOperations.get(input.operationId) === operation) record.turnOperations.delete(input.operationId);
+      } else {
+        operation.admission = uncertain;
+        operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
+        this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+      }
       this.broadcastRunningChanged(record.sessionId);
       wait.resolve(uncertain);
     }, this.turnAdmissionTimeoutMs);
@@ -2615,9 +2702,13 @@ export class SessiondService {
       clearTimeout(timer);
       record.pendingTurnAdmissions.delete(dispatchId);
       const uncertain = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "worker_unavailable", message: "worker turn admission send failed", retryable: true }, epoch, record.journal.lastEventId);
-      operation.admission = uncertain;
-      operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
-      this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+      if (options.queuedDelivery === true) {
+        if (record.turnOperations.get(input.operationId) === operation) record.turnOperations.delete(input.operationId);
+      } else {
+        operation.admission = uncertain;
+        operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
+        this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+      }
       this.broadcastRunningChanged(record.sessionId);
       wait.resolve(uncertain);
     });
@@ -2691,9 +2782,14 @@ export class SessiondService {
     return promise;
   }
 
+  /** Queued rows are steer/follow_up command sends plus atomic queued submits. */
+  private isQueuedOperation(operation: TurnOperationRecord): boolean {
+    return !operation.dispatched || operation.queuedDelivery === true;
+  }
+
   private rememberQueuedDrainError(record: RecordState, error: ProtocolError): void {
     for (const operation of record.turnOperations.values()) {
-      if (!operation.dispatched && operation.epoch === record.epoch && operation.status.state !== "completed" && operation.status.state !== "failed") operation.queueDrainError = error;
+      if (this.isQueuedOperation(operation) && operation.epoch === record.epoch && operation.status.state !== "completed" && operation.status.state !== "failed") operation.queueDrainError = error;
     }
   }
 
@@ -2713,7 +2809,7 @@ export class SessiondService {
   ): number {
     const sequence = ++record.queueEvidenceSequence;
     for (const operation of record.turnOperations.values()) {
-      if (operation.dispatched || operation.epoch !== record.epoch) continue;
+      if (!this.isQueuedOperation(operation) || operation.epoch !== record.epoch) continue;
       if (operation.status.state === "completed" || operation.status.state === "failed") continue;
       if (!select(operation)) continue;
       operation.queueDrainEvidence = sequence;
@@ -2732,7 +2828,7 @@ export class SessiondService {
    * An active result releases the flight and waits for a lifecycle/queue signal.
    */
   private reconcileQueuedTurns(record: RecordState): void {
-    const eligible = (operation: TurnOperationRecord): boolean => !operation.dispatched && operation.epoch === record.epoch &&
+    const eligible = (operation: TurnOperationRecord): boolean => this.isQueuedOperation(operation) && operation.epoch === record.epoch &&
       (operation.admission.status === "accepted" || operation.admission.status === "duplicate") &&
       operation.status.state !== "completed" && operation.status.state !== "failed";
     if (!this.ownsLiveRecord(record, record.epoch) || ![...record.turnOperations.values()].some(eligible)) return;

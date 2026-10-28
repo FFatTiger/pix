@@ -728,12 +728,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // --- error surfaces (fixed copy only) ---------------------------------------
   const [compactError, setCompactError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  // A send failure describes the composer's target at the time it failed.
-  // Switching the session OR picking a project changes that target, so the
-  // stale error (e.g. "select a project first") must not keep hanging.
+  // A rejected LIVE model/thinking command. Nonretryable failures are a real
+  // authority refusal, not a staged pending choice, so they get fixed copy in
+  // the same composer alert surface (never a raw ProtocolError message).
+  const [controlError, setControlError] = useState<string | null>(null);
+  // A send/control failure describes the composer's target at the time it
+  // failed. Switching the session OR picking a project changes that target, so
+  // the stale error (e.g. "select a project first") must not keep hanging.
   useEffect(() => {
     setCompactError(null);
     setSendError(null);
+    setControlError(null);
   }, [selectedSessionId, cwd]);
 
   // Identity guards for late async settles (SessionActions pattern).
@@ -1022,6 +1027,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         // before ever touching the runtime. Stage the visible choice for the
         // NEXT send instead of pretending the runtime changed.
         if (!hasModelSet) return;
+        setControlError(null);
         const writable = exact !== null && exact.attached && !exact.resuming
           && !exact.promptPending && !exact.turnActive;
         if (!writable) {
@@ -1043,7 +1049,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             // The turn may have started / the transport may have gone away
             // between the click and the admission. Preserve the user's choice
             // as staged intent for the next turn; never a silent no-op.
-            if (isRetryableLiveControlFailure(cause)) stageModel(provider, modelId);
+            if (isRetryableLiveControlFailure(cause)) {
+              stageModel(provider, modelId);
+              return;
+            }
+            // Proven nonretryable refusal (`invalid_input` /
+            // `unsupported_capability` / `not_found`): the runtime did NOT
+            // change. Do not stage the rejected value as pending intent and do
+            // not swallow the failure — show fixed copy for THIS session only.
+            setControlError(t("desktop.modelChangeFailed"));
           });
         return;
       }
@@ -1052,7 +1066,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // before the prompt).
       stageModel(provider, modelId);
     },
-    [liveWorkspaceEnabled, live, hasModelSet, exact, isCurrent, stageModel, clearStagedModel, staging, stagingKey],
+    [liveWorkspaceEnabled, live, hasModelSet, exact, isCurrent, stageModel, clearStagedModel, staging, stagingKey, t],
   );
 
   const handleThinkingLevelChange = useCallback(
@@ -1063,6 +1077,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         // option stays display-only until the runtime grows an explicit unpin.
         // Keep that semantics unchanged (never send an auto/unpin command).
         if (!hasThinkingSet || level === "auto") return;
+        setControlError(null);
         const writable = exact !== null && exact.attached && !exact.resuming
           && !exact.promptPending && !exact.turnActive;
         if (!writable) {
@@ -1080,7 +1095,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             return exact.fetchSnapshot();
           }, (cause: unknown) => {
             if (!isCurrent()) return;
-            if (isRetryableLiveControlFailure(cause)) stageThinking(level as ThinkingLevel);
+            if (isRetryableLiveControlFailure(cause)) {
+              stageThinking(level as ThinkingLevel);
+              return;
+            }
+            // Proven nonretryable refusal: keep the authoritative level and
+            // surface fixed copy instead of a silent catch/fake success.
+            setControlError(t("desktop.thinkingChangeFailed"));
           });
         return;
       }
@@ -1089,7 +1110,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // thinking back to `auto` (nothing is sent on the next send).
       stageThinking(level === "auto" ? null : (level as ThinkingLevel));
     },
-    [liveWorkspaceEnabled, live, hasThinkingSet, exact, isCurrent, stageThinking, clearStagedThinking, staging, stagingKey],
+    [liveWorkspaceEnabled, live, hasThinkingSet, exact, isCurrent, stageThinking, clearStagedThinking, staging, stagingKey, t],
   );
 
   /** The queue was just cleared. Hand the user's own messages back as a draft
@@ -1387,9 +1408,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           />
         }
       />
-      {workspaceAccessCopy || sendError ? (
+      {workspaceAccessCopy || sendError || controlError ? (
         <div role="alert" aria-live="polite" style={{ padding: "6px 16px 0", color: "var(--status-danger)", fontSize: 12 }}>
-          {sendError ?? workspaceAccessCopy}
+          {sendError ?? controlError ?? workspaceAccessCopy}
         </div>
       ) : null}
       {folderBrowserOpen && canBrowseProjectFolders && onProjectChange ? (

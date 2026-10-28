@@ -619,6 +619,8 @@ export const zhCNLocale = {
     "desktop.changeToolPresetWhileRunning": "更改工具预设",
     "desktop.changeModel": "更改模型",
     "desktop.changeModelWhileRunning": "更改模型",
+    "desktop.modelChangeFailed": "模型未更改，会话仍使用之前的模型。",
+    "desktop.thinkingChangeFailed": "思考强度未更改，会话仍使用之前的设置。",
     "desktop.configAppliesNextTurn": "将于下一回合生效",
     "desktop.reasoningLevel": "思考强度",
     "desktop.moreControls": "更多控件",

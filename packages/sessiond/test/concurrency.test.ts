@@ -683,6 +683,69 @@ test("Phase 3: a second send while a turn runs is QUEUED, never rejected as sess
   await service.shutdown();
 });
 
+test("QUEUE-DRAIN: a queued send with activation overrides applies them on the atomic submit path and stays queued until drain", async (t) => {
+  const { service, workers } = makeService({}, {
+    snapshot: promptCapSnapshot(),
+    turnCompletion: "manual",
+    queueSubmitWhileRunning: true,
+  });
+  t.after(() => service.shutdown());
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const first = await service.submitTurn({ sessionId: "s", prompt: "first", operationId: "op-first" });
+  assert.equal(first.status, "accepted");
+
+  const overrides = {
+    model: { provider: "anthropic", modelId: "claude-sonnet-4" },
+    thinkingLevel: "high" as const,
+  };
+  const prepared = await service.prepareSubmitTurn({ sessionId: "s", prompt: "second", operationId: "op-second", activationOverrides: overrides });
+  const second = prepared.result;
+  assert.equal(second.status, "accepted");
+  if (second.status !== "accepted") throw new Error("queued send must be accepted");
+  assert.equal(second.turnStatus.disposition, "queued");
+  assert.equal(second.turnStatus.state, "running", "the queue write ack is not a finished turn");
+  // The ACTUAL adapter-bound send carries the user's activation intent; the
+  // runtime applies it and reports the new model/thinking in the admission
+  // snapshot. It was never split into a separate set_model command.
+  const dispatches = worker.sent.filter((message): message is Extract<SessiondToWorkerMessage, { type: "worker.submitTurn" }> => message.type === "worker.submitTurn");
+  assert.equal(dispatches.length, 2);
+  assert.deepEqual(dispatches[1]!.payload.request.activationOverrides, overrides);
+  assert.equal(dispatches[1]!.payload.request.whenBusy, "follow_up");
+  assert.deepEqual(second.snapshot.state.model, { provider: "anthropic", id: "claude-sonnet-4" });
+  assert.equal(second.snapshot.state.thinkingLevel, "high");
+  assert.equal(worker.sent.filter((message) => message.type === "worker.command" && (message.payload.command.type === "steer" || message.payload.command.type === "follow_up")).length, 0, "activation intent never forks into a separate queue command");
+
+  const pushes: SessiondTurnStatusPush[] = [];
+  const flushed = prepared.flushTo((push) => { pushes.push(push); });
+  await wait(0);
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0]!.status.state, "running", "an immediate queued completion must not terminalize the row");
+  assert.equal(pushes[0]!.status.disposition, "queued");
+  const retry = await service.submitTurn({ sessionId: "s", prompt: "second", operationId: "op-second", activationOverrides: overrides });
+  assert.equal(retry.status, "duplicate");
+  if (retry.status === "duplicate") {
+    assert.equal(retry.turnStatus.state, "running");
+    assert.equal(retry.turnStatus.disposition, "queued");
+  }
+  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 2, "a same-operation retry never re-dispatches");
+
+  // The running turn ends and the authority is idle: drain evidence now
+  // terminalizes the queued row exactly once with its own disposition.
+  worker.setSnapshot(promptCapSnapshot());
+  worker.emit({
+    type: "worker.turnStatus",
+    payload: { sessionId: "s", epoch: dispatches[0]!.payload.epoch, operationId: "op-first", turnId: dispatches[0]!.payload.turnId, revision: 1, state: "completed", disposition: "started" },
+  });
+  await flushed;
+  await waitUntil(() => pushes.some((push) => push.status.state === "completed" || push.status.state === "failed"));
+  const terminal = pushes.find((push) => push.status.state === "completed" || push.status.state === "failed");
+  assert.ok(terminal, "the queued row terminalizes on authoritative drain evidence");
+  assert.equal(terminal.status.state, "completed");
+  assert.equal(terminal.status.disposition, "queued");
+  assert.equal(service.listRunning().sessions[0]?.workerStatus, "ready");
+});
+
 test("running overview: pending/accepted turns are busy before agent_start and clear without a message", async (t) => {
   const { service, workers } = makeService({ turnAdmissionTimeoutMs: 50 }, {
     snapshot: promptCapSnapshot(),

@@ -619,6 +619,8 @@ export const enLocale = {
     "desktop.changeToolPresetWhileRunning": "Change tool preset",
     "desktop.changeModel": "Change model",
     "desktop.changeModelWhileRunning": "Change model",
+    "desktop.modelChangeFailed": "The model was not changed. The session still uses its previous model.",
+    "desktop.thinkingChangeFailed": "Thinking effort was not changed. The session still uses its previous setting.",
     "desktop.configAppliesNextTurn": "Applies from the next turn",
     "desktop.reasoningLevel": "Thinking effort",
     "desktop.moreControls": "More controls",
