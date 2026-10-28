@@ -629,6 +629,13 @@ export type TurnDelivery = "not_delivered" | "in_flight" | "accepted" | "uncerta
 interface TurnPending {
   readonly operationId: string;
   readonly sessionId: string;
+  /**
+   * The EXACT accepted submit payload, retained in memory only so a same-epoch
+   * reconnect can re-subscribe to status via an idempotent duplicate submit_turn.
+   * Never persisted, never re-enqueued in the outbox, never used to mint a new
+   * optimistic bubble or a new operationId.
+   */
+  readonly request: SubmitTurnRequest;
   /** LC-02 presentation provenance captured at send start (see {@link PresentationProvenance}). */
   provenance: PresentationProvenance | null;
   /** Authority epoch of the accepted admission. */
@@ -640,6 +647,7 @@ interface TurnPending {
   finalLeafId: string | null;
   /** The speculative bubble this accepted turn owns (null once committed). */
   optimisticId: string | null;
+  /** Current same-epoch status rejoin attempt (cleared on transport loss). */
   attempt: RuntimeAttemptHandle | null;
   terminal: boolean;
 }
@@ -1757,14 +1765,7 @@ export class SessionController implements RuntimeControllerPort {
     })();
   }
   private sendOutboxEntry(entry: OutboxEntry): void {
-    const request: SubmitTurnRequest = {
-      sessionId: entry.sessionId,
-      prompt: entry.prompt,
-      ...(entry.images === undefined ? {} : { images: [...entry.images] as ImageAttachment[] }),
-      ...(entry.activationOverrides === undefined ? {} : { activationOverrides: entry.activationOverrides }),
-      operationId: entry.operationId,
-      whenBusy: entry.whenBusy,
-    };
+    const request = this.buildSubmitTurnRequest(entry);
     // A send restored from storage after a reload has no live transaction yet:
     // re-open one so its bubble is visible again (it was on screen before the
     // page died, and it must stay until the authority commits it).
@@ -1777,7 +1778,7 @@ export class SessionController implements RuntimeControllerPort {
       onSent: () => undefined,
       onFrame: (frame) => {
         if (frame.type !== "submit_turn_result" || this.delivering?.operationId !== entry.operationId) return;
-        this.handleOutboxAdmission(entry, frame.payload);
+        this.handleOutboxAdmission(entry, frame.payload, request);
       },
       onSendFailure: () => {
         // The authority may or may not have received it. Both outcomes are safe
@@ -1794,6 +1795,17 @@ export class SessionController implements RuntimeControllerPort {
     });
   }
 
+  private buildSubmitTurnRequest(entry: OutboxEntry): SubmitTurnRequest {
+    return {
+      sessionId: entry.sessionId,
+      prompt: entry.prompt,
+      ...(entry.images === undefined ? {} : { images: [...entry.images] as ImageAttachment[] }),
+      ...(entry.activationOverrides === undefined ? {} : { activationOverrides: entry.activationOverrides }),
+      operationId: entry.operationId,
+      whenBusy: entry.whenBusy,
+    };
+  }
+
   /**
    * Settle one admission frame for the in-flight send.
    *
@@ -1803,7 +1815,7 @@ export class SessionController implements RuntimeControllerPort {
    * composer restore the draft. Anything else stays silent and is resent with
    * the same operationId.
    */
-  private handleOutboxAdmission(entry: OutboxEntry, admission: SubmitTurnAdmission): void {
+  private handleOutboxAdmission(entry: OutboxEntry, admission: SubmitTurnAdmission, request: SubmitTurnRequest): void {
     if (admission.status === "accepted" || admission.status === "duplicate") {
       this.outbox.dequeue(entry.operationId);
       this.delivering = null;
@@ -1821,7 +1833,7 @@ export class SessionController implements RuntimeControllerPort {
       if (tx !== null) {
         this.settlePromptTransaction(tx, { removeBubble: false, clearRunning: false });
       }
-      this.adoptSentTurn(entry, admission, optimisticId, provenance);
+      this.adoptSentTurn(entry, admission, optimisticId, provenance, request);
       this.notify();
       this.scheduleOutboxDrain();
       return;
@@ -2696,7 +2708,28 @@ export class SessionController implements RuntimeControllerPort {
       && !this.sessionStopped
       && !this.stopping
       && !this.fatal
-      && !this.runtimeConnection.getSnapshot().fatal;
+      && !this.runtimeConnection.getSnapshot().fatal
+      && this.attachRecoveryInFlight();
+  }
+
+  /**
+   * True only while an actual reconnect/re-attach is in progress (a logical
+   * attach attempt exists, or the transport is still recovering). A terminal
+   * failed attach response must not leave `resuming` claimed forever with no
+   * attempt behind it: the honest typed error is surfaced instead, and the next
+   * real transport recovery may try again.
+   */
+  private attachRecoveryInFlight(): boolean {
+    if (this.attachAttempt !== null || this.attach !== null) return true;
+    if (this.connection === "attaching") return true;
+    // A reconnect's create is settled before an intended session resumes on the
+    // same transport; that is still an actual recovery in progress.
+    if (this.intendedSession !== null && this.runtimeConnection.hasPendingCreate) return true;
+    const state = this.runtimeConnection.connectionState;
+    return state === "connecting"
+      || state === "handshaking"
+      || state === "reconnecting"
+      || state === "unavailable";
   }
 
   /** Narrow registry seams; no private lane fields are inspected externally. */
@@ -2769,6 +2802,7 @@ export class SessionController implements RuntimeControllerPort {
     this.attachGeneration += 1;
     this.attachGen = (this.attachGen ?? 0) + 1;
     this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
+    this.cancelTurnRejoinAttempt();
     this.settlePendingSideChatCommand({ code: "interrupted", message: "detached", retryable: false });
     this.connection = this.runtimeConnection.connectionState === "stopped" ? "stopped" : "ready";
     this.notify();
@@ -2949,6 +2983,7 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   private failAttachResponse(message: WsResponseMessage, sessionId: string): void {
+    const failedMode = this.attachAttempt?.mode ?? null;
     this.attachAttempt = null;
     const error: ProtocolError = message.payload.ok
       ? { code: "internal", message: "attach response without snapshot", retryable: false }
@@ -2959,7 +2994,21 @@ export class SessionController implements RuntimeControllerPort {
     this.setConnection("ready");
     if (attach) attach.reject(error);
     this.setError(error);
+    // A resume attach response is terminal for THIS recovery attempt: the
+    // pending lanes cannot re-register without a successful attach, so settle
+    // them exactly once through the common lane machinery with the honest typed
+    // error. No auto-create / re-activate is attempted; the next real transport
+    // recovery (if any) starts a fresh logical attach.
+    if (failedMode === "resume") this.settlePendingLanesOnAttachFailure(error);
     this.expireTerminalAdmittedIfSettled();
+  }
+
+  /** Settle every pending lane once on a terminal failed resume attach. */
+  private settlePendingLanesOnAttachFailure(error: ProtocolError): void {
+    for (const lane of this.pendingLanes()) {
+      if (lane.pending() === null) continue;
+      lane.settle(error);
+    }
   }
 
 
@@ -3067,7 +3116,7 @@ export class SessionController implements RuntimeControllerPort {
    * authority's responsibility; this only follows its status so the UI can
    * reconcile the bubble and refresh the catalog at terminal.
    */
-  private adoptSentTurn(entry: OutboxEntry, admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>, optimisticId: string | null, provenance: PresentationProvenance | null): void {
+  private adoptSentTurn(entry: OutboxEntry, admission: Extract<SubmitTurnAdmission, { status: "accepted" | "duplicate" }>, optimisticId: string | null, provenance: PresentationProvenance | null, request: SubmitTurnRequest): void {
     if (this.pendingTurn !== null) {
       // A previous accepted turn is still tracked (this send may have been
       // queued behind it). Its bubble is consumed by its own committed entry,
@@ -3123,6 +3172,7 @@ export class SessionController implements RuntimeControllerPort {
     const pending: TurnPending = {
       operationId: entry.operationId,
       sessionId: entry.sessionId,
+      request,
       provenance,
       epoch: admission.epoch,
       turnId: admission.turnId ?? null,
@@ -3151,6 +3201,85 @@ export class SessionController implements RuntimeControllerPort {
     // down) owes no further turn_status: settle it through the same path.
     const status = admission.turnStatus;
     if (status.state === "completed" || status.state === "failed") this.applyTurnStatus(pending, status, undefined);
+  }
+
+  /**
+   * Same-epoch status rejoin for an ALREADY ACCEPTED turn whose Host
+   * subscription was closed by the disconnect. This is delivery/status
+   * recovery, not a user send: it reuses the retained request verbatim
+   * (SAME operationId + payload) through the existing idempotent submit_turn
+   * path, never the outbox, never a new optimistic bubble. The authority
+   * answers a duplicate with its current turn status (or the already-terminal
+   * status), and any later status pushes route through the normal turn owner.
+   *
+   * The attempt is generation-bound by RuntimeConnection's strict frame
+   * routing; this callback additionally fences session/operation/epoch/turn so
+   * a late duplicate can never touch a newer track.
+   */
+  private rejoinTurnStatus(pending: TurnPending): void {
+    if (this.pendingTurn !== pending || pending.terminal) return;
+    if (pending.attempt !== null) return;
+    if (!this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE)) return;
+    const generation = this.runtimeConnection.currentGeneration;
+    let handle: RuntimeAttemptHandle | null = null;
+    let settled = false;
+    handle = this.binding.sendAttempt({
+      buildMessage: (id) => ({ type: "submit_turn", id, payload: pending.request }),
+      expectation: { kind: "submit_turn", sessionId: pending.sessionId, operationId: pending.operationId },
+      disconnectPolicy: "logical_retry",
+      onSent: () => undefined,
+      onFrame: (frame) => {
+        if (frame.type !== "submit_turn_result") return;
+        if (this.pendingTurn !== pending || pending.terminal) return;
+        if (pending.attempt !== handle || generation !== this.runtimeConnection.currentGeneration) return;
+        settled = true;
+        pending.attempt = null;
+        this.applyTurnRejoinAdmission(pending, frame.payload);
+      },
+      onSendFailure: () => {
+        // A transient send failure is not a delivery verdict: keep the tracker
+        // and let the next successful attach boundary re-subscribe. The turn
+        // itself is already accepted and keeps executing on the authority.
+        settled = true;
+        if (pending.attempt === handle) pending.attempt = null;
+      },
+      onDisconnect: () => {
+        // The transport removed the old-generation attempt; only clear the
+        // reference so a later resync can re-register it.
+        settled = true;
+        if (pending.attempt === handle) pending.attempt = null;
+      },
+    });
+    if (handle !== null && !settled && this.pendingTurn === pending && !pending.terminal) pending.attempt = handle;
+  }
+
+  /** Apply the duplicate admission's turn status with identity + revision fences. */
+  private applyTurnRejoinAdmission(pending: TurnPending, admission: SubmitTurnAdmission): void {
+    if (admission.status === "rejected") return;
+    if (admission.sessionId !== pending.sessionId || admission.operationId !== pending.operationId) return;
+    if (pending.epoch !== null && admission.epoch !== pending.epoch) return;
+    const status = admission.turnStatus;
+    if (status.sessionId !== pending.sessionId || status.operationId !== pending.operationId) return;
+    if (pending.epoch !== null && status.epoch !== pending.epoch) return;
+    if (pending.turnId !== null && status.turnId !== pending.turnId) return;
+    if (admission.status === "duplicate" && admission.turnId !== undefined && admission.turnId !== status.turnId) return;
+    const terminal = status.state === "completed" || status.state === "failed";
+    // A terminal duplicate is the authority's current truth even when its
+    // revision is not newer than the admission baseline: the turn was already
+    // finished while this client was offline, so it clears the gate exactly
+    // once through the normal terminal path. A non-terminal duplicate must be
+    // strictly newer than the last observed status to avoid regressions.
+    if (!terminal && status.revision <= pending.statusRevision) return;
+    this.applyTurnStatus(pending, status, undefined);
+    this.notify();
+  }
+
+  /** Cancel the current status-rejoin attempt without dropping the tracker. */
+  private cancelTurnRejoinAttempt(): void {
+    const pending = this.pendingTurn;
+    if (pending === null) return;
+    pending.attempt?.cancel();
+    pending.attempt = null;
   }
 
   /**
@@ -3378,15 +3507,22 @@ export class SessionController implements RuntimeControllerPort {
         resyncError: { code: "epoch_changed", message: "epoch changed; interrupt not re-sent", retryable: false },
       },
       {
-        // An ACCEPTED turn needs no resend: the message is already delivered.
-        // A resume keeps its status tracker; a session switch drops it (the
-        // bubble survives and the authority's committed entry consumes it).
+        // An ACCEPTED turn is already delivered, but its Host status
+        // subscription is per-connection. A same-epoch resume re-subscribes
+        // with the SAME operationId + payload (idempotent duplicate) so a
+        // terminal status that landed while offline clears the gate; an epoch
+        // change NEVER replays and settles the tracker through the common lane
+        // path. A session switch drops it (the bubble survives and the
+        // authority's committed entry consumes it).
         name: "turn",
         pending: () => this.pendingTurn,
+        resend: () => {
+          const pending = this.pendingTurn;
+          if (pending !== null) this.rejoinTurnStatus(pending);
+        },
         settle: (error) => this.settleTurn(error),
         reportsError: false,
         switchSettle: "always",
-        skipResync: () => true,
       },
     ];
   }
@@ -4134,9 +4270,13 @@ export class SessionController implements RuntimeControllerPort {
   /** Reject one-shot envelope requests on transport loss (MEDIUM-3). */
   private onTransportLoss(): void {
     this.invalidateAdmittedSnapshot();
-    // RuntimeConnection removes every old-generation attempt first. One-shot
-    // and read callbacks reject exactly once there; logical retry objects stay
-    // pending here until the exact attach resync decision re-registers them.
+    // RuntimeConnection removes every old-generation attempt first, including
+    // the per-connection status-rejoin attempt. Clear any remaining reference so
+    // a late frame can never settle the tracker after the transport is gone.
+    this.cancelTurnRejoinAttempt();
+    // One-shot and read callbacks reject exactly once there; logical retry
+    // objects stay pending here until the exact attach resync decision
+    // re-registers them.
   }
 
   /** Reject the in-flight prompt promise exactly once (MEDIUM-4). */

@@ -73,6 +73,29 @@ function acceptedAdmissionFor(sessionId: string, operationId: string, epoch: str
   };
 }
 
+/** A duplicate admission for an idempotent same-operation status rejoin. */
+function duplicateAdmissionFor(
+  sessionId: string,
+  operationId: string,
+  state: "running" | "completed" | "failed",
+  revision: number,
+  extra: Record<string, unknown> = {},
+  epoch = "e1",
+  turnId = "turn-1",
+): SubmitTurnAdmission {
+  return {
+    status: "duplicate",
+    delivery: "accepted",
+    sessionId,
+    epoch,
+    revision: revision + 10,
+    operationId,
+    turnId,
+    snapshot: snapshotPayload({ sessionId, epoch, lastEventId: revision + 10 }).snapshot as never,
+    turnStatus: { sessionId, epoch, operationId, turnId, revision, state, ...extra },
+  };
+}
+
 async function createSeededSession(
   h: RuntimeHarness,
   ws: FakeWebSocket,
@@ -446,6 +469,184 @@ describe("SessionStore — unconditional send over the negotiated seam", () => {
     void h.store.sendPrompt("second");
     await awaitSubmit(ws, 2);
     expect(h.controller("s1")!.getSnapshot().liveEntries).toHaveLength(liveBefore);
+    h.dispose();
+  });
+});
+
+describe("SessionStore — accepted turn status rejoin after reconnect", () => {
+  beforeEach(() => { vi.useRealTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  async function acceptedTurn(h: RuntimeHarness, ws: FakeWebSocket, prompt = "resume me") {
+    const sendP = h.store.sendPrompt(prompt);
+    await awaitSubmit(ws);
+    const submit = lastFrame<{ type: "submit_turn"; id: string; payload: { operationId: string; [key: string]: unknown } }>(ws, "submit_turn")!;
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: acceptedAdmission(h, submit.payload.operationId) });
+    await flush();
+    await sendP;
+    return submit;
+  }
+
+  it("same-epoch reattach re-subscribes the SAME operation; a duplicate terminal status clears the gate", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const submit = await acceptedTurn(h, ws);
+    const operationId = submit.payload.operationId;
+    const controller = h.controller("s1")!;
+    expect(controller.getSnapshot().turnActive).toBe(true);
+    // Real gate before recovery: ordinary mutations are honestly busy.
+    await expect(h.store.setModel("openai", "blocked")).rejects.toMatchObject({ code: "session_busy" });
+
+    const ws2 = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
+    await awaitSubmit(ws2);
+    const rejoin = submitFrames(ws2);
+    expect(rejoin).toHaveLength(1);
+    // SAME operationId + payload, fresh transport envelope: idempotent status
+    // recovery, never a new user send or a second bubble.
+    expect(rejoin[0]!.payload).toEqual(submit.payload);
+    expect(rejoin[0]!.payload.operationId).toBe(operationId);
+    expect(rejoin[0]!.id).not.toBe(submit.id);
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(1);
+
+    ws2.serverSend({
+      type: "submit_turn_result",
+      id: rejoin[0]!.id,
+      payload: duplicateAdmissionFor("s1", operationId, "completed", 2, { userEntryId: "entry-u", finalLeafId: "entry-u" }),
+    });
+    await flush();
+    // The terminal status already happened while the Host subscription was
+    // closed; the duplicate result is the authority's current truth and clears
+    // the gate exactly through the normal terminal path. No new bubble.
+    expect(controller.getSnapshot().turnActive).toBe(false);
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(1);
+
+    const modelP = h.store.setModel("openai", "gpt-5");
+    await flush();
+    const model = lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string; type: string } } }>(ws2, "command")!;
+    expect(model.payload.command.type).toBe("set_model");
+    ws2.serverSend({ type: "response", id: model.id, payload: { ok: true, result: { commandId: model.payload.command.commandId, result: { ok: true, type: "set_model" } } } });
+    await expect(modelP).resolves.toBeUndefined();
+
+    const thinkingP = h.store.setThinkingLevel("high");
+    await flush();
+    const thinking = lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string; type: string } } }>(ws2, "command")!;
+    expect(thinking.payload.command.type).toBe("set_thinking_level");
+    ws2.serverSend({ type: "response", id: thinking.id, payload: { ok: true, result: { commandId: thinking.payload.command.commandId, result: { ok: true, type: "set_thinking_level" } } } });
+    await expect(thinkingP).resolves.toBeUndefined();
+    h.dispose();
+  });
+
+  it("a still-running rejoin keeps the real gate and releases it only on an exact terminal status", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const submit = await acceptedTurn(h, ws);
+    const operationId = submit.payload.operationId;
+    const controller = h.controller("s1")!;
+
+    const ws2 = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
+    await awaitSubmit(ws2);
+    const rejoin = submitFrames(ws2)[0]!;
+    ws2.serverSend({
+      type: "submit_turn_result",
+      id: rejoin.id,
+      payload: duplicateAdmissionFor("s1", operationId, "running", 1),
+    });
+    await flush();
+    expect(controller.getSnapshot().turnActive).toBe(true);
+    await expect(h.store.setModel("openai", "blocked")).rejects.toMatchObject({ code: "session_busy" });
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(1);
+
+    // The re-subscription owns the turn again: its live terminal push is what
+    // releases the gate (never an idle snapshot guess).
+    ws2.serverSend(turnStatus("s1", operationId, 2, "completed", { userEntryId: "entry-u", finalLeafId: "entry-u" }));
+    await flush();
+    expect(controller.getSnapshot().turnActive).toBe(false);
+    const modelP = h.store.setModel("openai", "gpt-5");
+    await flush();
+    const model = lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string; type: string } } }>(ws2, "command")!;
+    ws2.serverSend({ type: "response", id: model.id, payload: { ok: true, result: { commandId: model.payload.command.commandId, result: { ok: true, type: "set_model" } } } });
+    await expect(modelP).resolves.toBeUndefined();
+    h.dispose();
+  });
+
+  it("epoch_changed NEVER replays an accepted submit and settles the tracker through the epoch-loss path", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    await acceptedTurn(h, ws);
+    const controller = h.controller("s1")!;
+    expect(controller.getSnapshot().turnActive).toBe(true);
+
+    const ws2 = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e2" });
+    await flush(20);
+    expect(submitFrames(ws2)).toHaveLength(0);
+    expect(controller.getSnapshot().turnActive).toBe(false);
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(1);
+    h.dispose();
+  });
+
+  it("a late rejoin result after detach/switch is ignored (old attempt cancelled, tracker retained)", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const submit = await acceptedTurn(h, ws);
+    const controller = h.controller("s1")!;
+    const ws2 = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
+    await awaitSubmit(ws2);
+    const rejoin = submitFrames(ws2)[0]!;
+
+    // Switching away detaches the old observation; its rejoin attempt must be
+    // cancelled so no late duplicate can settle the new context.
+    const switchP = h.store.openSession("s2");
+    await flush();
+    const detach = lastFrame<{ type: "detach"; id: string }>(ws2, "detach")!;
+    ws2.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    let attach2: { type: "attach"; id: string; payload: { sessionId: string } } | undefined;
+    for (let i = 0; i < 20 && attach2 === undefined; i += 1) {
+      await flush(4);
+      const candidate = lastFrame<{ type: "attach"; id: string; payload: { sessionId: string } }>(ws2, "attach");
+      if (candidate?.payload.sessionId === "s2") attach2 = candidate;
+    }
+    expect(attach2).toBeTruthy();
+
+    ws2.serverSend({
+      type: "submit_turn_result",
+      id: rejoin.id,
+      payload: duplicateAdmissionFor("s1", submit.payload.operationId, "completed", 2),
+    });
+    await flush();
+    expect(controller.getSnapshot().turnActive).toBe(true);
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(1);
+
+    ws2.serverSend({ type: "snapshot", id: attach2!.id, payload: snapshotPayload({ sessionId: "s2", epoch: "e2" }) });
+    await expect(switchP).resolves.toBeUndefined();
+    h.dispose();
+  });
+
+  it("a terminal failed resume attach settles the pending ordinary command and stops claiming resuming", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const modelP = h.store.setModel("openai", "gpt-5");
+    await flush();
+    expect(lastFrame(ws, "command")).toBeTruthy();
+
+    const ws2 = await h.reconnectAfterFailure();
+    const controller = h.controller("s1")!;
+    expect(controller.getSnapshot().resuming).toBe(true);
+    const attach = lastFrame<{ type: "attach"; id: string }>(ws2, "attach")!;
+    ws2.serverSend({ type: "response", id: attach.id, payload: { ok: false, error: { code: "not_found", message: "session gone", retryable: false } } });
+
+    await expect(modelP).rejects.toMatchObject({ code: "not_found" });
+    await flush();
+    expect(controller.getSnapshot()).toMatchObject({
+      attached: false,
+      resuming: false,
+      connection: "ready",
+      error: { code: "not_found", message: "session gone" },
+    });
+    // Failed recovery is terminal for this attach: no automatic create,
+    // re-activate or duplicate wire attempt.
+    expect(lastFrame(ws2, "create")).toBeUndefined();
+    expect(lastFrame(ws2, "activate")).toBeUndefined();
+    expect(ws2.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(1);
     h.dispose();
   });
 });
