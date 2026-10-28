@@ -295,7 +295,6 @@ interface TurnOperationRecord {
   dispatched: boolean;
   /** Drain context is not a correlated model-reply result. */
   queueDrainError?: ProtocolError;
-  queueDrainWaitForLifecycle?: boolean;
   queueDrainObserved?: boolean;
   subscribers: Set<TurnSubscriber>;
   terminalPush?: SessiondTurnStatusPush;
@@ -1232,6 +1231,14 @@ export class SessiondService {
         if (operation.terminalFinalization && status.revision <= operation.terminalFinalization.revision) return;
         if (status.state === "completed" || status.state === "failed") {
           if (status.error) this.rememberQueuedDrainError(record, status.error);
+          // A terminal turn is the lifecycle signal that drains queued sends
+          // delivered while it was running. Only rows already acknowledged can
+          // observe it; an idle projection that predates the acknowledgement is
+          // not evidence that this message has been consumed.
+          for (const queued of record.turnOperations.values()) {
+            if (!queued.dispatched && queued.epoch === record.epoch &&
+              (queued.admission.status === "accepted" || queued.admission.status === "duplicate")) queued.queueDrainObserved = true;
+          }
           void this.finalizeTurnAuthority(record, operation, status);
           break;
         }
@@ -1506,7 +1513,8 @@ export class SessiondService {
       if (data.type === "prompt_error" && data.error) this.rememberQueuedDrainError(record, data.error);
       if (data.type === "prompt_done" || data.type === "prompt_error" || data.type === "agent_settled" || data.type === "queue_update") {
         for (const operation of record.turnOperations.values()) {
-          if (!operation.dispatched && operation.epoch === record.epoch && operation.queueDrainWaitForLifecycle) operation.queueDrainObserved = true;
+          if (!operation.dispatched && operation.epoch === record.epoch &&
+            (operation.admission.status === "accepted" || operation.admission.status === "duplicate")) operation.queueDrainObserved = true;
         }
         this.reconcileQueuedTurns(record);
       }
@@ -2272,15 +2280,19 @@ export class SessiondService {
       // No-busy contract: a session that is already running gets the message
       // QUEUED through the authoritative steer / follow_up command path.
       if (this.isTurnRunning(record)) return this.queueWhileRunning(record, input, fingerprint);
-      // Capacity of the in-memory operation ledger is a transient condition:
-      // rotate the epoch (which also clears the ledger) and keep going. Loss of
-      // the ledger is safe because dedupe is durable (the JSONL receipts).
+      // Capacity of the in-memory operation ledger is a transient condition.
+      // Reclaim terminal, subscriber-free rows first; only a ledger still full
+      // of live rows needs a whole-epoch rotation (which also clears it). Loss
+      // of a terminal row is safe because dedupe is durable (JSONL receipts).
       if (record.turnOperations.size >= this.turnOperationLimit) {
-        const roll = await this.rotateEpoch(record, true);
-        // A failed rollover keeps the old epoch and ledgers intact. The request
-        // is still owed an answer, so dispatch into the existing epoch rather
-        // than dropping the user's message; capacity only bounds the ledger.
-        if (!roll.rolled && roll.error.code === "session_busy") this.noteCapacityOverflow(record);
+        this.noteCapacityOverflow(record);
+        if (record.turnOperations.size >= this.turnOperationLimit) {
+          const roll = await this.rotateEpoch(record, true);
+          // A failed rollover keeps the old epoch and ledgers intact. The request
+          // is still owed an answer, so dispatch into the existing epoch rather
+          // than dropping the user's message; capacity only bounds the ledger.
+          if (!roll.rolled && roll.error.code === "session_busy") this.noteCapacityOverflow(record);
+        }
       }
 
       return this.dispatchTurn(record, input, fingerprint);
@@ -2471,7 +2483,6 @@ export class SessiondService {
     if (operation.status.state !== "completed" && operation.status.state !== "failed") {
       const disposition = outcome.result.type === "steer" || outcome.result.type === "follow_up" ? outcome.result.disposition : undefined;
       operation.status = { ...operation.status, disposition: disposition ?? "queued" };
-      if (disposition === "started") operation.queueDrainWaitForLifecycle = true;
     }
     const admission: SubmitTurnAdmission = {
       status: "accepted",
@@ -2522,7 +2533,7 @@ export class SessiondService {
     };
     const operation: TurnOperationRecord = {
       operationId, fingerprint, epoch: record.epoch, turnId, dispatchId: `receipt:${record.epoch}:${randomUUID()}`,
-      admission, status, dispatched: false, queueDrainWaitForLifecycle: disposition === "started", subscribers: new Set(),
+      admission, status, dispatched: false, subscribers: new Set(),
     };
     if (record.turnOperations.size >= this.turnOperationLimit) this.noteCapacityOverflow(record);
     record.turnOperations.set(operationId, operation);
@@ -2691,7 +2702,7 @@ export class SessiondService {
         for (const { operation, revision } of captured) {
           if (!isCurrent()) return;
           if (record.turnOperations.get(operation.operationId) !== operation || operation.status.revision !== revision || !eligible(operation)) continue;
-          if (!error && operation.status.disposition === "started" && !operation.queueDrainObserved) continue;
+          if (!error && operation.status.disposition !== "handled" && !operation.queueDrainObserved) continue;
           if (!error && !idle && operation.status.disposition !== "handled") continue;
           const context = error ?? operation.queueDrainError;
           operation.status = {
@@ -3714,7 +3725,7 @@ export class SessiondService {
     return state.isPromptRunning || state.isStreaming || state.isBashRunning || state.isCompacting ||
       record.projection.snapshot().streaming?.active === true || (state.pendingMessageCount ?? 0) > 0 ||
       (state.queuedMessages?.steering.length ?? 0) > 0 || (state.queuedMessages?.followUp.length ?? 0) > 0 ||
-      [...record.turnOperations.values()].some((operation) => operation.dispatched && operation.epoch === record.epoch && (
+      [...record.turnOperations.values()].some((operation) => operation.epoch === record.epoch && (
         operation.terminalFinalization !== undefined ||
         (operation.status.state !== "completed" && operation.status.state !== "failed" &&
           (record.pendingTurnAdmissions.has(operation.dispatchId) ||

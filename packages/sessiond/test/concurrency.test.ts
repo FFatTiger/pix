@@ -1742,6 +1742,10 @@ for (const preAckSnapshot of [false, true]) {
     h.releaseAck();
     const b = await pending;
     assert.equal(b.result.status, "accepted");
+    // The terminal event arrived while the acknowledgement was held. Drain needs
+    // a lifecycle signal observed *after* delivery, so publish the queued turn's
+    // drain signal now that admission is authoritative.
+    h.worker.emitEvent({ type: "prompt_done", sessionId: "s" });
     if (preAckSnapshot) {
       assert.deepEqual(h.pushes.get("B"), []);
       h.worker.setHoldPostCommandSnapshots(false);
@@ -1755,16 +1759,30 @@ for (const preAckSnapshot of [false, true]) {
 }
 
 test("QUEUE-DRAIN: refresh timeout fails accepted queued rows and late snapshot cannot revive them", async (t) => {
-  const h = await queuedDrainHarness({ commandTimeoutMs: 25 }, "queued", { dropPostCommandSnapshots: true });
-  t.after(() => h.service.shutdown());
+  const ledger = receiptLedger([{ operationId: "timeout", turnId: "old-turn", delivery: "follow_up" }]);
+  const workers = new FakeWorkerFactory({ snapshot: promptCapSnapshot(), turnCompletion: "manual", dropPostCommandSnapshots: true });
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId) { return { cwd: `/${sessionId}`, projectRoot: `/${sessionId}` }; } },
+    workerFactory: workers,
+    sentMessages: ledger,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 25, idleTimeoutMs: 0 });
+  t.after(() => service.shutdown());
+  await service.activate("s");
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const prepared = await h.queue("timeout");
+  const prepared = await service.prepareSubmitTurn({ sessionId: "s", operationId: "timeout", prompt: "timeout" });
+  assert.equal(prepared.result.status, "duplicate");
+  assert.equal(prepared.result.delivery, "accepted");
+  const pushes: SessiondTurnStatusPush[] = [];
+  await prepared.flushTo((push) => { pushes.push(push); });
+  const late = workers.workers[0]!.captureMessageDelivery();
   t.mock.timers.tick(25);
   await flushMicrotasks();
-  assert.equal(h.pushes.get("timeout")?.[0]?.status.state, "failed");
-  assert.equal(h.pushes.get("timeout")?.[0]?.status.error?.code, "unavailable");
-  assert.equal(prepared.result.status, "accepted");
-  assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "ready");
+  assert.equal(pushes[0]?.status.state, "failed");
+  assert.equal(pushes[0]?.status.error?.code, "unavailable");
+  assert.equal(service.listRunning().sessions[0]?.workerStatus, "ready", "a failed queued row must not keep an idle runtime busy");
+  late({ type: "worker.snapshot", id: "late-queue-refresh", payload: { sessionId: "s", snapshot: promptCapSnapshot() } });
+  assert.equal(pushes.length, 1, "a late refresh cannot revive a terminal queued row");
 });
 
 test("QUEUE-DRAIN: stop/crash invalidate held reconciliation and late replies cannot settle a replacement", async (t) => {
@@ -1825,16 +1843,21 @@ test("QUEUE-DRAIN: durable queued replay hydrates a synthetic operation, then te
 test("QUEUE-DRAIN: bounded ledger keeps active queued rows and prunes terminal rows", async (t) => {
   const h = await queuedDrainHarness({ turnOperationLimit: 1 });
   t.after(() => h.service.shutdown());
-  await h.queue("B");
-  await h.queue("C");
+  const b = await h.queue("B");
+  const c = await h.queue("C");
+  assert.equal(b.result.status, "accepted");
+  assert.equal(c.result.status, "accepted");
   assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "busy");
   h.worker.setSnapshot(promptCapSnapshot());
   h.finish();
   await flushMicrotasks();
   assert.equal(h.pushes.get("B")?.[0]?.status.state, "completed");
   assert.equal(h.pushes.get("C")?.[0]?.status.state, "completed");
-  const rollover = await h.service.submitTurn(h.request("D"));
-  assert.equal(rollover.status, "rejected");
-  if (rollover.status === "rejected") assert.equal(rollover.error.code, "epoch_changed");
-  assert.equal(h.worker.sent.filter((message) => message.type === "worker.rotateEpoch").length, 1);
+  // Terminal, subscriber-free rows are reclaimed before a new send; capacity is
+  // a bounded buffer, never a user-visible rejection (same contract as any
+  // other turn admission), so D dispatches without an unnecessary epoch rotate.
+  const next = await h.service.submitTurn(h.request("D"));
+  assert.equal(next.status, "accepted");
+  assert.equal(h.worker.sent.filter((message) => message.type === "worker.rotateEpoch").length, 0);
+  assert.equal(h.worker.sent.filter((message) => message.type === "worker.submitTurn").length, 2);
 });
