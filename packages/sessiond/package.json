@@ -1,6 +1,6 @@
 {
   "name": "@fffattiger/pix-sessiond",
-  "version": "0.3.20",
+  "version": "0.3.21",
   "description": "Authoritative local runtime daemon for pix sessions",
   "type": "module",
   "engines": { "node": ">=22.19.0" },
@@ -28,11 +28,11 @@
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "dependencies": {
-    "@fffattiger/pix-agent-worker": "0.3.20",
-    "@fffattiger/pix-local-authority": "0.3.20",
-    "@fffattiger/pix-pi-sdk-adapter": "0.3.20",
-    "@fffattiger/pix-protocol": "0.3.20",
-    "@fffattiger/pix-runtime-core": "0.3.20"
+    "@fffattiger/pix-agent-worker": "0.3.21",
+    "@fffattiger/pix-local-authority": "0.3.21",
+    "@fffattiger/pix-pi-sdk-adapter": "0.3.21",
+    "@fffattiger/pix-protocol": "0.3.21",
+    "@fffattiger/pix-runtime-core": "0.3.21"
   },
   "devDependencies": {
     "@types/node": "^22",
