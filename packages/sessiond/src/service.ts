@@ -295,7 +295,14 @@ interface TurnOperationRecord {
   dispatched: boolean;
   /** Drain context is not a correlated model-reply result. */
   queueDrainError?: ProtocolError;
-  queueDrainObserved?: boolean;
+  /** Monotonic record sequence of the latest drain evidence (lifecycle or idle snapshot). */
+  queueDrainEvidence?: number;
+  /** Monotonic record sequence of the latest LIFECYCLE drain signal only. */
+  queueDrainLifecycle?: number;
+  /** Record evidence sequence captured when this queued delivery was acknowledged. */
+  queueAckEvidence?: number;
+  /** True when authoritative drain evidence existed before the ack/receipt. */
+  queueEvidenceBeforeAck?: boolean;
   subscribers: Set<TurnSubscriber>;
   terminalPush?: SessiondTurnStatusPush;
   terminalFinalization?: { revision: number; promise: Promise<void> };
@@ -393,6 +400,14 @@ interface RecordState {
   pendingInterrupts: Map<string, PendingInterrupt>;
   /** Phase 3 accepted/uncertain operation ledger; never FIFO-evicted. */
   turnOperations: Map<string, TurnOperationRecord>;
+  /**
+   * Monotonic per-record evidence sequence. Every authoritative lifecycle
+   * drain signal and every accepted idle snapshot advances it. Operations
+   * capture the current value at acknowledgement, so evidence observed BEFORE
+   * the ack is distinguishable from evidence observed after it without a
+   * boolean that silently loses that ordering.
+   */
+  queueEvidenceSequence: number;
   queuedReconciliation?: { dirty: boolean };
   pendingTurnAdmissions: Map<string, PendingTurnAdmission>;
   /** Phase 2B bounded read lane: pending worker-bound reads keyed by dispatch id. */
@@ -891,6 +906,7 @@ export class SessiondService {
         pendingCommands: new Map(),
         pendingInterrupts: new Map(),
         turnOperations: new Map(),
+        queueEvidenceSequence: 0,
         pendingTurnAdmissions: new Map(),
         pendingReads: new Map(),
         readQueue: [],
@@ -1073,6 +1089,14 @@ export class SessiondService {
         try {
           record.projection.replace(message.payload.snapshot);
           if (record.journal.lastEventId === 0) record.journalBaseSnapshot = record.projection.snapshot();
+          // An authoritative idle snapshot is drain evidence: it is the only
+          // observation that can prove a queued message already left a runtime
+          // whose terminal signal was delivered before the command ack. It is
+          // NOT lifecycle evidence, so it can never by itself satisfy a queued
+          // row acknowledged after the snapshot.
+          if (this.isProjectionIdle(record)) {
+            this.noteQueuedDrainEvidence(record, (operation) => !operation.dispatched, { lifecycle: false });
+          }
           this.broadcastRunningChanged(record.sessionId);
           if (pending) { clearTimeout(pending.timer); record.pendingSnapshots.delete(message.id!); pending.resolve(record.projection.snapshot()); }
           if (pending?.reconcileQueued !== false) this.reconcileQueuedTurns(record);
@@ -1219,8 +1243,10 @@ export class SessiondService {
         // queued operation's own terminal state below.
         if (!operation.dispatched) {
           if (status.state === "completed" || status.state === "failed") {
-            operation.queueDrainObserved = true;
-            if (status.error) operation.queueDrainError = status.error;
+            this.noteQueuedDrainEvidence(record, (candidate) => candidate === operation, {
+              lifecycle: true,
+              ...(status.error === undefined ? {} : { error: status.error }),
+            });
             this.reconcileQueuedTurns(record);
           }
           return;
@@ -1231,14 +1257,15 @@ export class SessiondService {
         if (operation.terminalFinalization && status.revision <= operation.terminalFinalization.revision) return;
         if (status.state === "completed" || status.state === "failed") {
           if (status.error) this.rememberQueuedDrainError(record, status.error);
-          // A terminal turn is the lifecycle signal that drains queued sends
-          // delivered while it was running. Only rows already acknowledged can
-          // observe it; an idle projection that predates the acknowledgement is
-          // not evidence that this message has been consumed.
-          for (const queued of record.turnOperations.values()) {
-            if (!queued.dispatched && queued.epoch === record.epoch &&
-              (queued.admission.status === "accepted" || queued.admission.status === "duplicate")) queued.queueDrainObserved = true;
-          }
+          // A terminal turn is lifecycle drain evidence for queued sends
+          // delivered while it was running. The sequence (not a boolean) lets
+          // reconciliation distinguish evidence observed before an ack from
+          // evidence observed after it; an idle projection alone never proves
+          // a message delivered after an earlier terminal was consumed.
+          this.noteQueuedDrainEvidence(record, (queued) => !queued.dispatched, {
+            lifecycle: true,
+            ...(status.error === undefined ? {} : { error: status.error }),
+          });
           void this.finalizeTurnAuthority(record, operation, status);
           break;
         }
@@ -1512,10 +1539,10 @@ export class SessiondService {
       this.push(record, { type: "event", event: appended.event });
       if (data.type === "prompt_error" && data.error) this.rememberQueuedDrainError(record, data.error);
       if (data.type === "prompt_done" || data.type === "prompt_error" || data.type === "agent_settled" || data.type === "queue_update") {
-        for (const operation of record.turnOperations.values()) {
-          if (!operation.dispatched && operation.epoch === record.epoch &&
-            (operation.admission.status === "accepted" || operation.admission.status === "duplicate")) operation.queueDrainObserved = true;
-        }
+        this.noteQueuedDrainEvidence(record, (operation) => !operation.dispatched, {
+          lifecycle: true,
+          ...(data.type === "prompt_error" && data.error ? { error: data.error } : {}),
+        });
         this.reconcileQueuedTurns(record);
       }
       if (data.type === "extension_ui_request") this.assistantOps?.scheduleSettleCheck();
@@ -2496,6 +2523,12 @@ export class SessiondService {
       turnStatus: operation.status,
     };
     operation.admission = admission;
+    // Delivery is now acknowledged. Capture the evidence sequence at that
+    // instant: pre-ack terminal/idle evidence is usable only together with a
+    // bounded post-ack authority snapshot proving the runtime is idle, while a
+    // lifecycle signal after this point drains the row through the normal path.
+    operation.queueAckEvidence = record.queueEvidenceSequence;
+    operation.queueEvidenceBeforeAck = operation.queueDrainEvidence !== undefined;
     // Admission owns delivery only. Never hold the submit lane for runtime drain.
     this.reconcileQueuedTurns(record);
     return admission;
@@ -2525,7 +2558,11 @@ export class SessiondService {
   /** Answer a resend from the durable receipt: accepted, delivered exactly once. */
   private duplicateFromReceipt(record: RecordState, operationId: string, receipt: DurableSendReceipt, fingerprint: string): SubmitTurnAdmission {
     const disposition: PromptDisposition = receipt.delivery === "started" ? "started" : "queued";
-    const turnId = receipt.delivery === "started" ? receipt.turnId : `turn:${randomUUID()}`;
+    // The receipt's persisted turn identity is STABLE across replays. Minting a
+    // fresh random id for a queued receipt would make the same operation answer
+    // a different turn identity after a ledger loss, which the client's exact
+    // rejoin fence cannot follow.
+    const turnId = receipt.turnId;
     const status: TurnStatus = { sessionId: record.sessionId, epoch: record.epoch, operationId, turnId, revision: 0, state: "running", disposition };
     const admission: SubmitTurnAdmission = {
       status: "duplicate", delivery: "accepted", sessionId: record.sessionId, epoch: record.epoch,
@@ -2537,6 +2574,13 @@ export class SessiondService {
     };
     if (record.turnOperations.size >= this.turnOperationLimit) this.noteCapacityOverflow(record);
     record.turnOperations.set(operationId, operation);
+    // The durable receipt is delivery evidence that predates this replay's
+    // authority refresh. Mark it at/at-or-before the synthetic ack so the one
+    // bounded refresh can terminalize an already-drained message without any
+    // future lifecycle frame; a still-running runtime keeps the row pending.
+    operation.queueDrainEvidence = ++record.queueEvidenceSequence;
+    operation.queueAckEvidence = operation.queueDrainEvidence;
+    operation.queueEvidenceBeforeAck = true;
     this.reconcileQueuedTurns(record);
     return admission;
   }
@@ -2654,6 +2698,32 @@ export class SessiondService {
   }
 
   /**
+   * Record one authoritative drain observation with a monotonic sequence.
+   * Lifecycle observations (terminal turn / prompt_done / agent_settled /
+   * queue_update) advance BOTH the generic evidence and the lifecycle marker;
+   * an idle authority snapshot advances only the generic marker. A queued row
+   * captures this sequence when its delivery is acknowledged, so `evidence <=
+   * ack` means "observed before/at the ack" and `lifecycle > ack` means "a real
+   * lifecycle signal arrived after delivery". Never waits or polls.
+   */
+  private noteQueuedDrainEvidence(
+    record: RecordState,
+    select: (operation: TurnOperationRecord) => boolean,
+    options: { lifecycle: boolean; error?: ProtocolError },
+  ): number {
+    const sequence = ++record.queueEvidenceSequence;
+    for (const operation of record.turnOperations.values()) {
+      if (operation.dispatched || operation.epoch !== record.epoch) continue;
+      if (operation.status.state === "completed" || operation.status.state === "failed") continue;
+      if (!select(operation)) continue;
+      operation.queueDrainEvidence = sequence;
+      if (options.lifecycle) operation.queueDrainLifecycle = sequence;
+      if (options.error !== undefined) operation.queueDrainError = options.error;
+    }
+    return sequence;
+  }
+
+  /**
    * QUEUE-DRAIN: these operations have accepted command delivery, but no worker
    * turn handle of their own. Completed means no longer outstanding after an
    * authoritative runtime drain, not independently correlated reply success.
@@ -2702,8 +2772,21 @@ export class SessiondService {
         for (const { operation, revision } of captured) {
           if (!isCurrent()) return;
           if (record.turnOperations.get(operation.operationId) !== operation || operation.status.revision !== revision || !eligible(operation)) continue;
-          if (!error && operation.status.disposition !== "handled" && !operation.queueDrainObserved) continue;
-          if (!error && !idle && operation.status.disposition !== "handled") continue;
+          if (!error && operation.status.disposition !== "handled") {
+            const ack = operation.queueAckEvidence;
+            // Case A: a lifecycle signal observed AFTER delivery acknowledged
+            // the drain (the normal path, including ack-before-terminal).
+            const lifecycleAfterAck = operation.queueDrainLifecycle !== undefined
+              && (ack === undefined || operation.queueDrainLifecycle > ack);
+            // Case B: terminal/idle evidence was already observed when the
+            // queued command was acknowledged (late ack). The refresh that just
+            // completed is the required bounded POST-ack authority read; if it
+            // is idle and the evidence predates the ack, the message has drained.
+            // A receipt replay seeds both values from the receipt itself.
+            const evidenceBeforeAck = operation.queueEvidenceBeforeAck === true;
+            if (!lifecycleAfterAck && !(idle && evidenceBeforeAck)) continue;
+            if (!idle) continue;
+          }
           const context = error ?? operation.queueDrainError;
           operation.status = {
             ...operation.status, revision: revision + 1, state: error !== undefined || context !== undefined ? "failed" : "completed",

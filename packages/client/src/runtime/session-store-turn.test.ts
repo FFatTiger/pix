@@ -536,6 +536,42 @@ describe("SessionStore — accepted turn status rejoin after reconnect", () => {
     h.dispose();
   });
 
+  it("a durable duplicate's synthetic turn id clears the exact same-operation rejoin gate, never a foreign one", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const submit = await acceptedTurn(h, ws, "receipt rejoin");
+    const operationId = submit.payload.operationId;
+    const controller = h.controller("s1")!;
+    expect(controller.getSnapshot().turnActive).toBe(true);
+
+    const ws2 = await h.reconnectAfterFailure({ sessionId: "s1", epoch: "e1" });
+    await awaitSubmit(ws2);
+    const rejoin = submitFrames(ws2)[0]!;
+    // A DIFFERENT operation with a synthetic turn id must never touch this
+    // tracker, even though its epoch is correct.
+    ws2.serverSend({
+      type: "submit_turn_result",
+      id: rejoin.id,
+      payload: duplicateAdmissionFor("s1", `${operationId}-foreign`, "completed", 2, {}, "e1", "turn-receipt"),
+    });
+    await flush();
+    expect(controller.getSnapshot().turnActive).toBe(true);
+
+    // The durable receipt hydration does not know the original in-memory turn
+    // id. Under the EXACT session/operation/epoch fence, and with the admission
+    // and status agreeing on the synthetic identity, the terminal truth must
+    // still clear the gate.
+    ws2.serverSend({
+      type: "submit_turn_result",
+      id: rejoin.id,
+      payload: duplicateAdmissionFor("s1", operationId, "completed", 2, { userEntryId: "entry-u", finalLeafId: "entry-u" }, "e1", "turn-receipt"),
+    });
+    await flush();
+    expect(controller.getSnapshot().turnActive).toBe(false);
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(1);
+    h.dispose();
+  });
+
   it("a still-running rejoin keeps the real gate and releases it only on an exact terminal status", async () => {
     const h = createHarness();
     const ws = await openAndAttachTurn(h);

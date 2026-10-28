@@ -52,6 +52,24 @@ import { stripAssistantMarker } from "@/lib/assistant-message";
 import { getDraft, getDraftFiles, setDraft, setDraftFiles } from "@/lib/draft-store";
 import { useAutoEnablePush } from "@/lib/push-subscription";
 
+/**
+ * A live control command that did NOT reach the runtime for a transient
+ * reason (active turn / prompt, another ordinary command, resuming transport,
+ * not attached, worker unavailable). The chosen value must become staged
+ * intent for the next send instead of disappearing into a silent no-op.
+ */
+function isRetryableLiveControlFailure(cause: unknown): boolean {
+  if (cause === null || typeof cause !== "object") return false;
+  const error = cause as { code?: unknown; retryable?: unknown };
+  if (error.retryable === true) return true;
+  return error.code === "session_busy"
+    || error.code === "not_attached"
+    || error.code === "unavailable"
+    || error.code === "conflict"
+    || error.code === "timeout"
+    || error.code === "epoch_changed";
+}
+
 export interface ComposerHandle {
   /** Clear the queue and put every queued message back into the input. */
   recallQueue: () => void;
@@ -998,18 +1016,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     (provider: string, modelId: string) => {
       if (!liveWorkspaceEnabled) return;
       if (live) {
-        // LIVE selected session: keep the existing immediate setModel behavior
-        // (capability-gated). Success clears ONLY the matching staged field;
-        // failure preserves it.
-        if (!hasModelSet || !exact) return;
+        // LIVE selected session. An ordinary control command is not writable
+        // while this client owns an active prompt/turn or the transport is
+        // resuming/not attached; it would reject `session_busy`/`unavailable`
+        // before ever touching the runtime. Stage the visible choice for the
+        // NEXT send instead of pretending the runtime changed.
+        if (!hasModelSet) return;
+        const writable = exact !== null && exact.attached && !exact.resuming
+          && !exact.promptPending && !exact.turnActive;
+        if (!writable) {
+          stageModel(provider, modelId);
+          return;
+        }
+        // Capture the staging generation BEFORE the command. A successful
+        // authoritative write clears ONLY that exact generation (a newer
+        // selection while the command is in flight is never erased).
+        const stagedRevision = staging.get(stagingKey)?.revision ?? null;
         exact
           .setModel(provider, modelId)
           .then(() => {
             if (!isCurrent()) return undefined;
-            clearStagedModel();
+            if ((staging.get(stagingKey)?.revision ?? null) === stagedRevision) clearStagedModel();
             return exact.fetchSnapshot();
-          })
-          .catch(() => undefined);
+          }, (cause: unknown) => {
+            if (!isCurrent()) return;
+            // The turn may have started / the transport may have gone away
+            // between the click and the admission. Preserve the user's choice
+            // as staged intent for the next turn; never a silent no-op.
+            if (isRetryableLiveControlFailure(cause)) stageModel(provider, modelId);
+          });
         return;
       }
       // DETACHED selected session: stage ONLY — no runtime command/attach here.
@@ -1017,26 +1052,36 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // before the prompt).
       stageModel(provider, modelId);
     },
-    [liveWorkspaceEnabled, live, hasModelSet, exact, isCurrent, stageModel, clearStagedModel],
+    [liveWorkspaceEnabled, live, hasModelSet, exact, isCurrent, stageModel, clearStagedModel, staging, stagingKey],
   );
 
   const handleThinkingLevelChange = useCallback(
     (level: ThinkingLevelOption) => {
       if (!liveWorkspaceEnabled) return;
       if (live) {
-        // LIVE selected session: keep the existing immediate setThinkingLevel
-        // behavior. The Protocol has no "auto" level (no unpin command exists);
-        // the auto option stays display-only until the runtime grows an explicit
-        // unpin. Success clears ONLY the matching staged field; failure preserves it.
-        if (!hasThinkingSet || level === "auto" || !exact) return;
+        // The Protocol has no "auto" level (no unpin command exists); the auto
+        // option stays display-only until the runtime grows an explicit unpin.
+        // Keep that semantics unchanged (never send an auto/unpin command).
+        if (!hasThinkingSet || level === "auto") return;
+        const writable = exact !== null && exact.attached && !exact.resuming
+          && !exact.promptPending && !exact.turnActive;
+        if (!writable) {
+          // Active turn / prompt, resuming, or not attached: stage the visible
+          // level for the next send. The staging display wins immediately.
+          stageThinking(level as ThinkingLevel);
+          return;
+        }
+        const stagedRevision = staging.get(stagingKey)?.revision ?? null;
         exact
           .setThinkingLevel(level as ThinkingLevel)
           .then(() => {
             if (!isCurrent()) return undefined;
-            clearStagedThinking();
+            if ((staging.get(stagingKey)?.revision ?? null) === stagedRevision) clearStagedThinking();
             return exact.fetchSnapshot();
-          })
-          .catch(() => undefined);
+          }, (cause: unknown) => {
+            if (!isCurrent()) return;
+            if (isRetryableLiveControlFailure(cause)) stageThinking(level as ThinkingLevel);
+          });
         return;
       }
       // DETACHED selected session: stage ONLY — no runtime command/attach here.
@@ -1044,7 +1089,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // thinking back to `auto` (nothing is sent on the next send).
       stageThinking(level === "auto" ? null : (level as ThinkingLevel));
     },
-    [liveWorkspaceEnabled, live, hasThinkingSet, exact, isCurrent, stageThinking, clearStagedThinking],
+    [liveWorkspaceEnabled, live, hasThinkingSet, exact, isCurrent, stageThinking, clearStagedThinking, staging, stagingKey],
   );
 
   /** The queue was just cleared. Hand the user's own messages back as a draft

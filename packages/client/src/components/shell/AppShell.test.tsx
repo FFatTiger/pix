@@ -2500,6 +2500,83 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     // No prompt was sent by the control interactions alone.
     expect(ws.sent.some((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt")).toBe(false);
   });
+
+  it("LIVE active turn: model/thinking selections stage visibly, send no doomed command, and ride the next submit", async () => {
+    mountApp({ cwd: "/x", session: "A" });
+    const ws = await connectReady();
+    await mountLiveA(ws);
+
+    const textarea = document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")!;
+    await act(async () => { fireEvent.change(textarea, { target: { value: "first" } }); await flush(); });
+    await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
+    await waitForSubmitTurn(ws);
+    await acceptSubmitTurn(ws, { sessionId: "A", model: { provider: "openai", id: "gpt-5" } });
+    expect(capturedStore!.registry.peek("A")?.getSnapshot().turnActive).toBe(true);
+
+    const commandsBefore = countType(ws, "command");
+    await pickModel("Claude Sonnet 4");
+    await pickThinking("high");
+    // The ordinary control slot is not writable during the active turn: the
+    // selection must stage immediately instead of disappearing in a silently
+    // rejected set_model/set_thinking_level command.
+    expect(countType(ws, "command")).toBe(commandsBefore);
+    expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
+    expect(screen.getByLabelText("Thinking effort").textContent).toContain("high");
+
+    await act(async () => { fireEvent.change(textarea, { target: { value: "second" } }); await flush(); });
+    // A running turn hides the Send button; Enter is the queue/steer send path.
+    await act(async () => { fireEvent.keyDown(textarea, { key: "Enter" }); await flush(); });
+    let second: SubmitTurnFrame | undefined;
+    await act(async () => {
+      for (let i = 0; i < 80 && second === undefined; i += 1) {
+        const frames = ws.sent.filter((frame): frame is SubmitTurnFrame => (frame as { type?: string }).type === "submit_turn");
+        if (frames.length >= 2) second = frames[1];
+        else await flush(4);
+      }
+    });
+    expect(second).toBeTruthy();
+    expect(second!.payload.activationOverrides).toEqual({
+      model: { provider: "anthropic", modelId: "claude-sonnet-4" },
+      thinkingLevel: "high",
+    });
+  });
+
+  it("LIVE control rejection while resuming/not attached stages the choice and never silently no-ops", async () => {
+    mountApp({ cwd: "/x", session: "A" });
+    const ws = await connectReady();
+    await mountLiveA(ws);
+    const commandsBefore = countType(ws, "command");
+
+    await pickModel("Claude Sonnet 4");
+    const modelCmd = lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    expect(modelCmd.payload.command).toMatchObject({ type: "set_model", provider: "anthropic", modelId: "claude-sonnet-4" });
+    await act(async () => {
+      ws.serverSend({ type: "response", id: modelCmd.id, payload: { ok: false, error: { code: "session_busy", message: "a prompt turn is already active", retryable: true } } });
+      await flush();
+    });
+    // The rejected write is preserved as staged intent, visible immediately.
+    expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
+
+    await pickThinking("high");
+    const thinkingCmd = lastFrame<{ type: "command"; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    expect(thinkingCmd.payload.command).toMatchObject({ type: "set_thinking_level", level: "high" });
+    await act(async () => {
+      ws.serverSend({ type: "response", id: thinkingCmd.id, payload: { ok: false, error: { code: "unavailable", message: "not attached to a runtime session", retryable: false } } });
+      await flush();
+    });
+    expect(screen.getByLabelText("Thinking effort").textContent).toContain("high");
+
+    // The next send carries both staged choices through the atomic submit.
+    const textarea = document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")!;
+    await act(async () => { fireEvent.change(textarea, { target: { value: "after resume" } }); await flush(); });
+    await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
+    const submit = await waitForSubmitTurn(ws);
+    expect(submit.payload.activationOverrides).toEqual({
+      model: { provider: "anthropic", modelId: "claude-sonnet-4" },
+      thinkingLevel: "high",
+    });
+    expect(countType(ws, "command")).toBe(commandsBefore + 2);
+  });
 });
 
 // --- negotiated runtime.submit-turn.v1: atomic model carry + admitted bridge ---

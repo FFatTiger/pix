@@ -3261,7 +3261,21 @@ export class SessionController implements RuntimeControllerPort {
     const status = admission.turnStatus;
     if (status.sessionId !== pending.sessionId || status.operationId !== pending.operationId) return;
     if (pending.epoch !== null && status.epoch !== pending.epoch) return;
-    if (pending.turnId !== null && status.turnId !== pending.turnId) return;
+    if (pending.turnId !== null && status.turnId !== pending.turnId) {
+      // A durable-receipt duplicate can hydrate a SYNTHETIC turn identity: the
+      // persisted receipt does not necessarily carry the in-memory turn id the
+      // tracker learned before the ledger was lost. Accept that identity change
+      // ONLY under the exact session/operation/epoch fence and only when the
+      // admission itself reports the same identity as its status (never an
+      // arbitrary stale id). The normal same-turn path above is unchanged.
+      const exactSyntheticDuplicate = admission.status === "duplicate"
+        && admission.sessionId === pending.sessionId
+        && admission.operationId === pending.operationId
+        && pending.epoch !== null
+        && admission.epoch === pending.epoch
+        && admission.turnId === status.turnId;
+      if (!exactSyntheticDuplicate) return;
+    }
     if (admission.status === "duplicate" && admission.turnId !== undefined && admission.turnId !== status.turnId) return;
     const terminal = status.state === "completed" || status.state === "failed";
     // A terminal duplicate is the authority's current truth even when its

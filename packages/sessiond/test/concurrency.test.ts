@@ -663,6 +663,13 @@ test("Phase 3: a second send while a turn runs is QUEUED, never rejected as sess
   // The first admission advanced the journal (running-state shim); an attached
   // client would hold the fresh revision — re-capture it before the second submit.
   const revision2 = liveRevision(service, "s", activated.epoch);
+  // The runtime queue truthfully HOLDS the accepted follow-up. An idle
+  // projection would prove it already drained; this active queue is exactly
+  // what must prevent premature completion (and keep the next send steering).
+  const queuedTruth = promptCapSnapshot();
+  queuedTruth.state.queuedMessages = { steering: [], followUp: [{ message: "second" }] };
+  queuedTruth.state.pendingMessageCount = 1;
+  workers.workers[0]!.setSnapshot(queuedTruth);
   const queued = await service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision2, prompt: "second", operationId: "op-second" });
   assert.equal(queued.status, "accepted");
   if (queued.status === "accepted") {
@@ -1728,12 +1735,15 @@ for (const disposition of ["started", "handled"] as const) {
 }
 
 for (const preAckSnapshot of [false, true]) {
-  test(`QUEUE-DRAIN: completion during held ack (${preAckSnapshot ? "pre-ack snapshot held" : "late ack"}) cannot lose reconciliation`, async (t) => {
+  test(`QUEUE-DRAIN: completion during held ack (${preAckSnapshot ? "pre-ack snapshot held" : "late ack"}) settles via the bounded post-ack refresh with NO later lifecycle event`, async (t) => {
     const h = await queuedDrainHarness();
     t.after(() => h.service.shutdown());
     h.holdAck();
     const pending = h.queue("B");
     await h.commandSeen();
+    // The authority is idle and the running turn already terminalized BEFORE
+    // the queued command acknowledgement is released. No prompt_done (or any
+    // other lifecycle frame) will follow it.
     h.worker.setSnapshot(promptCapSnapshot());
     if (preAckSnapshot) h.worker.setHoldPostCommandSnapshots(true);
     h.finish();
@@ -1742,21 +1752,43 @@ for (const preAckSnapshot of [false, true]) {
     h.releaseAck();
     const b = await pending;
     assert.equal(b.result.status, "accepted");
-    // The terminal event arrived while the acknowledgement was held. Drain needs
-    // a lifecycle signal observed *after* delivery, so publish the queued turn's
-    // drain signal now that admission is authoritative.
-    h.worker.emitEvent({ type: "prompt_done", sessionId: "s" });
     if (preAckSnapshot) {
-      assert.deepEqual(h.pushes.get("B"), []);
+      assert.deepEqual(h.pushes.get("B"), [], "the post-ack authority read is still pending");
       h.worker.setHoldPostCommandSnapshots(false);
       h.worker.releaseHeldSnapshots();
     }
     await flushMicrotasks();
     assert.equal(h.pushes.get("B")?.[0]?.status.state, "completed");
+    assert.equal(h.pushes.get("B")?.[0]?.status.disposition, "queued");
+    assert.ok(h.pushes.get("B")?.[0]?.authority, "the refresh packages the idle authority snapshot");
     assert.equal(await b.closed, null);
     assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "ready");
   });
 }
+
+test("QUEUE-DRAIN: late ack whose post-ack refresh fails publishes unavailable and clears busy", async (t) => {
+  const h = await queuedDrainHarness({ commandTimeoutMs: 25 }, "started", { dropPostCommandSnapshots: true });
+  t.after(() => h.service.shutdown());
+  h.holdAck();
+  const pending = h.queue("B");
+  await h.commandSeen();
+  // The running turn already ended BEFORE the held acknowledgement. The
+  // projection is truthfully idle; only the post-ack refresh can fail now.
+  h.worker.emitEvent({ type: "prompt_done", sessionId: "s" });
+  h.finish();
+  await flushMicrotasks();
+  h.releaseAck();
+  const b = await pending;
+  assert.equal(b.result.status, "accepted");
+  // No lifecycle event after the ack: the bounded post-ack refresh is the only
+  // source of truth and it times out. The accepted row must fail closed, never
+  // hang, and the idle runtime must not stay busy because of it.
+  await waitUntil(() => h.pushes.get("B")?.length === 1, 1_000);
+  assert.equal(h.pushes.get("B")?.[0]?.status.state, "failed");
+  assert.equal(h.pushes.get("B")?.[0]?.status.error?.code, "unavailable");
+  await waitUntil(() => h.service.listRunning().sessions[0]?.workerStatus === "ready", 1_000);
+  assert.equal(await b.closed, null);
+});
 
 test("QUEUE-DRAIN: refresh timeout fails accepted queued rows and late snapshot cannot revive them", async (t) => {
   const ledger = receiptLedger([{ operationId: "timeout", turnId: "old-turn", delivery: "follow_up" }]);
@@ -1827,17 +1859,53 @@ test("QUEUE-DRAIN: durable queued replay hydrates a synthetic operation, then te
   assert.equal(replay.status, "duplicate");
   if (replay.status !== "duplicate") throw new Error("expected durable duplicate");
   assert.equal(replay.turnStatus.disposition, "queued");
+  assert.equal(replay.turnId, "old-turn", "the persisted receipt turn identity is stable, never a fresh random id");
   const second = await service.submitTurn({ sessionId: "s", operationId: "durable-queued", prompt: "different" });
   assert.equal(second.status, "rejected");
   if (second.status === "rejected") assert.equal(second.error.code, "conflict");
   const worker = workers.workers[0]!;
   worker.setSnapshot(promptCapSnapshot());
-  worker.emitEvent({ type: "prompt_done", sessionId: "s" });
+  // NO prompt_done / lifecycle event follows the durable receipt replay. The
+  // synthetic operation must terminalize from the bounded replay-time authority
+  // refresh alone (the receipt already proves delivery).
   await flushMicrotasks();
   const terminal = await service.submitTurn({ sessionId: "s", operationId: "durable-queued", prompt: "same" });
   assert.equal(terminal.status, "duplicate");
-  if (terminal.status === "duplicate") assert.equal(terminal.turnStatus.state, "completed");
+  if (terminal.status === "duplicate") {
+    assert.equal(terminal.turnStatus.state, "completed");
+    assert.equal(terminal.turnStatus.disposition, "queued");
+  }
+  assert.equal(service.listRunning().sessions[0]?.workerStatus, "ready");
   assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 0);
+});
+
+test("QUEUE-DRAIN: durable started replay settles with NO later lifecycle event", async (t) => {
+  const ledger = receiptLedger([{ operationId: "replayed", turnId: "old-turn", delivery: "started" }]);
+  const workers = new FakeWorkerFactory({ snapshot: promptCapSnapshot(), turnCompletion: "manual" });
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId) { return { cwd: `/${sessionId}`, projectRoot: `/${sessionId}` }; } },
+    workerFactory: workers,
+    sentMessages: ledger,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  t.after(() => service.shutdown());
+  await service.activate("s");
+  const replay = await service.submitTurn({ sessionId: "s", operationId: "replayed", prompt: "same" });
+  assert.equal(replay.status, "duplicate");
+  if (replay.status !== "duplicate") throw new Error("expected durable duplicate");
+  assert.equal(replay.turnId, "old-turn");
+  assert.equal(replay.turnStatus.disposition, "started");
+  // No prompt_done / terminal push follows. The replay-time authority read is
+  // idle, so the synthetic operation must become terminal by itself.
+  await flushMicrotasks();
+  const terminal = await service.submitTurn({ sessionId: "s", operationId: "replayed", prompt: "same" });
+  assert.equal(terminal.status, "duplicate");
+  if (terminal.status === "duplicate") {
+    assert.equal(terminal.turnStatus.state, "completed");
+    assert.equal(terminal.turnStatus.disposition, "started");
+  }
+  assert.equal(service.listRunning().sessions[0]?.workerStatus, "ready");
+  assert.equal(workers.workers[0]!.sent.filter((message) => message.type === "worker.submitTurn").length, 0, "durable replay never dispatches");
 });
 
 test("QUEUE-DRAIN: bounded ledger keeps active queued rows and prunes terminal rows", async (t) => {
