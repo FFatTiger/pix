@@ -3672,7 +3672,7 @@ describe("AppShell — source-like sidebar rail", () => {
         if (path === "/x") return json({ path: "/x", parentPath: null, directories: ["draft-child"] });
         if (path === "/x/draft-child") return json({ path, parentPath: "/x", directories: [] });
         if (path === "/repo") return json({ path: "/repo", parentPath: null, directories: [] });
-        return json({ error: "not found", code: "PATH_NOT_FOUND" }, 404);
+        return jsonStatus({ error: "not found", code: "PATH_NOT_FOUND" }, 404);
       }
       return baseline(input, init);
     }) as typeof fetch;
