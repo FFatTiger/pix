@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { AppShell } from "./AppShell";
 import type { WorkspaceSearch } from "@/lib/search-params";
-import { getDraft } from "@/lib/draft-store";
+import { clearDraft, getDraft } from "@/lib/draft-store";
 import { queryKeys } from "@/api/query-keys";
 import type { SessionEntry, SessionHeader } from "@fffattiger/pix-protocol";
 import { RuntimeProvider, SelectedSessionProvider } from "@/runtime/runtime-provider";
@@ -3658,6 +3658,68 @@ describe("AppShell — source-like sidebar rail", () => {
 
     expect(navigateMock).toHaveBeenLastCalledWith({ to: "/", search: { cwd } });
     expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("keep this draft");
+  });
+
+  it("browses a server folder, preserves the draft, and never activates a worker", async () => {
+    clearDraft("new:/x");
+    clearDraft("new:/repo");
+    const baseline = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const p = String(input);
+      if (p.includes("/v1/cwd/roots")) return json({ roots: ["/x", "/repo"], defaultCwd: "/x" });
+      if (p.includes("/v1/cwd/browse")) {
+        const path = new URL(p, "http://pix.local").searchParams.get("path");
+        if (path === "/x") return json({ path: "/x", parentPath: null, directories: ["draft-child"] });
+        if (path === "/x/draft-child") return json({ path, parentPath: "/x", directories: [] });
+        if (path === "/repo") return json({ path: "/repo", parentPath: null, directories: [] });
+        return json({ error: "not found", code: "PATH_NOT_FOUND" }, 404);
+      }
+      return baseline(input, init);
+    }) as typeof fetch;
+    const view = mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
+    navigateMock.mockImplementation(async (options: { search: WorkspaceSearch }) => {
+      view.rerender(options.search);
+      await flush();
+    });
+    const ws = await connectReady();
+    await settle();
+
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "keep this draft" } });
+    await act(async () => { await flush(2); });
+    expect(getDraft("new:/x")?.value).toBe("keep this draft");
+
+    fireEvent.click(screen.getByLabelText("Select project"));
+    fireEvent.click(screen.getByRole("button", { name: "Browse folders…" }));
+    await settle();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // Starts at the current cwd because /x is an authorized root.
+    expect(screen.getByText("draft-child")).toBeTruthy();
+    // Navigate into a subfolder, then switch to another authorized root.
+    fireEvent.click(screen.getByTestId("folder-browser-directory"));
+    await settle();
+    fireEvent.click(screen.getAllByTestId("folder-browser-root")[1]!);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Select folder" }));
+    await settle();
+
+    expect(navigateMock).toHaveBeenLastCalledWith({ to: "/", search: { cwd: "/repo" } });
+    expect((document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement).value).toBe("keep this draft");
+    expect(countType(ws, "create")).toBe(0);
+    expect(countType(ws, "attach")).toBe(0);
+    expect(countType(ws, "activate")).toBe(0);
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn")).toHaveLength(0);
+    clearDraft("new:/x");
+    clearDraft("new:/repo");
+  });
+
+  it("does not offer server folder browsing without the files capability", async () => {
+    mountApp({ cwd: "/x" }, { capabilities: ["agent", "sessions", "models"] });
+    await settle();
+    fireEvent.click(screen.getByLabelText("Select project"));
+    // The manual path stays available; only the server browser is gated.
+    expect(screen.getByRole("button", { name: "Custom path…" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Browse folders…" })).toBeNull();
   });
 
   it("drops the select-a-project error once a project is picked", async () => {

@@ -4,6 +4,7 @@ import type { SlashCommandInfo, ThinkingLevel } from "@fffattiger/pix-protocol";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useSessionTranscript } from "@/features/session-history/use-session-transcript";
 import { useSelectedWorkspaceAccess } from "@/features/session-history/use-selected-workspace-access";
+import { ProjectFolderDialog } from "@/features/workspace/folder-browser/ProjectFolderDialog";
 import {
   describeWorkspaceAccess,
   type WorkspaceAccessDecision,
@@ -48,7 +49,7 @@ import {
 } from "@/components/chat/chat-runtime-view";
 import type { BuiltinSlashCommandResult, QueuedMessages as QueuedMessagesView } from "@/lib/chat-view-model";
 import { stripAssistantMarker } from "@/lib/assistant-message";
-import { getDraft, setDraft } from "@/lib/draft-store";
+import { getDraft, getDraftFiles, setDraft, setDraftFiles } from "@/lib/draft-store";
 import { useAutoEnablePush } from "@/lib/push-subscription";
 
 export interface ComposerHandle {
@@ -304,6 +305,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   /** Live draft key mirror: async callbacks must read the CURRENT selection. */
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
+  // Ephemeral folder chooser state (home project picker only).
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
 
   // --- Session title generation (Settings → Chat consumer) ------------------
   const autoTitleFiredRef = useRef<Set<string>>(new Set());
@@ -358,6 +361,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const canFilesIndex = can("files") && liveWorkspaceEnabled;
   const canUploadAttachments = can("attachments.upload") && liveWorkspaceEnabled;
   const canSkills = can("skills") && liveWorkspaceEnabled;
+  // The chooser is gated by the Host's `files` capability, not by whether a
+  // project is already selected (the whole point is choosing one).
+  const canBrowseProjectFolders = can("files") && liveWorkspaceEnabled;
+  const openProjectFolderDialog = useCallback(() => setFolderBrowserOpen(true), []);
+  const selectProjectFolder = useCallback((path: string) => {
+    setFolderBrowserOpen(false);
+    // Choosing a different project is one user intent: the current new-session
+    // draft follows it. ChatInput intentionally keeps two identified drafts
+    // separate on ordinary session switches, so carry this explicit project
+    // switch into the target key before the route remounts the composer.
+    if (!selectedSessionId && cwd && cwd !== path) {
+      const sourceKey = `new:${cwd}`;
+      const targetKey = `new:${path}`;
+      const source = getDraft(sourceKey);
+      const sourceFiles = getDraftFiles(sourceKey);
+      if (source && (source.value.length > 0 || source.images.length > 0)) {
+        setDraft(targetKey, { value: source.value, images: source.images });
+      }
+      if (sourceFiles.length > 0) setDraftFiles(targetKey, sourceFiles);
+    }
+    onProjectChange?.(path);
+  }, [cwd, onProjectChange, selectedSessionId]);
 
   // Authoritative running state (never inferred) OR a prompt transaction owned
   // by THIS selected session. The exact hook is ID-bound to the selected
@@ -1288,6 +1313,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         cwd={cwd}
         {...(placeholder === undefined ? {} : { placeholder })}
         {...(onProjectChange && projectRoots ? { projectRoots, onProjectChange } : {})}
+        {...(onProjectChange && projectRoots && canBrowseProjectFolders ? { onBrowseProject: openProjectFolderDialog } : {})}
         messagesScrollRef={transcriptScrollRef}
         {...(liveWorkspaceEnabled && canFilesIndex ? { listFiles, searchFiles } : {})}
         {...(liveWorkspaceEnabled && canSkills ? { listSkills } : {})}
@@ -1320,6 +1346,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         <div role="alert" aria-live="polite" style={{ padding: "6px 16px 0", color: "var(--status-danger)", fontSize: 12 }}>
           {sendError ?? workspaceAccessCopy}
         </div>
+      ) : null}
+      {folderBrowserOpen && canBrowseProjectFolders && onProjectChange ? (
+        <ProjectFolderDialog
+          initialPath={cwd ?? null}
+          onCancelAction={() => setFolderBrowserOpen(false)}
+          onSelectAction={selectProjectFolder}
+        />
       ) : null}
     </div>
   );

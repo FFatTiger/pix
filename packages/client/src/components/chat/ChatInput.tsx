@@ -137,6 +137,12 @@ interface Props {
   projectRoots?: readonly string[];
   /** Select the project directory a new session is created in (home draft only). */
   onProjectChange?: (projectRoot: string) => void;
+  /**
+   * Open the server-side project folder chooser (files capability). The
+   * callback is offered as the primary row in the project menu; the menu
+   * closes before it runs so the chooser owns focus.
+   */
+  onBrowseProject?: () => void;
   /** Messages scroll container — the popup menus cap their height at its top edge */
   messagesScrollRef?: React.RefObject<HTMLDivElement | null>;
   // ── pix adapter surface ────────────────────────────────────────────────
@@ -392,6 +398,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   cwd,
   projectRoots,
   onProjectChange,
+  onBrowseProject,
   messagesScrollRef,
   listFiles,
   searchFiles,
@@ -2458,6 +2465,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   >
                     <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
                       <div style={{ borderBottom: "1px solid var(--border)", marginBottom: 2, paddingBottom: 4 }}>
+                          {onBrowseProject ? (
+                            <MenuItem
+                              icon={<FolderIcon size={14} />}
+                              muted
+                              onClick={() => {
+                                setProjectDropdownOpen(false);
+                                setCustomPathMode(false);
+                                onBrowseProject();
+                              }}
+                            >
+                              {t("desktop.browseFolders")}
+                            </MenuItem>
+                          ) : null}
                           {customPathMode ? (
                             <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 4px" }}>
                               <input
