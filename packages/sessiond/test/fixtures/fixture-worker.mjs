@@ -97,17 +97,27 @@ switch (mode) {
     break;
   }
   case "hang": {
-    // Ignore stdin EOF; exit only on SIGTERM/SIGKILL.
-    process.stdin.resume();
+    // Fully initialize BEFORE announcing readiness: a ref'd handle so stdin EOF
+    // cannot end the process, and the signal disposition already installed. The
+    // parent only closes a worker it has seen `worker.ready` from, so the close
+    // escalation can never race this startup (a pre-init SIGTERM kills the
+    // fixture with the default disposition and the trampoline then drains to
+    // exit 0, which is not the path under test).
+    setInterval(() => {}, 1_000);
     onSignal((signal) => {
       process.stderr.write(`fixture got ${signal}\n`);
       process.exit(0);
     });
+    // stdin EOF is ignored: the onEnd handler is intentionally a no-op.
+    drainStdin((msg) => {
+      if (msg && msg.type === "worker.init") ready(msg.id, msg.payload?.sessionId ?? "sess-fixture", msg.payload?.build);
+    }, () => {});
     break;
   }
   case "hang-term": {
-    process.stdin.resume();
-    // Swallow SIGTERM; only SIGKILL works.
+    // Same ordering as `hang`: keepalive + swallowed SIGTERM first, then the
+    // readiness handshake. Only SIGKILL can end this worker.
+    setInterval(() => {}, 1_000);
     try {
       process.on("SIGTERM", () => {
         process.stderr.write("fixture ignoring SIGTERM\n");
@@ -115,6 +125,9 @@ switch (mode) {
     } catch {
       // ignore
     }
+    drainStdin((msg) => {
+      if (msg && msg.type === "worker.init") ready(msg.id, msg.payload?.sessionId ?? "sess-fixture", msg.payload?.build);
+    }, () => {});
     break;
   }
   case "stderr-flood": {

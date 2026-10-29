@@ -1317,17 +1317,53 @@ async function scenarioSubmitTurnBlocked(stack, projectDir) {
     const read = await client.read(sessionId, epoch, { type: "get_commands" }, { requestId: `submit-read-${Date.now()}` });
     assert.equal(read.payload.result.ok, true, JSON.stringify(read.payload.result));
 
-    // A second submitTurn while the turn runs is session_busy (single running
-    // turn). Use the client's LIVE cursor (advanced by received running-state
-    // events) so the revision fence passes and the turn-busy check decides.
-    const busy = await client.submitTurn(sessionId, { prompt: "second", operationId: `op-second-${Date.now()}`, expectedEpoch: epoch, expectedRevision: client.lastEventId });
-    assert.equal(busy.payload.status, "rejected", JSON.stringify(busy.payload));
-    assert.equal(busy.payload.error.code, "session_busy", JSON.stringify(busy.payload));
+    // 0.3.21 no-busy contract: a second submitTurn while the turn runs is NOT a
+    // rejection — the authority QUEUES it through the same authoritative
+    // steer/follow_up path the UI uses and acknowledges delivery only
+    // (disposition "queued"). expectedEpoch/expectedRevision are still accepted
+    // and deliberately ignored, so the live cursor is sent but the queue
+    // decides. The FIRST turn is never covered or replaced by this admission.
+    const secondOperationId = `op-second-${Date.now()}`;
+    const second = await client.submitTurn(sessionId, { prompt: "second", operationId: secondOperationId, expectedEpoch: epoch, expectedRevision: client.lastEventId });
+    assert.equal(second.payload.status, "accepted", JSON.stringify(second.payload));
+    assert.equal(second.payload.delivery, "accepted", JSON.stringify(second.payload));
+    assert.equal(second.payload.operationId, secondOperationId, JSON.stringify(second.payload));
+    assert.equal(second.payload.sessionId, sessionId);
+    assert.equal(second.payload.epoch, epoch);
+    // The queued acknowledgement is not a started turn: distinct turn identity,
+    // still running, disposition queued.
+    assert.equal(second.payload.turnStatus.state, "running", JSON.stringify(second.payload.turnStatus));
+    assert.equal(second.payload.turnStatus.disposition, "queued", JSON.stringify(second.payload.turnStatus));
+    assert.equal(second.payload.turnStatus.operationId, secondOperationId, JSON.stringify(second.payload.turnStatus));
+    assert.notEqual(second.payload.turnStatus.turnId, submit.payload.turnId, "a queued send owns a distinct turn identity");
+    // The running FIRST turn is untouched and the queue holds exactly one
+    // follow-up message (the second prompt); nothing was started.
+    const queuedState = second.payload.snapshot.state;
+    assert.equal(queuedState.isPromptRunning, true, JSON.stringify(queuedState));
+    assert.equal(queuedState.pendingMessageCount, 1, JSON.stringify(queuedState));
+    assert.deepEqual(queuedState.queuedMessages, { steering: [], followUp: [{ message: "second" }] }, JSON.stringify(queuedState.queuedMessages));
 
-    // Abort is independent: the interrupt settles the blocked turn with a failed terminal status.
+    // Abort is independent: the interrupt settles the blocked FIRST turn with a
+    // failed terminal status; the queued row is not terminalized by the abort
+    // (its message is still queued in the runtime projection).
     await client.interrupt(sessionId, `submit-abort-${Date.now()}`, { type: "abort" });
     const terminal = await client.waitForTurnStatus(sessionId, operationId, "failed");
     assert.equal(terminal.payload.turnId, submit.payload.turnId);
+
+    // Drain the queue deterministically: the deterministic fixture never
+    // delivers a queued message, so clear_queue IS the authoritative discard
+    // (its queue_update is lifecycle drain evidence). The queued row must
+    // terminalize exactly once, keep its own queued identity/disposition, and
+    // carry the abort's error context — never a fabricated completion.
+    const cleared = await client.interrupt(sessionId, `submit-clear-${Date.now()}`, { type: "clear_queue" });
+    assert.equal(cleared.payload.result.ok, true, JSON.stringify(cleared.payload));
+    const drained = await client.waitForTurnStatus(sessionId, secondOperationId, "failed");
+    assert.equal(drained.payload.disposition, "queued", JSON.stringify(drained.payload));
+    assert.equal(drained.payload.error?.code, "interrupted", JSON.stringify(drained.payload));
+    assert.equal(drained.payload.turnId, second.payload.turnStatus.turnId, "drain keeps the queued turn identity");
+    const queuedTerminals = client.messages.filter((message) => message.type === "turn_status" && message.payload?.operationId === secondOperationId && (message.payload?.state === "completed" || message.payload?.state === "failed"));
+    assert.equal(queuedTerminals.filter((message) => message.payload.state === "completed").length, 0, "a discarded queued send is never reported completed");
+    assert.equal(queuedTerminals.length, 1, `a queued send terminalizes exactly once: ${JSON.stringify(queuedTerminals)}`);
     return { sessionId };
   } finally {
     client.close();
@@ -2124,8 +2160,8 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
   //   Browser WS → Host gateway (serial + interleaving lanes) → sessiond →
   //   R2 child → R1 worker-main → fixture.
   // D2-P8 extension UI vertical slice. The prompt command awaits an extension
-  // request on the Host SERIAL lane; the response/input command is routed to the
-  // existing INTERLEAVING lane (D2-P4 queued-turn lane generalized) so it is
+  // request on the Host SERIAL lane; the extension_ui_response command is routed
+  // to the existing INTERLEAVING lane (D2-P4 queued-turn lane generalized) so it is
   // NOT HOL-blocked behind the prompt on the SAME socket — the prompt resumes
   // only after the correct response settles the request. Detach/reattach
   // persistence is checked on a second connection (detach is an ordinary serial
@@ -2257,20 +2293,19 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
       client2.close();
     }
 
-    // ---- 3. input incremental: exact-method input accumulates, wrong-method
-    // ----    input is invalid_input, only the final response closes.
+    // ---- 3. input: final-response-only. The incremental extension_ui_input
+    // ----    lane was removed with the custom panel, so a wrong-method
+    // ----    response is invalid_input and leaves the request pending; only the
+    // ----    final value response closes it. (The removed lane's fail-closed
+    // ----    1008 close is pinned by host/protocol unit tests.)
     ({ promptP, request, commandId } = await startUiPrompt("input", "enter"));
     const inputReqId = request.id;
     assert.equal(request.method, "input");
     const inputIndex = client.messages.length;
-    const in1 = await uiCommand("extension_ui_input", `d2p8-input-1-${Date.now()}`, { id: inputReqId, method: "input", data: "hello" });
-    assert.equal(in1.payload.result.result.ok, true, JSON.stringify(in1.payload));
-    const inWrong = await uiCommand("extension_ui_input", `d2p8-input-wrong-${Date.now()}`, { id: inputReqId, method: "editor", data: "wrong" });
+    const inWrong = await uiCommand("extension_ui_response", `d2p8-input-wrong-${Date.now()}`, { id: inputReqId, method: "editor", responseKind: "value", value: "wrong" });
     assert.equal(inWrong.payload.result.result.ok, false);
     assert.equal(inWrong.payload.result.result.error.code, "invalid_input");
-    const in2 = await uiCommand("extension_ui_input", `d2p8-input-2-${Date.now()}`, { id: inputReqId, method: "input", data: " world" });
-    assert.equal(in2.payload.result.result.ok, true);
-    assert.equal(client.projection.state.pendingExtensionUi.length, 1, "incremental input must NOT close the request");
+    assert.equal(client.projection.state.pendingExtensionUi.length, 1, "a wrong-method response must NOT close the request");
     const inputResp = await uiCommand("extension_ui_response", `d2p8-input-resp-${Date.now()}`, { id: inputReqId, method: "input", responseKind: "value", value: "hello world" });
     assert.equal(inputResp.payload.result.result.ok, true);
     await promptP;
@@ -2287,13 +2322,12 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
     await promptP;
     await waitForClose(selectReqId, selectIndex);
 
-    // ---- 5. editor: incremental reaches the driver; final value closes.
+    // ---- 5. editor: final response only; prefill is preserved and the final
+    // ----    value response closes the request.
     ({ promptP, request, commandId } = await startUiPrompt("editor", "edit"));
     const editorReqId = request.id;
     assert.equal(request.prefill, "prefill");
     const editorIndex = client.messages.length;
-    const ed1 = await uiCommand("extension_ui_input", `d2p8-editor-1-${Date.now()}`, { id: editorReqId, method: "editor", data: "draft" });
-    assert.equal(ed1.payload.result.result.ok, true);
     const editorResp = await uiCommand("extension_ui_response", `d2p8-editor-resp-${Date.now()}`, { id: editorReqId, method: "editor", responseKind: "value", value: "draft" });
     assert.equal(editorResp.payload.result.result.ok, true);
     await promptP;
@@ -2964,7 +2998,7 @@ async function runRound(round) {
     log(`round ${round}: Phase 2B independent read RPC OK session=${results.independentReadRpc.sessionId}`);
 
     results.submitTurnBlocked = await scenarioSubmitTurnBlocked(stack, projectA);
-    log(`round ${round}: Phase 4A.0.1 stale create-seed same-operation repair OK session=${results.submitTurnBlocked.sessionId}`);
+    log(`round ${round}: Phase 3 atomic submit-turn (queued second send + drain) OK session=${results.submitTurnBlocked.sessionId}`);
 
     results.lightCommands = await scenarioD2P1LightCommands(stack, projectA);
     log(`round ${round}: D2-P1 light commands OK session=${results.lightCommands.sessionId}`);
@@ -3056,13 +3090,13 @@ async function main() {
           "session isolation",
           "create then host-restart cold attach",
           "Phase 2B independent read RPC (negotiated read envelope + prompt overlap)",
-          "Phase 4A.0.1 create A → create B advances A journal → stale A conflict → same-operation authority-revision retry accepted → attach-after-admission + independent read/abort",
+          "Phase 3 atomic submit-turn (create A exact cursor admitted after create B's side-channel event → attach-after-admission + independent read → second submit ACCEPTED+QUEUED under the 0.3.21 no-busy contract with its own turn identity and untouched first turn → abort first turn → clear_queue drains the queued row exactly once as failed/interrupted, never completed)",
           "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + every-command-open)",
           "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + every-command-open)",
           "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + every-command-open)",
           "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + every-command-open)",
           "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + every-command-open + no orphan)",
-          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + late input not_found + replay cannot resurrect + abort clears + status/widget/title/notify events + every-command-open + reload cannot broaden)",
+          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor final-response-only exact-method (wrong-method response invalid_input leaves it pending, final hello world/draft value closes) + select cancel + late input not_found + replay cannot resurrect + abort clears + status/widget/title/notify events + every-command-open + reload cannot broaden)",
           "D2 navigate control (3-prompt tree + navigate to earlier leaf authoritative messageCount/history/leafId convergence + navigate forward + detach/reattach persistence + blocking prompt + second-connection navigate session_busy (prompt untouched) + invalid leaf invalid_input sanitized + every-command-open + capability advertised)",
           "Phase 5A revision/history-live merge (navigate → correct branch: post-navigate commit is a structural child of the navigated leaf, branch-off sibling excluded; compact → no ghost/duplicate: exactly one start+end, zero replayed message_end, trimmed counts converge, detach/reattach re-materializes nothing, live tail chains on the compacted leaf)",
           "D2 fork control (create + 2 turns + fork → NEW session id + OLD worker exits via identity-lane stop after the result + attach forked session with fork-point history + auto_name open on the forked session + forked worker exits on stop, no orphan)",

@@ -399,6 +399,12 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
     const bin = join(root, "bin");
     const gateReached = join(root, "gate-reached");
     const releaseGate = join(root, "release-gate");
+    // Durable-fact witness: the task record exactly as it existed at child
+    // startup, written by the shim BEFORE it touches the gate marker. The
+    // running row must be readable on disk at that instant; event-delivery
+    // order is not a contract (the SDK notifies subscribers only after
+    // awaiting its extension runner), a persisted record is.
+    const taskAtGate = join(root, "task-at-gate.json");
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
     await pinLocalMemory(agentDir);
@@ -410,6 +416,11 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
     if (process.platform !== "win32") {
       await writeFile(join(bin, "git"), [
         "#!/bin/sh",
+        `: > '${taskAtGate}'`,
+        `for f in '${agentDir}'/pi-claude-subagents/*/*/task.json; do`,
+        `  [ -f "$f" ] && cat "$f" >> '${taskAtGate}'`,
+        "  break",
+        "done",
         `printf reached > '${gateReached}'`,
         `while [ ! -f '${releaseGate}' ]; do [ -d '${root}' ] || exit 1; sleep 0.01; done`,
         "echo gated-startup-failure >&2",
@@ -471,12 +482,10 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
       await session.bindExtensions({ mode: "rpc" });
       const events: Array<Record<string, unknown>> = [];
       const projections: ReturnType<typeof readSubagentProjection>[] = [];
-      const gateStateAtUpdate: boolean[] = [];
       session.subscribe((event) => {
         if (!event.type.startsWith("tool_execution_")) return;
         events.push(event as unknown as Record<string, unknown>);
         if (event.type === "tool_execution_update" && event.toolName === "Agent") {
-          gateStateAtUpdate.push(existsSync(gateReached));
           projections.push(readSubagentProjection({
             agentDir,
             parentSessionId: session!.sessionId,
@@ -489,10 +498,10 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
         agentDir,
         gateReached,
         releaseGate,
+        taskAtGate,
         session,
         events,
         projections,
-        gateStateAtUpdate,
         restore: async () => {
           await writeFile(releaseGate, "go").catch(() => {});
           await new Promise((resolve) => setTimeout(resolve, 25));
@@ -536,8 +545,16 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
         let settled = false;
         const prompt = test.session.prompt("launch", { expandPromptTemplates: false }).finally(() => { settled = true; });
         await waitUntil(() => test.projections.length === 1, "Agent running update");
-        assert.deepEqual(test.gateStateAtUpdate, [false]);
         await waitUntil(async () => access(test.gateReached).then(() => true, () => false), "child startup gate");
+        // The running row must already be DURABLE when the child starts. The
+        // shim snapshots the task record immediately before it touches the
+        // gate, so this is the disk fact at startup — not a race between the
+        // tool-update delivery and the child's spawn.
+        const startupRecord = await readFile(test.taskAtGate, "utf8");
+        assert.notEqual(startupRecord.trim(), "", "child startup saw no persisted task record");
+        const startupTask = JSON.parse(startupRecord) as { id?: string; status?: string };
+        assert.equal(startupTask.status, "running", "running row was durable before child startup");
+        assert.equal(startupTask.id, test.projections[0]?.[0]?.taskId, "startup record is the published task");
         assert.equal(test.projections[0]?.length, 1);
         assert.equal(test.projections[0]?.[0]?.status, "running");
         const taskFile = join(

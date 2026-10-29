@@ -222,6 +222,28 @@ async function waitForState(
   });
 }
 
+/**
+ * Await an operation whose completion depends on the engine's own bounded abort
+ * timer. That timer is deliberately UNREF'd
+ * (vendor/pi-side-chat/headless-controller.ts `boundedWait`), so a bare `await`
+ * in a test whose run is otherwise handle-free lets Node drain the event loop
+ * first and the runner cancels the still-pending test with "Promise resolution
+ * is still pending but the event loop has already resolved". A ref'd test
+ * deadline keeps the loop alive, but also fails rather than hanging forever if
+ * the engine's bounded completion regresses. It is cleared on every outcome.
+ */
+async function withLiveEventLoop<T>(operation: () => Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error("side-chat bounded operation exceeded test deadline")), 5_000);
+  });
+  try {
+    return await Promise.race([operation(), deadline]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 function textOf(messages: readonly AgentMessage[]): string {
   return messages.map((message) => {
     if (message.role === "user") {
@@ -657,7 +679,9 @@ describe("vendored pi-side-chat characterization", () => {
     const run = side.submit("ignore abort");
     await waitForState(side, (state) => controllerPartialText(state) === "late abort text");
 
-    await side.abort();
+    // The abort must observe the engine's own 1s bound (abort-ignoring
+    // provider → quarantine), which is an unref'd timer: keep the loop alive.
+    await withLiveEventLoop(() => side.abort());
     const completion = await Promise.race([
       run.completion,
       new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
@@ -828,7 +852,10 @@ describe("vendored pi-side-chat characterization", () => {
     assert.equal(sent.ok, true);
     await waitForAdapterState(adapter, (state) => sidePartialText(state.partialMessage) === "stuck partial");
 
-    const aborted = await adapter.interrupt({ type: "abort_side_chat", conversationId: oldConversationId });
+    // `abort_side_chat` awaits the same unref'd 1s engine bound before the
+    // quarantine is observable, so the loop must stay alive across it.
+    const aborted = await withLiveEventLoop(() =>
+      adapter.interrupt({ type: "abort_side_chat", conversationId: oldConversationId }));
     assert.equal(aborted.ok, true, "logical abort succeeds by quarantining the failed controller");
     const quarantined = await waitForAdapterState(adapter, (state) => state.status === "idle" && state.error !== undefined);
     assert.equal(quarantined.conversationId, oldConversationId);

@@ -309,6 +309,12 @@ async function main() {
     packages: [globalPackageDir, "npm:pix-static-uninstalled"],
     npmCommand: [process.execPath, packageCommandProbe],
     customPreference: { retained: true },
+    // Pin the memory provider: the production default turns into Lore whenever
+    // the machine carries a Lore connection, and a Lore provider admits the
+    // real ~/.lore/skills work copies into the GLOBAL skill catalog. This suite
+    // asserts that exact global catalog, so the provider is frozen to local
+    // instead of depending on the operator's Lore install.
+    pixMemoryProvider: "local",
     subagents: {
       defaultModel: "test/main",
       fallbackModel: "test/backup",
@@ -316,6 +322,11 @@ async function main() {
     },
   }), { mode: 0o600 });
   writeFileSync(join(project, ".pi", "settings.json"), JSON.stringify({ packages: [projectPackageDir] }));
+  // Lore state sandbox: the operator's real ~/.lore/skills is never part of an
+  // E2E fixture. It stays empty so even a machine-level Lore connection can at
+  // most resolve to an empty managed-skill directory.
+  const loreHome = join(temp, "e2e-lore-home");
+  mkdirSync(loreHome, { recursive: true, mode: 0o700 });
   const env = {
     ...process.env,
     PIX_SESSIOND_DIR: runtimeDir,
@@ -330,10 +341,18 @@ async function main() {
     // Isolate HOME: the global skill catalog auto-discovers ~/.agents/skills
     // (SDK parity), so E2E must never read the operator's real home.
     HOME: join(temp, "e2e-home"),
+    // Isolate the Lore state directory by the SAME rule (LORE_HOME wins over
+    // $HOME/.lore), so an inherited LORE_HOME can never inject real skills.
+    LORE_HOME: loreHome,
   };
   delete env.PIX_PASSWORD;
   delete env.PIX_GATE_DISABLED;
   delete env.PIX_GATE_CONFIG;
+  // A real Lore connection (env credentials) would select the Lore memory
+  // provider on this machine and point at the operator's live server. The E2E
+  // is network-free: drop the inherited credentials instead of probing them.
+  delete env.LORE_BASE_URL;
+  delete env.LORE_API_TOKEN;
   // A local bind with no access key now renders the first-visit password
   // setup instead of the app; this suite drives the app surface, so opt the
   // throwaway host out explicitly instead of inheriting startup defaults.

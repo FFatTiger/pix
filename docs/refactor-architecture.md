@@ -60,6 +60,12 @@ Pi 防腐层（ACL）
 8. `pix-sessiond` 是 Session **唯一权威**；Web 只做代理与附着（attach）
 9. 只读浏览历史 → **0 Worker**（含 `SessionCatalogPort.readSessionTree` 的分支树投影：纯持久化 JSONL 只读投影，0 Worker，不激活 runtime）
 
+### AllowedRoots 可观察身份边界
+
+- Host 按 canonical path 与 OS `dev/ino` 身份校验根目录；身份改变、符号链接替换和路径越界均拒绝授权。测试必须先证明替换对象具有不同的可观察身份，再断言拒绝，不能假定立即删除/重建一定分配不同 inode。
+- `dev/ino` 被文件系统复用时，现有身份模型不能区分替换前后的物理目录；持久 ledger 恢复同样受此限制。这不是任意物理替换的完整检测保证，也不能消除授权检查与后续路径访问之间的外部修改竞态。更强保证需要独立设计句柄绑定及其完整生命周期，不属于当前路径身份合同。
+- 正常的根内内容、权限与时间戳变化不构成身份替换；不能用 `ctime` 或等待时间模拟对象身份。
+
 ### 附件统一存储（attachments store）冻结语义
 
 - 所有输入框附件（粘贴/拖入/+ 选择的图片与文件）统一存入 `<home>/.pi/pix/attachments`（env `PIX_ATTACHMENTS_DIR` 覆盖，必须是真实目录）：图片由 sessiond 在 submitTurn / prompt / steer / follow_up 权威路径上按内容哈希落盘（`<sha256-16>.<ext>`，同哈希复用），文件由 Host `POST /v1/attachments` 以 `<时间戳>-<随机>-<清洗后原名>` 落盘；无 sessionId 的首发上传进 `unfiled` 暂存（daemon 定期清扫，默认 14 天）。

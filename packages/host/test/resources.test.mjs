@@ -2,7 +2,7 @@ import { CANON_TMP as CANON_TMP_LONG, tempDir } from "./canon-tmp.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, realpathSync, lstatSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, realpathSync, lstatSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AsyncMutex, KeyedMutex } from "../dist/resources/mutex.js";
@@ -90,14 +90,37 @@ test("AllowedRootService allows ordinary in-root mutations", async () => {
   rmSync(file); writeFileSync(join(root, "replacement.txt"), "three"); assert.equal((await allowedRoots.authorizeExisting(join(root, "replacement.txt"), "file")).root, await import("node:fs/promises").then(({ realpath }) => realpath(root)));
 });
 
-test("AllowedRootService fails closed for delete/recreate, symlink swap, and rename replacement", async () => {
+test("AllowedRootService allows ordinary root metadata and content changes", async () => {
+  const { root, allowedRoots } = await fixture();
+  const file = join(root, "mutable.txt");
+  writeFileSync(file, "one");
+  chmodSync(root, 0o750);
+  mkdirSync(join(root, "nested"));
+  renameSync(file, join(root, "renamed.txt"));
+  assert.equal((await allowedRoots.authorizeExisting(join(root, "renamed.txt"), "file")).root, realpathSync(root));
+  writeFileSync(join(root, "nested", "deep.txt"), "two");
+  assert.equal((await allowedRoots.authorizeExisting(join(root, "nested", "deep.txt"), "file")).root, realpathSync(root));
+});
+
+test("AllowedRootService rejects observable identity changes after deletion, symlink swap, and rename replacement", async () => {
   for (const mode of ["delete-recreate", "symlink-swap", "rename-replacement"]) {
     const root = temp(`pi-root-${mode}-`); const roots = await createAllowedRootService({ roots: [root] }); const moved = `${root}-old`; temporary.push(moved);
-    if (mode === "delete-recreate") { rmSync(root, { recursive: true }); mkdirSync(root); }
+    if (mode === "delete-recreate") {
+      // Allocate the replacement while the original inode is still live. An
+      // immediate rm/mkdir may reuse dev/ino, which this identity contract cannot
+      // distinguish; the fixture must establish an observable replacement.
+      const replacement = temp("pi-root-replacement-");
+      const before = statSync(root, { bigint: true });
+      const after = statSync(replacement, { bigint: true });
+      assert.ok(before.dev !== after.dev || before.ino !== after.ino, "replacement must have a distinct OS identity");
+      rmSync(root, { recursive: true });
+      renameSync(replacement, root);
+    }
     else if (mode === "symlink-swap") { renameSync(root, moved); symlinkSync(moved, root, "dir"); }
     else { renameSync(root, moved); mkdirSync(root); }
     writeFileSync(join(root, "new.txt"), "unsafe");
     await assert.rejects(() => roots.authorizeExisting(join(root, "new.txt"), "file"), (e) => e.code === "ROOT_REPLACED" || e.code === "PATH_FORBIDDEN");
+    assert.equal(await roots.isAuthorized(join(root, "new.txt"), "file"), false);
   }
 });
 

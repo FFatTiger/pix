@@ -24,7 +24,7 @@ import {
 import { UnavailableWorkerFactory, startDaemon } from "../src/composition/index.js";
 import { SessiondError } from "../src/errors.js";
 import { SessiondRpcClient } from "../src/rpc.js";
-import type { WorkerExit, WorkerStartInput } from "../src/worker.js";
+import type { WorkerConnection, WorkerExit, WorkerStartInput } from "../src/worker.js";
 import type { WorkerToSessiondMessage } from "@fffattiger/pix-protocol";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,6 +57,32 @@ function factoryWithArgvMode(
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Synchronize on the fixture's explicit readiness handshake before closing.
+ * `start()` resolves as soon as the process spawned, so without this handshake
+ * the close escalation can hit a fixture that has not installed its signal
+ * disposition yet: a pre-init SIGTERM kills it with the default disposition and
+ * the stdio trampoline then drains to exit 0, which makes the SIGKILL branch
+ * untestable (the parent would observe `{ code: 0 }`, not a signal).
+ */
+async function awaitFixtureReady(connection: WorkerConnection, epoch: string): Promise<void> {
+  const readyPromise = onceMessage(connection, (message) => message.type === "worker.ready");
+  await connection.send({
+    type: "worker.init",
+    id: "init:act-1",
+    protocolVersion: PROTOCOL_VERSION,
+    payload: {
+      mode: "create",
+      sessionId: "sess-1",
+      epoch,
+      cwd: "/tmp/project",
+      projectRoot: "/tmp/project",
+      build: SESSIOND_BUILD_IDENTITY,
+    },
+  });
+  assert.equal((await readyPromise).type, "worker.ready");
+}
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -649,6 +675,7 @@ test("close escalates hang → SIGTERM", async () => {
   const connection = await factory.start(startInput);
   const pid = connection.pid;
   assert.ok(pid);
+  await awaitFixtureReady(connection, "epoch-hang-1");
   const exitPromise = onceExit(connection);
   const started = Date.now();
   await connection.close();
@@ -673,10 +700,11 @@ test("close escalates hang-term → SIGKILL", async () => {
   const factory = factoryWithArgvMode("hang-term", { stdinEndMs: 30, sigtermMs: 30, sigkillMs: 500 });
   const connection = await factory.start(startInput);
   const pid = connection.pid!;
+  await awaitFixtureReady(connection, "epoch-hang-term-1");
   const exitPromise = onceExit(connection, 5_000);
   await connection.close();
   const exit = await exitPromise;
-  assert.ok(exit.signal === "SIGKILL" || exit.code !== 0 || exit.code === null || exit.signal !== undefined);
+  assert.equal(exit.signal, "SIGKILL");
   let alive = true;
   try {
     process.kill(pid, 0);

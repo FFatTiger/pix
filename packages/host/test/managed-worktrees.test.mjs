@@ -7,6 +7,7 @@ import {
   writeFileSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   lstatSync,
 } from "node:fs";
@@ -295,6 +296,13 @@ test("remove then re-add the same path loses authority via inode/admin identity"
   const target = makeWorktree(root, "feature-readd");
   await recordCreated(deps, { path: target, branchAtCreate: "feature-readd", branchCreatedByPix: true, worktreeId: "mwt-readd-0001" });
 
+  // Reserve a distinct directory while the old inode is still live; immediate
+  // remove/add is otherwise allowed to reuse the same OS identity.
+  const replacement = temp("mwt-readd-replacement-");
+  const before = lstatSync(target, { bigint: true });
+  const reserved = lstatSync(replacement, { bigint: true });
+  assert.ok(before.dev !== reserved.dev || before.ino !== reserved.ino);
+
   // External deletion of the managed worktree.
   git(root, ["worktree", "remove", "--force", "--", target]);
   assert.equal((await ledger.read()).records.length, 1, "stale record remains on disk");
@@ -303,6 +311,7 @@ test("remove then re-add the same path loses authority via inode/admin identity"
   // Re-create a DIFFERENT worktree at the SAME path (branch still exists after remove).
   const base = `${resolve(realpathSync(root))}-worktrees`;
   mkdirSync(base, { recursive: true });
+  renameSync(replacement, target);
   git(root, ["worktree", "add", "--", target, "feature-readd"]);
   const newInfo = lstatSync(target);
   const oldRecord = (await ledger.read()).records[0];

@@ -54,6 +54,7 @@
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -343,10 +344,27 @@ async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir, exposureM
 async function main() {
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const previousHome = process.env.HOME;
+  const previousLoreHome = process.env.LORE_HOME;
+  const previousLoreBaseUrl = process.env.LORE_BASE_URL;
+  const previousLoreApiToken = process.env.LORE_API_TOKEN;
   // Isolated HOME: the global skill catalog auto-discovers ~/.agents/skills
   // (SDK parity), so the E2E must never read the operator's real home.
   const isolatedHome = await mkdtemp(join(tmpdir(), "pix-e2e-home-"));
   process.env.HOME = isolatedHome;
+  // This suite builds the PRODUCTION catalogs in-process (createProductionCatalogs),
+  // so the memory-provider default is resolved against this very process env.
+  // A machine with a Lore connection would flip it to Lore and admit the real
+  // ~/.lore/skills work copies into the global skill catalog. Isolate the Lore
+  // state dir and drop inherited credentials: the E2E stays network-free and
+  // never reads the operator's Lore install.
+  const isolatedLoreHome = await mkdtemp(join(tmpdir(), "pix-e2e-lore-"));
+  process.env.LORE_HOME = isolatedLoreHome;
+  delete process.env.LORE_BASE_URL;
+  delete process.env.LORE_API_TOKEN;
+  const restoreEnv = (key, value) => {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  };
   const agentDir = await mkdtemp(join(tmpdir(), "pix-e2e-agentdir-"));
   const sessiondDir = await mkdtemp(join(tmpdir(), "pix-e2e-sessiond-"));
   const projectCwd = await mkdtemp(join(tmpdir(), "pix-e2e-project-"));
@@ -686,6 +704,40 @@ async function main() {
         body: typeof body === "string" ? body : JSON.stringify(body),
         headers: { "content-type": "application/json" },
       });
+    // The production rename route rejects ANY query string — including a bare
+    // `?`, where the URL has an explicitly empty query. WHATWG fetch (undici)
+    // normalizes a trailing `?` away before sending, so the server would see a
+    // query-less URL and never exercise that guard. A raw node:http request
+    // keeps the exact request target, which is the only way this frozen
+    // fail-closed surface can be asserted end to end. Bounded so a broken route
+    // can never hang the suite.
+    const rawPatch = (path) => new Promise((resolve, reject) => {
+      const { hostname, port } = new URL(stack.origin);
+      const body = JSON.stringify({ name: "x" });
+      const req = httpRequest({
+        hostname,
+        port,
+        method: "PATCH",
+        path,
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+      }, (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { text += chunk; });
+        res.on("end", () => {
+          let parsed = null;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            parsed = null;
+          }
+          resolve({ status: res.statusCode, body: parsed });
+        });
+      });
+      req.setTimeout(5_000, () => req.destroy(new Error(`raw PATCH ${path} timed out`)));
+      req.on("error", reject);
+      req.end(body);
+    });
     // `session.delete` / `session.write` are advertised while sessiond is up (full caps).
     assert.ok(boot.body.capabilities.includes("session.delete"), `full caps must include session.delete: ${JSON.stringify(boot.body.capabilities)}`);
     assert.ok(boot.body.capabilities.includes("session.write"), `full caps must include session.write: ${JSON.stringify(boot.body.capabilities)}`);
@@ -819,7 +871,13 @@ async function main() {
       assert.equal(res.body.code, c.code);
       assert.equal(existsSync(p4File), true, "an invalid rename must never touch the file");
     }
-    for (const q of ["?", "?x", "?force=false"]) {
+    // A bare `?` is sent as a raw request target: undici would strip the empty
+    // query and the assertion would silently test a query-less rename (200).
+    const bareQuery = await rawPatch(`/v1/sessions/${FIXTURE_P4}?`);
+    assert.equal(bareQuery.status, 400, "rename query ? must be 400");
+    assert.equal(bareQuery.body.code, "INVALID_QUERY");
+    assert.equal(existsSync(p4File), true, "a query-rejected rename must never touch the file");
+    for (const q of ["?x", "?force=false"]) {
       const res = await jsonPatch(`/v1/sessions/${FIXTURE_P4}${q}`, { name: "x" });
       assert.equal(res.status, 400, `rename query ${q} must be 400`);
       assert.equal(res.body.code, "INVALID_QUERY");
@@ -953,6 +1011,9 @@ async function main() {
   } finally {
     process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     process.env.HOME = previousHome;
+    restoreEnv("LORE_HOME", previousLoreHome);
+    restoreEnv("LORE_BASE_URL", previousLoreBaseUrl);
+    restoreEnv("LORE_API_TOKEN", previousLoreApiToken);
     // Best-effort cleanup of any worker children spawned by the fixture: the
     // in-process daemon handle is authoritative, so capture the live worker
     // PIDs BEFORE shutdown (after shutdown the records are gone) and SIGKILL
