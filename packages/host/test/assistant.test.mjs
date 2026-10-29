@@ -215,6 +215,259 @@ test("registerAssistantRoutes requires exact deps (compile-level contract via ru
 });
 
 // ---------------------------------------------------------------------------
+// GET /v1/assistant?sessionId= — EXACT conversation selection
+// ---------------------------------------------------------------------------
+
+/** Assistant app + a client recorder proving what the route did/did not call. */
+function assistantSelectorApp(client) {
+  const app = createHostApp({
+    logger: {},
+    gate: { config: DISABLED_GATE },
+    assistant: { cwd: "/home/x/.pi/pix/assistant", client },
+  }).app;
+  return app;
+}
+
+test("GET /v1/assistant?sessionId= returns the binding for an exact assistant root session", async () => {
+  let readId;
+  const app = assistantSelectorApp({
+    async findLatest() {
+      throw new Error("the selector must never fall back to a latest lookup");
+    },
+    async read(sessionId) {
+      readId = sessionId;
+      return { session: { sessionId, cwd: "/home/x/.pi/pix/assistant", projectRoot: "/home/x/.pi/pix/assistant", createdAt: 1, updatedAt: 2, messageCount: 3 } };
+    },
+  });
+  const res = await call(app, "/v1/assistant?sessionId=old-conversation");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { cwd: "/home/x/.pi/pix/assistant", sessionId: "old-conversation" });
+  assert.equal(readId, "old-conversation");
+});
+
+test("GET /v1/assistant?sessionId= accepts the REAL flat SessionDetail shape from sessiond", async () => {
+  // sessiond `sessions.read` releases the SessionDetail object itself (no
+  // wrapper field). Production composition must work with that exact shape.
+  let readId;
+  const app = assistantSelectorApp({
+    async findLatest() { throw new Error("unused"); },
+    async read(sessionId) {
+      readId = sessionId;
+      return {
+        sessionId,
+        cwd: "/home/x/.pi/pix/assistant",
+        projectRoot: "/home/x/.pi/pix/assistant",
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_100_000,
+        lastMessageAt: 1_700_000_100_000,
+        messageCount: 4,
+        title: "Old Pixie chat",
+        workspaceAccess: { state: "authorized", reason: "allowed_root" },
+      };
+    },
+  });
+  const res = await call(app, "/v1/assistant?sessionId=flat-conversation");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { cwd: "/home/x/.pi/pix/assistant", sessionId: "flat-conversation" });
+  assert.equal(readId, "flat-conversation");
+});
+
+test("GET /v1/assistant?sessionId= answers a fixed 404 (never latest) for a foreign, child or missing id", async () => {
+  const cases = {
+    foreign: { sessionId: "foreign", cwd: "/repo", projectRoot: "/repo", createdAt: 1, updatedAt: 2, messageCount: 1 },
+    child: { sessionId: "child", cwd: "/home/x/.pi/pix/assistant", projectRoot: "/home/x/.pi/pix/assistant", parentSessionId: "parent", createdAt: 1, updatedAt: 2, messageCount: 1 },
+    // A sibling directory that merely shares a prefix is a different workspace.
+    sibling: { sessionId: "sibling", cwd: "/home/x/.pi/pix/assistantx", projectRoot: "/home/x/.pi/pix/assistantx", createdAt: 1, updatedAt: 2, messageCount: 1 },
+    // A case-different directory is a REAL different directory on a
+    // case-sensitive filesystem: identity is byte-for-byte, never case folded.
+    cased: { sessionId: "cased", cwd: "/HOME/X/.pi/pix/assistant", projectRoot: "/HOME/X/.pi/pix/assistant", createdAt: 1, updatedAt: 2, messageCount: 1 },
+    // A case-different ID for the SAME cwd is not the requested identity.
+    casedId: { sessionId: "CASED", cwd: "/home/x/.pi/pix/assistant", projectRoot: "/home/x/.pi/pix/assistant", createdAt: 1, updatedAt: 2, messageCount: 1 },
+    // Identity echo mismatch (stale read) must not be trusted either.
+    mismatched: { sessionId: "other-id", cwd: "/home/x/.pi/pix/assistant", projectRoot: "/home/x/.pi/pix/assistant", createdAt: 1, updatedAt: 2, messageCount: 1 },
+  };
+  for (const [name, header] of Object.entries(cases)) {
+    let latestCalls = 0;
+    const app = assistantSelectorApp({
+      async findLatest() {
+        latestCalls += 1;
+        return { cwd: "/home/x/.pi/pix/assistant", sessionId: "latest" };
+      },
+      async read() { return { session: header }; },
+    });
+    const res = await call(app, `/v1/assistant?sessionId=${name === "casedId" ? "cased-id" : name}`);
+    assert.equal(res.status, 404, name);
+    const body = await res.json();
+    assert.equal(body.code, "ASSISTANT_SESSION_NOT_FOUND", name);
+    assert.equal(latestCalls, 0, `${name}: never a latest fallback`);
+  }
+});
+
+test("GET /v1/assistant?sessionId= maps an unknown id to 404 and a sessiond outage to 503", async () => {
+  const notFoundApp = assistantSelectorApp({
+    async findLatest() { throw new Error("unused"); },
+    async read() {
+      const error = new Error("session not found");
+      error.code = "not_found";
+      throw error;
+    },
+  });
+  const missing = await call(notFoundApp, "/v1/assistant?sessionId=gone");
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).code, "ASSISTANT_SESSION_NOT_FOUND");
+
+  const downApp = assistantSelectorApp({
+    async findLatest() { throw new Error("unused"); },
+    async read() { throw new Error("sessiond down"); },
+  });
+  const down = await call(downApp, "/v1/assistant?sessionId=any");
+  assert.equal(down.status, 503);
+  assert.equal((await down.json()).code, "SESSIONS_UNAVAILABLE");
+});
+
+test("GET /v1/assistant rejects unknown/empty selectors with a fixed error", async () => {
+  const app = assistantSelectorApp({
+    async findLatest() { throw new Error("unused"); },
+    async read() { throw new Error("unused"); },
+  });
+  const unknown = await call(app, "/v1/assistant?sessionId=a&page=2");
+  assert.equal(unknown.status, 400);
+  assert.equal((await unknown.json()).code, "INVALID_QUERY");
+  const empty = await call(app, "/v1/assistant?sessionId=");
+  assert.equal(empty.status, 404);
+});
+
+// ---------------------------------------------------------------------------
+// GET /v1/assistant/sessions — assistant workspace conversation history page
+// ---------------------------------------------------------------------------
+
+function assistantPage(overrides = {}) {
+  return {
+    sessions: [
+      { sessionId: "newest", cwd: "/home/x/.pi/pix/assistant", projectRoot: "/home/x/.pi/pix/assistant", createdAt: 1, updatedAt: 3, messageCount: 2, title: "Newest" },
+      { sessionId: "older", cwd: "/home/x/.pi/pix/assistant", projectRoot: "/home/x/.pi/pix/assistant", createdAt: 1, updatedAt: 2, messageCount: 2, title: "Older" },
+    ],
+    page: 1,
+    pageSize: 20,
+    total: 2,
+    totalPages: 1,
+    catalogRevision: 4,
+    ...overrides,
+  };
+}
+
+test("GET /v1/assistant/sessions serves the canonical SessionPage with the AllowedRoots projection", async () => {
+  const root = tempDir("pix-assistant-page-");
+  try {
+    const assistantDir = join(root, "home", ".pi", "pix", "assistant");
+    mkdirSync(assistantDir, { recursive: true });
+    const roots = await createAllowedRootService({ roots: [join(root, "home")], allowLocalExpansion: false, allowLanExpansion: false });
+    const canonical = realpathSync(assistantDir);
+    const seen = [];
+    const app = createHostApp({
+      logger: {},
+      gate: { config: DISABLED_GATE },
+      assistant: {
+        cwd: canonical,
+        roots,
+        client: {
+          async findLatest(cwd) { return { cwd, sessionId: "newest" }; },
+          async listAssistant(params) {
+            seen.push(params);
+            return assistantPage({
+              sessions: [
+                { sessionId: "newest", cwd: canonical, projectRoot: canonical, createdAt: 1, updatedAt: 3, messageCount: 2 },
+                { sessionId: "older", cwd: canonical, projectRoot: canonical, createdAt: 1, updatedAt: 2, messageCount: 2 },
+              ],
+            });
+          },
+          async read() { throw new Error("unused"); },
+        },
+      },
+    }).app;
+    const res = await call(app, "/v1/assistant/sessions?page=1&pageSize=20");
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.page, 1);
+    assert.equal(body.pageSize, 20);
+    assert.equal(body.total, 2);
+    assert.equal(body.totalPages, 1);
+    assert.equal(body.catalogRevision, 4);
+    assert.deepEqual(body.sessions.map((session) => session.sessionId), ["newest", "older"]);
+    // Host is the authorization authority: every row carries the AllowedRoots
+    // classification (never an adapter-supplied guess).
+    for (const session of body.sessions) {
+      assert.equal(session.workspaceAccess.state, "authorized");
+      assert.equal(session.workspaceAccess.reason, "allowed_root");
+    }
+    // No cwd ever travels out: sessiond derives the assistant workspace itself.
+    assert.deepEqual(seen, [{ page: 1, pageSize: 20 }]);
+    // Defaulting mirrors /v1/sessions (page 1 / pageSize 50).
+    await call(app, "/v1/assistant/sessions");
+    assert.deepEqual(seen[1], { page: 1, pageSize: 50 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("GET /v1/assistant/sessions validates its page query before any RPC", async () => {
+  let calls = 0;
+  const app = assistantApp({
+    async findLatest(cwd) { return { cwd, sessionId: null }; },
+    async listAssistant() { calls += 1; return assistantPage(); },
+    async read() { throw new Error("unused"); },
+  });
+  for (const path of [
+    "/v1/assistant/sessions?page=0",
+    "/v1/assistant/sessions?pageSize=0",
+    "/v1/assistant/sessions?pageSize=101",
+    "/v1/assistant/sessions?page=1e3",
+    "/v1/assistant/sessions?page=1&page=2",
+    "/v1/assistant/sessions?cwd=/repo",
+    "/v1/assistant/sessions?query=secret",
+  ]) {
+    const res = await call(app, path);
+    assert.equal(res.status, 400, path);
+    assert.equal((await res.json()).code, "INVALID_QUERY", path);
+  }
+  assert.equal(calls, 0, "no RPC is issued for an invalid page request");
+});
+
+test("GET /v1/assistant/sessions maps catalog failures to a fixed 503 and never fakes an empty page", async () => {
+  const unavailable = assistantApp({
+    async findLatest(cwd) { return { cwd, sessionId: null }; },
+    async listAssistant() { throw new Error("sessiond down"); },
+    async read() { throw new Error("unused"); },
+  });
+  const res = await call(unavailable, "/v1/assistant/sessions?page=1&pageSize=20");
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).code, "SESSIONS_UNAVAILABLE");
+
+  // A missing seam method is an honest 503 too, never an empty page.
+  const seamless = assistantApp({
+    async findLatest(cwd) { return { cwd, sessionId: null }; },
+  });
+  const seamlessRes = await call(seamless, "/v1/assistant/sessions?page=1&pageSize=20");
+  assert.equal(seamlessRes.status, 503);
+  assert.equal((await seamlessRes.json()).code, "SESSIONS_UNAVAILABLE");
+
+  // A malformed payload (not a SessionPage) is a 503, never a pass-through.
+  const malformed = assistantApp({
+    async findLatest(cwd) { return { cwd, sessionId: null }; },
+    async listAssistant() { return { sessions: [] }; },
+    async read() { throw new Error("unused"); },
+  });
+  const malformedRes = await call(malformed, "/v1/assistant/sessions?page=1&pageSize=20");
+  assert.equal(malformedRes.status, 503);
+});
+
+test("GET /v1/assistant/sessions is not mounted without the assistant seam (404)", async () => {
+  const app = createHostApp({ logger: {}, gate: { config: DISABLED_GATE } }).app;
+  const res = await call(app, "/v1/assistant/sessions?page=1&pageSize=20");
+  assert.equal(res.status, 404);
+});
+
+// ---------------------------------------------------------------------------
 // Capability projection
 // ---------------------------------------------------------------------------
 

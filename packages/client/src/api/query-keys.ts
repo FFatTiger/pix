@@ -17,7 +17,16 @@ const CATALOG_STALE_MS = 15_000;
 
 export const queryKeys = {
   root: ["pix"] as const,
-  assistant: { all: ["pix", "assistant"] as const, info: () => ["pix", "assistant", "info"] as const },
+  assistant: {
+    all: ["pix", "assistant"] as const,
+    info: () => ["pix", "assistant", "info"] as const,
+    /** EXACT selected conversation binding (`?sessionId=`), keyed by identity. */
+    binding: (sessionId: string) => ["pix", "assistant", "binding", sessionId] as const,
+    /** The assistant workspace's OWN conversation history pages. */
+    sessions: ["pix", "assistant", "sessions"] as const,
+    sessionsLists: ["pix", "assistant", "sessions", "page"] as const,
+    sessionsPage: (page: number, pageSize: number) => ["pix", "assistant", "sessions", "page", page, pageSize] as const,
+  },
   gate: { all: ["pix", "gate"] as const, status: () => ["pix", "gate", "status"] as const },
   preferences: { all: ["pix", "preferences"] as const, map: () => ["pix", "preferences", "map"] as const },
   about: {
@@ -172,6 +181,29 @@ export function createQueryOptions(http: HttpClient) {
       // "latest session in the fixed directory"): fresh on mount/focus, no
       // polling. Only called while the `assistant` capability is advertised.
       info: () => queryOptions({ queryKey: queryKeys.assistant.info(), queryFn: ({ signal }) => assistant.get(signal), staleTime: 0, retry: false }),
+      // EXACT selected conversation (`?assistantSession=`): enabled only for a
+      // non-empty id; a 404 is the selector's honest not-found state. Never
+      // falls back to the latest binding. Identity is immutable: a successful
+      // read (or an acknowledged assistant create) remains valid until an
+      // explicit persistence/deletion boundary invalidates it. Revalidating a
+      // just-created id on mount races the SDK's lazy JSONL append.
+      binding: (sessionId: string) => queryOptions({
+        queryKey: queryKeys.assistant.binding(sessionId),
+        queryFn: ({ signal }) => assistant.byId(sessionId, signal),
+        enabled: sessionId.length > 0,
+        staleTime: Infinity,
+        retry: false,
+      }),
+      // Assistant conversation history pages: true numbered pages from the
+      // server-resolved workspace (no cwd, no polling). Same stale window as
+      // the ordinary session pages; `sessions_changed` invalidates them.
+      sessions: (page: number, pageSize: number, enabled = true) => queryOptions({
+        queryKey: queryKeys.assistant.sessionsPage(page, pageSize),
+        queryFn: ({ signal }) => assistant.sessions({ page, pageSize, signal }),
+        enabled,
+        staleTime: 30_000,
+        retry: false,
+      }),
     },
     models: {
       // Global read-only catalog: always enabled at this layer; callers gate

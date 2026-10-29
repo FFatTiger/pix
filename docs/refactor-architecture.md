@@ -480,14 +480,38 @@ packages/
   三方共用，禁止各自复制）。Host 启动时创建该目录（0700）、经 AllowedRoots
   授权并按 POST /v1/trust 同一 seam 一次性标记 trusted（永不弹信任打断）。
   目录不在 AllowedRoots 内 ⇒ 不挂 `assistant` 能力、不挂路由、入口隐藏（fail-closed）。
-- **无会话概念的实现**：URL 只有 `/?assistant=1` 选择符，不带 session id；
-  `GET /v1/assistant` 返回 `{cwd, sessionId|null}`（sessiond `sessions.findLatest`
-  精确 cwd 查询，0 Worker）。助手会话 = 该目录下最新的会话；首条消息才创建。
+- **默认绑定 = 最新会话**：`GET /v1/assistant` 返回 `{cwd, sessionId|null}`
+  （sessiond `sessions.findLatest` 精确 cwd 查询，0 Worker）。没有任何显式选择时，
+  助手视图显示该目录下最新的会话；首条消息才创建（点击/建标签永不建空会话）。
+- **显式选择旧会话**：URL 的助手选择符为 `?assistant=1`，可带可选
+  `&assistantSession=<id>` 精确选择某一个旧会话。一旦带上，路由就是选择的唯一
+  真相：绑定刷新（最新会话变化）不会把视图跳走。Host 用
+  `GET /v1/assistant?sessionId=<id>` 精确校验——必须存在、必须是 ROOT 会话、
+  cwd 必须严格等于服务端助手目录；否则固定 404，**绝不回退 latest**。
+- **会话历史列表（独立、按页读取）**：`GET /v1/assistant/sessions?page=&pageSize=`
+  返回与 `/v1/sessions` 相同的 `SessionPage` DTO（行照常带 AllowedRoots
+  `workspaceAccess` 投影）。客户端不传 cwd：sessiond 从 `resolveAssistantWorkspaceDir`
+  单点推导并 canonical 校验助手目录，调用 catalog 新增的
+  `listAssistantSessionPage`（精确 cwd + root-only，过滤在 total/分页之前，
+  modified DESC/id ASC；projection 与内存 fallback 同一身份规则；请求路径不做
+  JSONL 全量扫描）。该 seam 缺失或索引不可用 = 诚实 `unavailable`，不空成功。
+  协议方法为 `sessions.listAssistant`（参数只有 page/pageSize；contract v13）。
+- **侧栏入口**：Pixie 父行与缩进会话使用同一滚动分组和项目列表的折叠结构，
+  不另设分组标题；默认展开、最多三条，点击「更多」继续展开并按需取下一页。
+  父行右侧箭头独立折叠（不导航、不停止会话），展开偏好由侧栏偏好 owner 保存。
+  Pixie 行右侧的小加号进入 assistant draft，
+  首条发送才 create；全局新建入口是搜索按钮旁的小图标。
+  助手会话保留助手 cwd 与工具能力，绝不混进普通 sessions/projects 列表。
 - **隐藏**：该目录按 browse-kind `hidden` 从 sessions/projects 页消失（projection
-  schema v7 强制重建；内存 fallback 同样排除），但按 id 的 detail/context 照常。
-  客户端永不按 session id 为助手会话物化标签；取而代之的是固定单例 **Pixie 标签**
-  （kind `assistant`、无 session 身份，绑定变化/rekey 不会使标签过期），经同一套
-  workspace-tab 管道物化/持久化/关闭（关闭只关标签，常驻 worker 归 sessiond）。
+  schema v7 强制重建；内存 fallback 同样排除），但按 id 的 detail/context 照常，
+  且只经上面那条精确 cwd 的分页 seam 出现在 Pixie 自己的列表里。
+  客户端永不按 session id 为普通会话物化标签；Pixie 仍是固定单例 **Pixie 标签**
+  （kind `assistant`），它额外记住「当前选中的助手会话 id」以支持切换标签/返回，
+  该选择来自路由（不落 localStorage，也不作为标签身份），经同一套 workspace-tab
+  管道物化/持久化/关闭（关闭只关标签，常驻 worker 归 sessiond）；普通 session
+  tab 永不物化 Pixie。
+- **一次只常驻一个**：常驻语义不变——sessiond 只保有被追踪的那一个助手会话；
+  浏览/切换历史会话一律 0 Worker（读 JSONL 索引），不把历史会话拉起。
 - **助手专属工具（十个，只读为主）**：`search_sessions` / `read_session` /
   `session_status` / `list_open_todos` / `summarize_activity` /
   `find_file_changes` / `list_projects` / `open_session` / `organize_sessions` /
@@ -517,9 +541,13 @@ packages/
   会话 → 直接进入对话并携带草稿（不发送），没有 → 进入"助手状态"
   （`/?draft=assistant`：入口呈选中态（助手 + ✕）、项目选择器隐藏、
   占位文案切换），发送后在固定 cwd 创建会话并跳转 `/?assistant=1`。
-  侧栏「助手」：已有会话直接打开，没有则进入草稿状态；直接访问
-  `/?assistant=1` 而无会话时重定向到草稿状态。助手绑定查询在
-  `assistant` 能力存在时即运行（侧栏/入口分支需要它），仍为只读。
+  侧栏「助手」：已有会话直接打开（重新进入已打开的 Pixie 标签时恢复它当前
+  选中的会话），没有则进入草稿状态；入口下方的 Pixie 会话列表可直接切到任一
+  旧会话（`?assistant=1&assistantSession=<id>`），新建按钮回到同一草稿入口。
+  直接访问 `/?assistant=1` 而无会话时重定向到草稿状态（带显式
+  `assistantSession` 时不会重定向）。助手绑定查询在 `assistant` 能力存在时
+  即运行（侧栏/入口分支需要它），仍为只读；会话列表查询只在 `assistant` 能力
+  且分组展开时运行，无轮询，`sessions_changed` 推送即失效重取。
 - **能力令牌**：Host `assistant` token 仅在 seam 已挂载且 sessiond up 时通告
   （degraded 恒剔除）；客户端按能力隐藏入口，绝不出现破损视图。
 

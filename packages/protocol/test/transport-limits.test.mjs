@@ -48,7 +48,7 @@ describe("Protocol runtime transport limits", () => {
   it("uses Protocol v2 and the integrated image/questionnaire build generations", () => {
     assert.equal(PROTOCOL_VERSION, 2);
     assert.equal(ADAPTER_CONTRACT_VERSION, 9);
-    assert.equal(SESSIOND_CONTRACT_VERSION, 12);
+    assert.equal(SESSIOND_CONTRACT_VERSION, 13);
     assert.equal(WORKER_CONTRACT_VERSION, 12);
   });
 });

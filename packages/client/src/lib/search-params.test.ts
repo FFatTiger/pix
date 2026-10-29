@@ -135,6 +135,41 @@ describe("assistant selector", () => {
   });
 });
 
+describe("assistant conversation selector", () => {
+  it("keeps ?assistant=true&assistantSession=<id> as the assistant selector + its exact conversation", () => {
+    expect(parseWorkspaceSearch({ assistant: "true", assistantSession: "old-1" })).toEqual({
+      assistant: true,
+      assistantSession: "old-1",
+    });
+    // The legacy `1` spelling stays accepted for the same selector.
+    expect(parseWorkspaceSearch({ assistant: "1", assistantSession: "old-1" }).assistantSession).toBe("old-1");
+  });
+
+  it("drops the conversation when the assistant selector itself is dropped", () => {
+    // A plain session session/file/cwd URL never materializes Pixie.
+    expect(parseWorkspaceSearch({ assistantSession: "old-1" })).toEqual({});
+    expect(parseWorkspaceSearch({ assistant: "true", assistantSession: "old-1", session: "s1" })).toEqual({ session: "s1" });
+    expect(parseWorkspaceSearch({ assistant: "true", assistantSession: "old-1", cwd: "/repo", file: "/repo/a.ts" }))
+      .toEqual({ cwd: "/repo", file: "/repo/a.ts" });
+    expect(parseWorkspaceSearch({ assistant: "true", assistantSession: "" })).toEqual({ assistant: true });
+  });
+
+  it("serializes the conversation only inside the assistant selector", () => {
+    const params = workspaceSearchToParams({ assistant: true, assistantSession: "old-1" });
+    expect(params.get("assistant")).toBe("1");
+    expect(params.get("assistantSession")).toBe("old-1");
+    expect(params.get("session")).toBeNull();
+    expect(workspaceSearchToParams({ session: "s1", assistantSession: "old-1" }).get("assistantSession")).toBeNull();
+    expect(workspaceSearchToParams({ assistant: true }).get("assistantSession")).toBeNull();
+  });
+
+  it("round-trips the exact selection (deep link + refresh)", () => {
+    const once = parseWorkspaceSearch({ assistant: "true", assistantSession: "old-1" });
+    const params = workspaceSearchToParams(once);
+    expect(parseWorkspaceSearch(Object.fromEntries(params.entries()))).toEqual(once);
+  });
+});
+
 describe("assistant draft selector", () => {
   it("parses ?draft=assistant only on the project-less home draft", () => {
     expect(parseWorkspaceSearch({ draft: "assistant" })).toEqual({ assistantDraft: true });

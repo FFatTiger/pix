@@ -339,6 +339,9 @@ export async function runHost(
         assistant: {
           cwd: assistantWorkspace.cwd,
           client: createSessiondAssistantClient({ endpoint: location.paths.endpoint, secret }),
+          // AllowedRoots stays the only workspace policy: the assistant history
+          // rows are classified by the SAME service the session routes use.
+          roots: production.deps.allowedRoots,
         },
       }
       : {}),

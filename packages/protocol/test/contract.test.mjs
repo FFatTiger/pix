@@ -876,6 +876,9 @@ describe("sessiond RPC", () => {
       rpc("runtime.stopByCwd", { cwd: "/tmp/project" }),
       rpc("sessions.list", { page: 3, pageSize: 10, cwd: "/tmp/project", projectRoot: "/tmp/root" }),
       rpc("sessions.list", { page: 1, pageSize: 50, parentSessionId: "parent-1" }),
+      // Assistant conversation history: page/pageSize ONLY — sessiond derives
+      // the canonical assistant directory, so no cwd can ever be supplied.
+      rpc("sessions.listAssistant", { page: 1, pageSize: 20 }),
       rpc("projects.list", { page: 2, pageSize: 10 }),
       rpc("sessions.read", { sessionId: "s-1" }),
       rpc("sessions.context", { sessionId: "s-1", leafId: "entry-7" }),
@@ -938,6 +941,10 @@ describe("sessiond RPC", () => {
     assert.equal(safeParseSessiondRpcRequest(rpc("sessions.list", { page: 1, pageSize: 50, limit: 50 })).success, false);
     assert.equal(safeParseSessiondRpcRequest(rpc("sessions.list", { page: 1, pageSize: 50, parentSessionId: "" })).success, false);
     assert.equal(safeParseSessiondRpcRequest(rpc("sessions.list", { page: 1, pageSize: 50, parentSessionId: "  " })).success, false);
+    assert.equal(safeParseSessiondRpcRequest(rpc("sessions.listAssistant", { page: 1, pageSize: 20 })).success, true);
+    assert.equal(safeParseSessiondRpcRequest(rpc("sessions.listAssistant", { page: 0, pageSize: 20 })).success, false);
+    assert.equal(safeParseSessiondRpcRequest(rpc("sessions.listAssistant", { page: 1, pageSize: 101 })).success, false);
+    assert.equal(safeParseSessiondRpcRequest(rpc("sessions.listAssistant", { page: 1, pageSize: 20, cwd: "/tmp/p" })).success, false);
     assert.equal(safeParseSessiondRpcRequest(rpc("projects.list", { page: 1, pageSize: 51 })).success, false);
     // sessions.context leafId must be non-blank.
     assert.equal(
@@ -1100,6 +1107,7 @@ describe("sessiond RPC", () => {
       "workspace.flags.get": { revision: 1, sessions: { "s-1": { pinned: true } }, projects: {} },
       "sessions.delete": { sessionId: "s-1", deleted: true },
       "sessions.findLatest": { cwd: "/tmp/p", sessionId: "s-1" },
+      "sessions.listAssistant": { sessions: [{ sessionId: "s-1", cwd: "/tmp/p", projectRoot: "/tmp/p" }], page: 1, pageSize: 20, total: 1, totalPages: 1, catalogRevision: 1 },
       "config.getSessionIdleTimeoutMs": { idleTimeoutMs: 86_400_000 },
       "config.setSessionIdleTimeoutMs": { idleTimeoutMs: 3_600_000 },
       "system.shutdown": { accepted: true },

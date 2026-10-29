@@ -578,6 +578,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     const requestedQuestionnaire = handshake.payload.features.includes(RUNTIME_QUESTIONNAIRE_FEATURE);
     const requestedLiveness = handshake.payload.features.includes(RUNTIME_LIVENESS_FEATURE);
     const requestedVisibility = handshake.payload.features.includes(RUNTIME_VISIBILITY_FEATURE);
+    const wantsLifecycle = requestedObserveExisting || requestedExplicitActivate;
     let runningWatchEnabled = false;
     let assistantPresenceEnabled = false;
     let readRpcEnabled = false;
@@ -593,7 +594,32 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     // visibility sink is wired — without a tracker the feature is never
     // acknowledged (the frame would be rejected anyway).
     const visibilityEnabled = requestedVisibility && this.visibilityTracker !== undefined;
-    const wantsLifecycle = requestedObserveExisting || requestedExplicitActivate;
+    // Sessiond-backed runtime features must be negotiated against a daemon the
+    // connection's capability probe actually saw as up. Liveness/visibility are
+    // Host-answered and stay ackable while the daemon is down.
+    const requestsSessiondBackedFeatures = requestedRunningWatch
+      || requestedAssistantPresence
+      || requestedReadRpc
+      || requestedSubmitTurn
+      || requestedEpochRollover
+      || wantsLifecycle
+      || requestedQuestionnaire;
+    // A wired resolver performs a live sessiond probe and its output is this
+    // connection's capability truth. When it reports the daemon down/unknown
+    // while the client asked for sessiond-backed runtime features, do NOT
+    // continue to system.hello: the daemon could recover within this same
+    // handshake and answer a compatible hello, which used to ack a connection
+    // whose lifecycle features (observe/questionnaire) were permanently off
+    // while running-watch/submit-turn stayed on. Fail closed instead so the
+    // client's existing backoff reconnects and negotiates against a healthy
+    // probe. A static (no resolver) projection, or an intentionally agent-less
+    // but `up` projection, still acks honestly. A resolver that throws is
+    // sanitized to `unknown` and closes the same way.
+    if (this.resolveCapabilitiesField !== undefined && requestsSessiondBackedFeatures && resolved.sessiond !== "up") {
+      this.logger.warn?.("runtime gateway handshake refused: sessiond capability probe is not up", { sessiond: resolved.sessiond });
+      session.close(CLOSE_INTERNAL_ERROR, "sessiond unavailable");
+      return;
+    }
     if (requestedRunningWatch || requestedReadRpc || requestedSubmitTurn || requestedEpochRollover || wantsLifecycle || requestedQuestionnaire) {
       try {
         // Single system.hello for negotiated additive features. A seam that is

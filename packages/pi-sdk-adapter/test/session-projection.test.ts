@@ -23,7 +23,7 @@ import {
   SessionProjectionIndex,
   type ProjectedSession,
 } from "../src/internal/session-projection.js";
-import type { PiSdkSessionStore } from "../src/sessions/index.js";
+import { createPiSdkSessionCatalog, type PiSdkSessionStore } from "../src/sessions/index.js";
 import type { SessionHeader } from "@fffattiger/pix-runtime-core";
 
 // ---------------------------------------------------------------------------
@@ -554,6 +554,141 @@ describe("SCALE1 session projection index module", () => {
 // matcher, exercised on BOTH the SQLite projection path and the store's
 // projection-disabled fallback.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Assistant workspace conversation page (exact identity, root-only, paged)
+// ---------------------------------------------------------------------------
+
+const ASSISTANT_CWD = "/home/u/.pi/pix/assistant";
+
+function assistantRow(overrides: Partial<ProjectedSession> & { id: string; modifiedMs: number }): ProjectedSession {
+  return {
+    path: `/x/${overrides.id}.jsonl`,
+    cwd: ASSISTANT_CWD,
+    createdMs: 1,
+    messageCount: 2,
+    firstMessage: overrides.id,
+    projectRoot: ASSISTANT_CWD,
+    // The assistant workspace is hidden from every list page; the exact-cwd
+    // page must still answer (it deliberately ignores browse visibility).
+    browseKind: "hidden",
+    mtimeMs: 1,
+    size: 1,
+    ...overrides,
+  };
+}
+
+describe("SCALE1 assistant workspace conversation page", () => {
+  it("pages exactly the assistant workspace's ROOT conversations (EXACT cwd, no children, no look-alike workspace)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-proj-assistant-"));
+    try {
+      const index = new SessionProjectionIndex(join(root, "idx.sqlite"));
+      index.replaceAll([
+        assistantRow({ id: "newest", modifiedMs: 3_000 }),
+        assistantRow({ id: "middle", modifiedMs: 2_000 }),
+        assistantRow({ id: "oldest", modifiedMs: 1_000 }),
+        // A trailing separator is a DIFFERENT string and a different identity
+        // (the same exact rule findLatestSessionByCwd uses): never accepted.
+        assistantRow({ id: "slashy", cwd: `${ASSISTANT_CWD}/`, modifiedMs: 500 }),
+        // A case-different directory on a case-sensitive filesystem is a REAL
+        // different directory: identity is byte-for-byte, never case folded.
+        assistantRow({ id: "cased", cwd: "/HOME/U/.pi/pix/assistant", modifiedMs: 400 }),
+        // A CHILD session in the assistant workspace is never a conversation.
+        assistantRow({ id: "child", modifiedMs: 9_000, parentSessionPath: "/x/newest.jsonl" }),
+        // A sibling directory and a real project never leak in.
+        assistantRow({ id: "sibling", cwd: "/home/u/.pi/pix/assistantx", modifiedMs: 8_000 }),
+        assistantRow({ id: "project", cwd: "/repo", modifiedMs: 7_000 }),
+      ]);
+
+      const first = index.queryAssistantSessionPage(ASSISTANT_CWD, { page: 1, pageSize: 2 });
+      assert.ok(first !== null);
+      assert.deepEqual(first.sessions.map((session) => session.sessionId), ["newest", "middle"]);
+      assert.equal(first.total, 3);
+      assert.equal(first.totalPages, 2);
+      // Totals/ordering are authority-shaped: root-only, matched, modified desc.
+      assert.equal(first.sessions[0]?.parentSessionId, undefined);
+
+      const second = index.queryAssistantSessionPage(ASSISTANT_CWD, { page: 2, pageSize: 2 });
+      assert.deepEqual(second?.sessions.map((session) => session.sessionId), ["oldest"]);
+      assert.equal(second?.total, 3);
+
+      const past = index.queryAssistantSessionPage(ASSISTANT_CWD, { page: 3, pageSize: 2 });
+      assert.deepEqual(past?.sessions, []);
+      assert.equal(past?.total, 3);
+
+      // The case-different directory answers only ITS OWN row, never ours.
+      const cased = index.queryAssistantSessionPage("/HOME/U/.pi/pix/assistant", { page: 1, pageSize: 10 });
+      assert.deepEqual(cased?.sessions.map((session) => session.sessionId), ["cased"]);
+      // A trailing separator is its own identity too (no separator folding).
+      const slashy = index.queryAssistantSessionPage(`${ASSISTANT_CWD}/`, { page: 1, pageSize: 10 });
+      assert.deepEqual(slashy?.sessions.map((session) => session.sessionId), ["slashy"]);
+      // An unrelated cwd answers its own page — never the assistant's.
+      const other = index.queryAssistantSessionPage("/repo", { page: 1, pageSize: 10 });
+      assert.deepEqual(other?.sessions.map((session) => session.sessionId), ["project"]);
+      assert.equal(other?.total, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("answers null (fail closed) when the index is unusable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-proj-assistant-missing-"));
+    try {
+      const index = new SessionProjectionIndex(join(root, "missing.sqlite"));
+      assert.equal(index.queryAssistantSessionPage(ASSISTANT_CWD, { page: 1, pageSize: 10 }), null);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SCALE1 assistant conversation page on a real projected store", () => {
+  it("pages only the assistant workspace's conversations as true numbered pages", async () => {
+    const corpus = await makeCorpus(1);
+    try {
+      // Three real assistant conversations in the fixed workspace layout, with
+      // an explicit ordering (append order == modified order).
+      const assistantCwd = join(corpus.root, "home", ".pi", "pix", "assistant");
+      await mkdir(assistantCwd, { recursive: true });
+      const assistantIds: string[] = [];
+      for (const index of [1, 2, 3]) {
+        const manager = SessionManager.create(assistantCwd, corpus.sessionDir);
+        appendTurn(manager, `assistant q${index}`, `assistant a${index}`, 1_700_000_000_000 + index * 1_000);
+        corpus.managers.set(manager.getSessionId(), manager);
+        assistantIds.push(manager.getSessionId());
+      }
+      const { store } = projectedStore(corpus);
+      await store.prepare?.();
+
+      const first = await store.listAssistantSessionPage!(assistantCwd, { page: 1, pageSize: 2 });
+      assert.deepEqual(first.sessions.map((session) => session.sessionId), [assistantIds[2]!, assistantIds[1]!]);
+      assert.equal(first.total, 3);
+      assert.equal(first.totalPages, 2);
+      const second = await store.listAssistantSessionPage!(assistantCwd, { page: 2, pageSize: 2 });
+      assert.deepEqual(second.sessions.map((session) => session.sessionId), [assistantIds[0]!]);
+      assert.equal(second.total, 3);
+
+      // The real project conversation is a different workspace: it is neither
+      // in the assistant page nor counted in its totals.
+      const projectOnly = await store.listAssistantSessionPage!(corpus.cwd, { page: 1, pageSize: 10 });
+      assert.equal(projectOnly.total, 1);
+      assert.equal(projectOnly.sessions[0]?.cwd, corpus.cwd);
+      assert.ok(!projectOnly.sessions.some((session) => assistantIds.includes(session.sessionId)));
+
+      // Ordinary list pages never surface the hidden assistant workspace.
+      const ordinary = await store.listSessionPage!({ page: 1, pageSize: 50 });
+      assert.deepEqual(ordinary.sessions.map((session) => session.sessionId), [projectOnly.sessions[0]!.sessionId]);
+
+      // The catalog seam projects the SAME page (0 workers, no runtime).
+      const catalog = createPiSdkSessionCatalog(store);
+      const viaCatalog = await catalog.listAssistantSessionPage?.(assistantCwd, { page: 1, pageSize: 2 });
+      assert.deepEqual(viaCatalog?.sessions.map((session) => session.sessionId), first.sessions.map((session) => session.sessionId));
+      assert.equal(viaCatalog?.total, 3);
+    } finally {
+      await cleanup(corpus);
+    }
+  });
+});
 
 describe("SCALE1 session keyword search", () => {
   /** Three projects × titled/untitled/message-only sessions with staggered activity. */

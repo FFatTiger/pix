@@ -4383,3 +4383,45 @@ Pix 侧同步：`vendor/pi-claude-subagents-0.4.0.tgz` 取代 `0.3.9-pi1-eccf9bc
 **草稿**：新建会话页在还没选项目时 composer 没有 draft key（`Composer.tsx`：`draftKey = selectedSessionId ?? (cwd ? \`new:${cwd}\` : undefined)`），输入框内容只存在于组件状态；点“选择项目”后 draft key 变成 `new:<cwd>`，`ChatInput` 的 draft-key 切换 effect 用新 key 的（空）草稿覆盖编辑器，用户已输入的内容被静默丢弃。现在：切换前没有 draft key 时，编辑器内容是这份草稿的唯一副本，被原样带进新 key 并写回 draft store；两个已识别的草稿之间仍按原语义恢复目标草稿（每个项目各存一份的隔离不变）。同时 composer 的目标（session 或 cwd）变化时清掉过期的发送错误，“请先选择项目”在选完项目后不再挂着。
 
 **测试**：host `gate.test.mjs` 覆盖 setup 成功写入+cookie+立即生效、已配置/PIX_PASSWORD/disabled/error 拒绝、并发两次只有一次成功、非法密码、写入失败诚实报错、unconfigured（含 LAN）时仅 setup 可达、LAN+显式 disabled 放行；bootstrap/themes/trust/ws-guard 同步更新 LAN 语义；client `LoginPage.test.tsx` 覆盖设置/登录/错误三种状态、确认不一致、设置成功直接进入、409 后切登录表单；`ChatInput.draft.test.tsx` 覆盖 draft key 变化时的草稿保留与已识别草稿的恢复语义；`AppShell.test.tsx` 覆盖“先输入 → 自定义路径选项目 → 草稿仍在、错误消失”的真实流程；cli `host.test.ts` 覆盖 boot gate source 透传真实状态。
+
+## 122. Pixie 独立会话列表 + 历史会话选择 + 新建会话
+
+**根因**：助手工作区按 browse-kind `hidden` 从 sessions/projects 页消失，而客户端只有「最新会话」一个入口（`GET /v1/assistant` → `sessions.findLatest`）；历史的 Pixie 会话在 UI 上完全不可达，也无法回到某一轮旧对话继续。
+
+**后端（0 Worker 读）**：
+- `runtime-core` `SessionCatalogPort` 新增可选 `listAssistantSessionPage(cwd, CatalogPageRequest)`（精确 cwd + root-only，过滤在 total/切片之前，modified DESC/id ASC；缺失 seam ⇒ 调用方 `unavailable`）。`catalog-contracts.test` 的 exact-key 表同步。
+- adapter：`SessionProjectionIndex.queryAssistantSessionPage` 用 **exact `cwd = ?`**（与 `findLatestSessionByCwd` 同一身份规则：字节级比较，不折叠大小写/分隔符；`normalizeAssistantWorkspacePath` 只用于 browse-kind 分类，绝不用于身份/授权）加 root-only（`parent_session_path` 为空/NULL），过滤在 total/切片之前，`hidden` 行照常可见，子会话/其它 cwd 永不泄露。`session-store.listAssistantSessionPage` 索引即答案：**空索引就是空页，不做任何 JSONL 扫描**；索引不可用诚实 `unavailable`；非 projection 路径复用 `listInfos()` 温缓存并用**原始 `parentSessionPath`** 判 root（父文件已消失的孤儿 child 仍然不是会话）。`PiSdkSessionCatalog` 缺 store seam 时 `unavailable`。
+- 协议：新增只读 RPC `sessions.listAssistant`（参数仅 `page`/`pageSize`，结果 = 既有 `SessionPage` DTO）；`SESSIOND_CONTRACT_VERSION` 12→13（旧 daemon 的方法枚举会拒绝该方法，混合 dist 在 fence 处 fail-closed；fingerprint 词汇表未变，冻结摘要不变）。
+- sessiond：`service.listAssistantSessionPage` 从 `resolveAssistantWorkspaceDir(homedir())` 单点推导并 realpath/canonical 校验助手目录后调用 catalog，套用与 `sessions.list` 相同的 title overlay + pin/archive flags overlay（overlay 抽成同一私有 helper，行为不变）；`application` 严格解析返回。
+- Host：`GET /v1/assistant/sessions`（真实页码，行经 AllowedRoots 投影 `workspaceAccess`，客户端不传 cwd）、`GET /v1/assistant?sessionId=`（存在 + ROOT + cwd 字节级严格等于服务端助手目录才算 binding，否则固定 404，绝不回退 latest；大小写不同的真实目录不是同一工作区）。组合层把 AllowedRoots 与窄 RPC 客户端一起注入；两条路由随 `assistant` seam 挂载，sessiond down ⇒ 503。
+
+**客户端**：`api/assistant.ts` 增 `byId` / `sessions`，`query-keys` 增 `assistant.binding(id)` / `assistant.sessions(page,pageSize)`，`sessions_changed` 失效同时包含助手会话列表；`search-params` 增 `assistantSession`（只在 `assistant` 选择符成立时保留/序列化，布尔选择符仍是既有 `assistant=true`/`1` 语义）；Pixie 标签保持单例身份，新增「当前选中会话」只在内存（路由为真相，不落 localStorage），普通 session tab 永不物化 Pixie；AppShell 精确选择优先于 latest binding、选择只有 Host 的固定 404 才显示「已不存在」，其它失败（sessiond down/传输/schema）沿用既有 unavailable 文案，校验进行中和绑定加载都是显式 loading，且这些状态都不渲染 composer、新建按钮只进 assistant draft（点击不 create）；Sidebar 将 Pixie 父行和缩进会话放在同一滚动分组中，复用项目列表的 disclosure 动画/inert 结构；无独立分组标题，默认展开、三条，右侧箭头独立折叠且不导航/停止会话，偏好由 sidebar-section-state/preference-sync 保存；点「更多」继续展开并按需取下一页（复用 `SessionItem`/`LoadMoreButton`；Pixie 行通过 `showOrganizationActions={false}` 不暴露 pin/archive，普通会话行不变）。Pixie 新建小加号放在 Pixie 行右侧，全局新建改为搜索旁的小图标。文案新增 en/zh-CN 四键。
+
+**首次创建的身份边界**：`create` 的权威 ack 已证明新 id 属于助手 cwd，而 JSONL 可以尚未首次 append。仅在助手创建分支、且 `created.cwd === assistantCwd` 时，客户端以 ack 填入 exact binding 缓存；exact binding 是不可变身份，`staleTime: Infinity`，不会在路由挂载时重查尚未落盘的 catalog。首次成功 detail 读取后的 settlement 失效该 binding；删除 mutation 只失效被删 id 的 binding、latest 与列表，不能使另一条尚未落盘的新建会话重查 selector。普通 `sessions_changed` 只失效列表，不在未落盘窗口重开 selector 404 竞态。新深链/任意未确认 id 仍必须由 Host 校验。其它客户端删除由后续 detail/context 的 not-found 错误体现；首条消息永久失败不会伪称持久化成功，仍由普通发送/历史错误面报告。
+
+当前已确认、ack 过创建且 `cwd` 严格匹配的 `selectedHeader` 在 Pixie 列表里作为 out-of-band 行渲染：它不改权威页的 `total`/排序，page 收录同一 id 时按 id 去重，只用于首轮长时间 Ask 等待期间（新会话尚未出现在 catalog）仍能看到这条新会话。
+
+**测试**：adapter `session-projection.test.ts`（索引级分页/root-only/其它 cwd 排除/大小写与尾斜杠属不同身份、真实 projection store 的真页码）与 `sessions.test.ts`（catalog 分页、孤儿 child 与非 assistant 目录排除、非 projection 温缓存单次扫描、空索引页零额外扫描、缺 seam `unavailable`）；sessiond `assistant-rpc.test.ts`（派生 cwd、拒绝客户端 cwd、0 Worker、overlay、缺 seam `unavailable`）；Host `assistant.test.mjs`（SessionPage + workspaceAccess 投影、非法分页 400 先于 RPC、404 不回退 latest、503 不空成功）；client `search-params.test.ts` / `workspace-tab-state.test.ts` / `AppShell.test.tsx`（旧会话不被 latest 覆盖、404 诚实态、新建不 create、列表选择只导航、切换标签恢复选择、普通 session URL 不物化 Pixie、`sessions_changed` 刷新列表）。
+
+## 123. 瞬态 capability probe 的握手恢复 + Ask waiting 有界恢复
+
+**根因（半残握手）**：Host runtime gateway 的握手在**同一连接**内先做 sessiond capability probe、再发 `system.hello` 协商 sessiond 支撑的运行时特性。探针是瞬态的：一个「down/unknown」的瞬时结果仍会继续走 hello，如果 sessiond 在同一个握手窗口内恢复并回出兼容 hello，本次连接就会 ack 出「running-watch/submit-turn 等仍开、但 observe/activate 永久关闭」的半残特性集；客户端在整条连接生命周期里都不会再重协商，实时 observe/Ask 就静默失效。
+
+**修正（Host，`packages/host/src/composition/runtime-gateway.ts`）**：接入了 resolver（动态投影）时，只要客户端请求了任一 sessiond 支撑的特性（running-watch / assistant-presence / read-rpc / submit-turn / epoch-rollover / observe-existing / explicit-activate / questionnaire）且本次探针结果不是 `up`，握手在发 `system.hello` **之前**就 fail closed：记录一条 warn 并 `close(1011, "sessiond unavailable")`，**不**再靠「等一等也许就好了」蒙过去。恢复完全交给客户端既有的指数退避重连——重连时会重新探针、重新协商，不做轮询、不加特例。静态投影（没有 resolver）与「up 但故意无 agent」的投影照常 ack；resolver 抛错被规范化为 `unknown`，同样走这条 close 路径。liveness/visibility 是 Host 自己答复的，daemon down 时仍可协商，不会被这条规则误关。
+
+**修正（Client，`packages/client/src/components/shell/AppShell.tsx` 的被动 observe effect）**：`waitingSessionIds` 的 false→true 边沿进入 observe effect 的依赖，是「Ask 已到达但此前的 attach 失败过」时的恢复触发；但若问卷在第一次 attach 失败时**已经**挂起，后续不会再有 waiting 边沿，所以对**可重试**（`retryable === true`）的失败在 `selectedWaiting` 为真时额外做**最多一次** 1000ms 有界重试：重试用同一个 presentation token 做 fence（切换会话/文件/home 立即作废），effect cleanup 清掉 timer，永久拒绝（非 retryable）不重试，也不引入任何轮询或常驻定时器。
+
+**测试**：Host `runtime-gateway.test.mjs` 覆盖「探针 down/unknown + 请求 sessiond 特性 ⇒ 1011 close 且不发 hello」「静态投影与 up 投影照常 ack」「resolver 抛错等同 unknown」；client `AppShell.test.tsx` 覆盖 already-waiting 首次失败后的一次有界重试成功、永久拒绝不重试、切换取消（cleanup 清 timer、late 结果不落地），以及既有 live 问卷恢复用例保持通过。
+
+## 124. 首次 Ask 不刷新/不弹问卷：startup prime 未建立 journal base + attach 回报错误 cursor
+
+**真实根因（browser + RPC 已证，日志 `.local/pixie-fixes/live-ws-trace.log`）**：`service.start` 用 `defaultSnapshot(capabilities: [], version: 0)` 作为 `journalBaseSnapshot`、`journalBaseEventId = 0`；create 的 rekey 只重置 journal 并**再次**把 base 设成当时默认投影。`ready` 之后的 `primeProjection` 通过 `worker.getSnapshot` 拿到真正权威的 capv1 快照并 `projection.replace`，但 `worker.snapshot` 处理器只在 `journal.lastEventId === 0` 时才更新 base——而 startup 事件（含 runtime 自己的 `running_sessions_changed`）早已进了 journal，所以 base 永远停在 cap0。于是同 epoch 的 `prepareAttach` 从 `base(cap0) + replay 全部事件` 重建：capabilities/tools/systemPrompt 全部退回撤权前的空集，前端 `attached: true` 且 pending 问卷其实存在，但 Ask gate 因缺 `runtime.extension_ui` 而被隐藏；只有「刷新走不带 cursor 的 full attach（用当前 projection）」才正常。
+
+**修正（`packages/sessiond/src/service.ts`，窄范围）**：
+- `PendingSnapshot` 增加仅 prime 使用的 `establishesJournalBase: true`。`worker.snapshot` 在该 correlated prime 响应 `replace` 之后、同一个同步边界内设 `journalBaseSnapshot = projection.snapshot()`、`journalBaseEventId = journal.lastEventId`：prime 快照本身就是「已折入 base 的所有事件之后」的状态。不用 id 字符串前缀、不加额外 record 布尔；其它 pending/current/epoch 错误守卫保持原样，非 prime 的 `lastEventId === 0` 旧路径保留。
+- `prepareAttach` 的 beforeCursor 重建必须 `eventId > journalBaseEventId && <= params.lastEventId`：已折进 base 的事件绝不二次 apply（否则消息/问卷会重复计入）。`params.lastEventId < journalBaseEventId` 仍走既有 gap 全文快照，journal 不动。
+- 同一处第二处缺陷：同 epoch 且无 gap 时，delivered snapshot 是「在请求 cursor 处」的重建，因此 `result.lastEventId` 必须等于 `params.lastEventId`（协议没有 cursor-only 的 resumed ack，响应 cursor 是唯一告知「快照到此为止、replay 从这里开始」的字段）；之前的 `boundary(head)` 让前端直接把 cursor 跳到 head，把仍然需要的 replay（含 message_end）整段丢掉。full/gap/epoch_changed 仍保持 `boundary`，replay 只发 `> cursor && <= captured boundary`。完整快照与其 cursor 现在严格匹配。
+
+**不做**：不在客户端「硬保留旧 capabilities」来掩盖越权撤销——那是把撤权静默掉；base/cursor 语义修好后，capv1 在任何同 epoch 重连下都成立。
+
+**测试**：新增 `packages/sessiond/test/attach-snapshot-parity.test.ts`（fake-worker 新增窄钩子 `eventsBeforeReady`：在 `sessionDiscovered`/rekey 之后、prime 响应之前把事件既 reduce 进 fake 的 live snapshot 又发出，默认关闭不影响旧用例；`emitEventApplied` 用于 ready 之后的事件）。覆盖：create(rekey) 返回后同 epoch 在 current cursor 的 attach 与 `getSnapshot` 逐字段一致（capv1/tools/systemPrompt/messageCount/问卷）；cursor < base ⇒ `gap` + 全文快照 + 空 replay；`base <= cursor < head` ⇒ 快照匹配该 cursor、replay 从 cursor+1 到 captured boundary、用共享 reducer 逐条应用后与 `getSnapshot` 等价、messageCount 不重复、pending 问卷不重复；epoch_changed 仍回报 boundary。既有 `sessiond.test.ts` 的 attach replay 用例按新不变量更新（结果 cursor = 请求 cursor，推送仍是连续无丢失的 5 条），`runtime-subscriber-bytes.test.ts` 的 replay 用例改为以基线 cursor attach（cursor 0 现在正确地属 gap）。

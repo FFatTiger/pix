@@ -212,6 +212,18 @@ export const urls = {
   assistant: {
     /** GET /v1/assistant — assistant conversation binding (cwd + latest session id). */
     get: () => resource("assistant"),
+    /**
+     * GET /v1/assistant?sessionId= — EXACT conversation selection. The Host
+     * answers the binding only for an existing assistant-workspace ROOT session
+     * and a fixed 404 otherwise (never a "latest" fallback).
+     */
+    byId: (sessionId: string) => resource("assistant", { sessionId }),
+    /**
+     * GET /v1/assistant/sessions — one true numbered page of the assistant
+     * workspace's own conversations (same SessionPage DTO as /v1/sessions).
+     * No cwd: sessiond derives the canonical assistant directory itself.
+     */
+    sessions: (input: { page: number; pageSize: number }) => resource("assistant/sessions", input),
   },
 } as const;
 

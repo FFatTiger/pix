@@ -235,9 +235,9 @@ export interface GateDeps {
 
 import type { MutationGuard, ResourceDeps, ResourceLimits } from "./resources/types.js";
 import type { AllowedRootService } from "./resources/allowed-roots.js";
-import type { AssistantLatestClient } from "./routes/assistant.js";
+import type { AssistantSessionClient } from "./routes/assistant.js";
 
-export type { AssistantLatestClient } from "./routes/assistant.js";
+export type { AssistantSessionClient } from "./routes/assistant.js";
 
 /** sessiond availability probe for capability downgrade (protocol-independent). */
 export interface SessiondProbe {
@@ -654,8 +654,17 @@ export interface HostDeps {
   assistant?: {
     /** Canonical assistant working directory. */
     cwd: string;
-    /** Narrow sessiond-backed latest-session lookup. */
-    client: AssistantLatestClient;
+    /**
+     * Narrow sessiond-backed assistant catalog client: latest-session lookup,
+     * the assistant workspace's own history page and exact-id selection.
+     */
+    client: AssistantSessionClient;
+    /**
+     * AllowedRoots classifier for the history rows. Production wires the SAME
+     * service as `resources.allowedRoots`; omitted ⇒ history_only (never
+     * guessed authorized).
+     */
+    roots?: import("./resources/allowed-roots.js").AllowedRootService;
   };
   /**
    * Pix attachments store upload (POST /v1/attachments). Omitted ⇒ the route

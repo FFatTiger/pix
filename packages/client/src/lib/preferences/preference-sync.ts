@@ -21,6 +21,7 @@ import type { HttpClient } from "@/api/http-client";
 export const PREFERENCE_KEYS: readonly string[] = [
   "pi-sidebar-projects-open",
   "pi-sidebar-pinned-open",
+  "pi-sidebar-assistant-open",
   "pi-fork-tree-collapsed",
   "pi-collapsed-time-groups",
   "pi-process-display-mode",

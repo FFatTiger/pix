@@ -1122,6 +1122,59 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     return toHeader(latest, {});
   }
 
+  /**
+   * Assistant conversation HISTORY page (exact-cwd, root-only, zero workers).
+   *
+   * The assistant workspace is `hidden` from every list page, so its older
+   * conversations are reachable only through this exact-identity read (the
+   * same fail-closed spirit as `findLatestSessionByCwd` and exact-id
+   * `readSession`). Identity is the EXACT recorded cwd string — byte-for-byte,
+   * no case folding or separator normalization, exactly like
+   * `findLatestSessionByCwd` — so a genuinely different directory (or a
+   * case-different sibling on a case-sensitive filesystem) can never be
+   * accepted. The root-only + exact-cwd predicate is applied BEFORE totals and
+   * the page slice, so no child session and no other workspace can leak in and
+   * pagination stays a true numbered page.
+   *
+   * The materialized projection answers the page WITHOUT any request-path JSONL
+   * scan: an empty index answer is a truthful empty page (never a full scan to
+   * "double check"). Only the projection-DISABLED fallback reads the warm
+   * authoritative list, and it decides root-ness from the RAW
+   * `parentSessionPath` (an orphan child whose parent file is gone has no
+   * resolved `parentSessionId` and must still never be listed as a root). An
+   * unusable index is an honest `unavailable` — never a fake empty page.
+   */
+  async listAssistantSessionPage(cwd: string, request: CatalogPageRequest): Promise<SessionPage> {
+    if (!Number.isSafeInteger(request.page) || request.page < 1 || !Number.isSafeInteger(request.pageSize) || request.pageSize < 1 || request.pageSize > 100) {
+      throw makeRuntimeError("invalid_input", "session page is invalid");
+    }
+    if (cwd.length === 0) throw makeRuntimeError("invalid_input", "assistant workspace is invalid");
+    const offset = (request.page - 1) * request.pageSize;
+    const pageMeta = (total: number): Pick<SessionPage, "page" | "pageSize" | "total" | "totalPages"> => ({
+      page: request.page,
+      pageSize: request.pageSize,
+      total,
+      totalPages: total === 0 ? 0 : Math.ceil(total / request.pageSize),
+    });
+    if (this.projectionEnabled) {
+      const page = (await this.readyProjectionIndex()).queryAssistantSessionPage(cwd, request);
+      if (page === null) throw makeRuntimeError("unavailable", "session catalog index is unavailable", { retryable: true });
+      return page;
+    }
+    // Projection disabled: the warm authoritative list — exactly the fallback
+    // semantics of listSessionPage (never a full JSONL scan per page).
+    const infos = await this.listInfos();
+    const matched = infos.filter((info) =>
+      info.cwd === cwd && (info.parentSessionPath === undefined || info.parentSessionPath === ""));
+    matched.sort((a, b) => b.modified.getTime() - a.modified.getTime()
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return {
+      sessions: matched.slice(offset, offset + request.pageSize).map((info) => toHeader(info, {})),
+      ...pageMeta(matched.length),
+      catalogRevision: this.lastAppliedRevision,
+    };
+  }
+
   /** Creation hint from the lifecycle authority (SessionCatalogPort.noteSessionCreated). */
   noteSessionCreated(sessionId: string): void {
     if (sessionId.length === 0) return;

@@ -646,6 +646,115 @@ test("no capability resolver → static capabilities advertised unchanged (back-
   assert.deepEqual(ack.payload.host.capabilities, ["agent", "files"]);
 });
 
+// --- dynamic resolver vs a requested runtime feature -----------------------
+// A resolver that reports the daemon down/unknown must not be followed by a
+// possibly-succeeding system.hello: that acked a connection whose lifecycle
+// features (observe/questionnaire) were permanently missing while
+// running-watch/submit-turn stayed on. Fail closed and let the client reconnect.
+
+const lifecycleQuestionnaireHello = JSON.stringify({
+  type: "handshake",
+  payload: {
+    protocolVersion: 2,
+    client: { shell: "web", platform: "mac" },
+    features: [RUNTIME_OBSERVE_EXISTING_FEATURE, RUNTIME_QUESTIONNAIRE_FEATURE],
+  },
+});
+
+test("dynamic resolver down on a runtime-feature handshake closes without ack; the reconnect negotiates observe/questionnaire", async () => {
+  const client = new FakeClient();
+  client.handlers["system.hello"] = compatibleHello();
+  let probes = 0;
+  const { gateway } = makeLifecycleGateway(client, {
+    resolveCapabilities: async () => {
+      probes += 1;
+      return probes === 1
+        ? { sessiond: "down", capabilities: ["files"] }
+        : { sessiond: "up", capabilities: ["agent"] };
+    },
+  });
+
+  const first = await connect(gateway, lifecycleQuestionnaireHello);
+  assert.equal(first.sent.length, 0, "a down daemon probe must never ack a runtime-feature handshake");
+  assert.deepEqual(first.closed, { code: 1011, reason: "sessiond unavailable" });
+  assert.equal(
+    client.calls.some((call) => call.method === "system.hello"),
+    false,
+    "no negotiation RPC is spent while the probe says the daemon is down",
+  );
+
+  // The browser backoff reconnects; the next probe is up and negotiation is complete.
+  const second = await connect(gateway, lifecycleQuestionnaireHello);
+  assert.equal(second.closed, null);
+  const ack = second.jsonAt(0);
+  assert.equal(ack.type, "handshake_ack");
+  assert.deepEqual(ack.payload.acceptedFeatures, [
+    RUNTIME_OBSERVE_EXISTING_FEATURE,
+    RUNTIME_QUESTIONNAIRE_FEATURE,
+  ]);
+  assert.deepEqual(ack.payload.host.capabilities, ["agent"]);
+  assert.equal(probes, 2, "one probe per connection");
+});
+
+test("dynamic resolver unknown on a runtime-feature handshake also closes without ack", async () => {
+  const client = new FakeClient();
+  client.handlers["system.hello"] = compatibleHello();
+  const { gateway } = makeLifecycleGateway(client, {
+    resolveCapabilities: async () => ({ sessiond: "unknown", capabilities: ["files"] }),
+  });
+  const session = await connect(gateway, lifecycleQuestionnaireHello);
+  assert.equal(session.sent.length, 0);
+  assert.deepEqual(session.closed, { code: 1011, reason: "sessiond unavailable" });
+  assert.equal(client.calls.some((call) => call.method === "system.hello"), false);
+});
+
+test("dynamic resolver failure on a runtime-feature handshake fails closed instead of acking degraded", async () => {
+  const warned = [];
+  const client = new FakeClient();
+  client.handlers["system.hello"] = compatibleHello();
+  const { gateway } = makeLifecycleGateway(client, {
+    resolveCapabilities: async () => {
+      throw new Error("ECONNREFUSED /Users/secret/.pi/sessiond.sock");
+    },
+    logger: { warn: (msg, fields) => warned.push({ msg, fields }) },
+  });
+  const session = await connect(gateway, observeHello);
+  assert.equal(session.sent.length, 0, "a throwing resolver must not produce a degraded ack");
+  assert.deepEqual(session.closed, { code: 1011, reason: "sessiond unavailable" });
+  assert.equal(client.calls.some((call) => call.method === "system.hello"), false);
+  assert.equal(warned.length, 2);
+  assert.equal(warned.some((entry) => /capability resolver failed/.test(entry.msg)), true);
+  assert.equal(warned.some((entry) => /probe is not up/.test(entry.msg)), true);
+  assert.equal(JSON.stringify(warned).includes("/Users/secret"), false);
+});
+
+test("static capabilities and an intentional agent-less (sessiond up) resolver still ack honestly", async () => {
+  // No resolver: the resolved state is unknown by construction, but there is no
+  // live probe to distrust, so the static capability projection still acks.
+  const staticClient = new FakeClient();
+  staticClient.handlers["system.hello"] = compatibleHello();
+  const staticSession = await connect(makeLifecycleGateway(staticClient).gateway, lifecycleHello);
+  assert.equal(staticSession.closed, null);
+  assert.deepEqual(staticSession.jsonAt(0).payload.acceptedFeatures, [
+    RUNTIME_OBSERVE_EXISTING_FEATURE,
+    RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
+  ]);
+
+  // Resolver says the daemon is up but the operator intentionally advertises
+  // no agent: a degraded-but-honest ack (features off), never a close.
+  const noAgentClient = new FakeClient();
+  noAgentClient.handlers["system.hello"] = compatibleHello();
+  const { gateway } = makeLifecycleGateway(noAgentClient, {
+    resolveCapabilities: async () => ({ sessiond: "up", capabilities: [] }),
+  });
+  const noAgentSession = await connect(gateway, lifecycleHello);
+  assert.equal(noAgentSession.closed, null);
+  const ack = noAgentSession.jsonAt(0);
+  assert.equal(ack.type, "handshake_ack");
+  assert.deepEqual(ack.payload.host.capabilities, []);
+  assert.equal(ack.payload.acceptedFeatures, undefined);
+});
+
 test("malformed subsequent frame closes 1008", async () => {
   const gw = makeGateway(new FakeClient());
   const session = await connect(gw);
@@ -2461,6 +2570,62 @@ test("old client is fail-closed before a questionnaire-bearing event, snapshot, 
   assert.equal(frames.some((frame) => frame.type === "runtime_unavailable"), true);
   assert.equal(frames.some((frame) => frame.payload?.error?.code === "unsupported_capability"), true);
   assert.equal(frames.some((frame) => frame.payload?.snapshot?.state?.pendingExtensionUi?.[0]?.method === "questionnaire"), false);
+});
+
+test("negotiated questionnaire connection forwards a live questionnaire request and its close tombstone without closing", async () => {
+  const client = new FakeClient();
+  client.handlers["system.hello"] = { protocolVersion: 2, capabilities: [], build: SESSIOND_BUILD_IDENTITY };
+  const sub = new FakeSubscription(attachResponse("s1"));
+  client.attachFn = (_params, onPush) => { sub.onPush = onPush; return sub; };
+  const session = await connect(makeGateway(client), questionnaireHello);
+  session.receive(JSON.stringify({ type: "attach", id: "a1", payload: { sessionId: "s1" } }));
+  await wait();
+  assert.equal(session.jsonAt(1).type, "snapshot");
+
+  // Live upsert after attach: forwarded verbatim to the negotiating client.
+  await sub.deliver({
+    type: "event",
+    event: { type: "extension_ui_request", sessionId: "s1", eventId: 1, epoch: "e1", request: questionnaireRequest },
+  });
+  await wait();
+  const live = session.lastJson();
+  assert.equal(live.type, "event");
+  assert.equal(live.payload.type, "extension_ui_request");
+  assert.deepEqual(live.payload.request, questionnaireRequest);
+  assert.equal(session.closed, null, "a negotiated live questionnaire must never close the socket");
+
+  // Live close tombstone: also a normal forwarded frame, never fenced.
+  const closedRequest = { ...questionnaireRequest, closed: true };
+  await sub.deliver({
+    type: "event",
+    event: { type: "extension_ui_request", sessionId: "s1", eventId: 2, epoch: "e1", request: closedRequest },
+  });
+  await wait();
+  const tombstone = session.lastJson();
+  assert.equal(tombstone.type, "event");
+  assert.deepEqual(tombstone.payload.request, closedRequest);
+  assert.equal(tombstone.payload.eventId, 2);
+  assert.equal(session.closed, null);
+  session.close(1000, "done");
+});
+
+test("unnegotiated connection still fences a live questionnaire push before it reaches the client", async () => {
+  const client = new FakeClient();
+  const sub = new FakeSubscription(attachResponse("s1"));
+  client.attachFn = (_params, onPush) => { sub.onPush = onPush; return sub; };
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "attach", id: "a1", payload: { sessionId: "s1" } }));
+  await wait();
+  await sub.deliver({
+    type: "event",
+    event: { type: "extension_ui_request", sessionId: "s1", eventId: 1, epoch: "e1", request: questionnaireRequest },
+  });
+  await wait();
+  const frames = session.sent.map((frame) => JSON.parse(frame));
+  assert.equal(frames.some((frame) => frame.type === "event"), false, "the questionnaire event must never reach an unnegotiated client");
+  assert.equal(frames.some((frame) => frame.type === "runtime_unavailable"), true);
+  assert.equal(frames.some((frame) => frame.payload?.error?.code === "unsupported_capability"), true);
+  assert.equal(session.closed?.code, 1008);
 });
 
 function pngImage(decodedBytes) {

@@ -341,7 +341,7 @@ function validPageMeta(value: unknown): value is PageMetaResult {
     && Number.isSafeInteger(value.catalogRevision) && (value.catalogRevision as number) >= 0;
 }
 
-async function projectSessionRecord(
+export async function projectSessionRecord(
   roots: AllowedRootService | undefined,
   raw: unknown,
 ): Promise<Record<string, unknown>> {

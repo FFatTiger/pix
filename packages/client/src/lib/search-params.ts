@@ -18,6 +18,15 @@ export interface WorkspaceSearch {
    */
   assistant?: boolean;
   /**
+   * Selected Pixie conversation (`/?assistant=1&assistantSession=<id>`). The
+   * assistant view otherwise binds to the workspace's LATEST session; once the
+   * user picks an older conversation this param pins that exact session, so a
+   * binding refresh can never jump the open conversation elsewhere. It is part
+   * of the assistant selector only — a plain session/file/cwd URL drops it and
+   * an ordinary session tab is never materialized as Pixie.
+   */
+  assistantSession?: string;
+  /**
    * Assistant draft selector (`/?draft=assistant`): the new-session page in
    * "assistant state" — the first assistant message is composed on the home
    * composer with the project picker hidden; sending creates the assistant
@@ -37,7 +46,15 @@ export function parseWorkspaceSearch(
   const session = typeof search.session === "string" && search.session.length > 0 ? search.session : undefined;
   const file = typeof search.file === "string" && search.file.length > 0 ? search.file : undefined;
   const next = typeof search.next === "string" && search.next.length > 0 ? search.next : undefined;
+  // The router serializes a boolean selector as `assistant=true`; the legacy
+  // `?assistant=1` links (and `workspaceSearchToParams` for login redirects)
+  // stay accepted — this is ONLY a spelling tolerance for the same selector,
+  // never a second meaning. The exact conversation rides a separate
+  // `assistantSession` param, so the boolean convention is unchanged.
   const assistant = search.assistant === true || search.assistant === "1" || search.assistant === "true";
+  const assistantSession = typeof search.assistantSession === "string" && search.assistantSession.length > 0
+    ? search.assistantSession
+    : undefined;
   const assistantDraft = search.draft === "assistant";
   if (cwd !== undefined) out.cwd = cwd;
   // Active selectors are mutually exclusive. When both are present the file
@@ -52,6 +69,8 @@ export function parseWorkspaceSearch(
   // The assistant view is its own selector: only when no session/file wins.
   if (assistant && out.session === undefined && out.file === undefined) {
     out.assistant = true;
+    // The exact conversation is meaningful ONLY inside the assistant selector.
+    if (assistantSession !== undefined) out.assistantSession = assistantSession;
   }
   // The assistant draft only exists on the project-less home draft: any
   // stronger selector (assistant view, session, file, cwd) drops it.
@@ -78,7 +97,10 @@ export function workspaceSearchToParams(
   // when its required cwd is present; otherwise preserve a valid session.
   if (search.file && search.cwd) params.set("file", search.file);
   else if (search.session) params.set("session", search.session);
-  else if (search.assistant) params.set("assistant", "1");
+  else if (search.assistant) {
+    params.set("assistant", "1");
+    if (search.assistantSession) params.set("assistantSession", search.assistantSession);
+  }
   if (search.assistantDraft) params.set("draft", "assistant");
   if (search.next) params.set("next", search.next);
   return params;

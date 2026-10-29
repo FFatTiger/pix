@@ -383,9 +383,10 @@ test("buffered turn listener rejection settles closed and releases the subscribe
 test("close during attachment replay stops the flush before later frames", async () => {
   const { service, workers } = harness();
   const activated = await service.activate("s");
+  const baseline = service.attach({ sessionId: "s" }).result.lastEventId;
   workers.workers[0]!.emitEvent(queueUpdate("s", "first", 20));
   workers.workers[0]!.emitEvent(queueUpdate("s", "second", 20));
-  const attached = service.prepareAttach({ sessionId: "s", epoch: activated.epoch, lastEventId: 0 });
+  const attached = service.prepareAttach({ sessionId: "s", epoch: activated.epoch, lastEventId: baseline });
   let release!: () => void;
   let entered!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });

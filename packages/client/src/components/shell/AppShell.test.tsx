@@ -6,7 +6,7 @@ import { AppShell } from "./AppShell";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { clearDraft, getDraft } from "@/lib/draft-store";
 import { queryKeys } from "@/api/query-keys";
-import type { SessionEntry, SessionHeader } from "@fffattiger/pix-protocol";
+import type { RuntimeSnapshot, SessionEntry, SessionHeader } from "@fffattiger/pix-protocol";
 import { RuntimeProvider, SelectedSessionProvider } from "@/runtime/runtime-provider";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
@@ -135,6 +135,8 @@ function controllableStubFetch(opts: {
     const p = String(path);
     if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
     if (p.includes("/v1/workspace-flags")) return json({ revision: 1, sessions: {}, projects: {}, ...opts.workspaceFlags });
+    const assistant = assistantResponse(p);
+    if (assistant !== null) return assistant;
     if (p.includes("/v1/sessions/") && p.includes("/context")) {
       const id = decodeURIComponent(p.split("/v1/sessions/")[1]!.split("/")[0]!);
       opts.contextCalls?.push(id);
@@ -272,6 +274,8 @@ function stubFetch(): typeof fetch {
     const p = String(path);
     if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
     if (p.includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
+    const assistant = assistantResponse(p);
+    if (assistant !== null) return assistant;
     if (p.includes("/v1/sessions/") && p.includes("/context")) {
       const id = decodeURIComponent(p.split("/v1/sessions/")[1]!.split("/")[0]!);
       return json({
@@ -290,6 +294,10 @@ function stubFetch(): typeof fetch {
     const exactSession = p.match(/\/v1\/sessions\/([^/?]+)(?:\?.*)?$/);
     if (exactSession) {
       const id = decodeURIComponent(exactSession[1]!);
+      // A Pixie row answers with its own authoritative header (assistant cwd),
+      // so the exact selection can stay out-of-band in the Pixie list.
+      const pixieRow = assistantStub.sessions.find((session) => session.sessionId === id);
+      if (pixieRow) return json({ session: pixieRow });
       return json({ session: { sessionId: id, cwd: "/x", projectRoot: "/x", workspaceAccess: AUTHORIZED } });
     }
     if (p.includes("/v1/projects")) return json({ projects: [], page: 1, pageSize: 10, total: 0, totalPages: 0, catalogRevision: 0 });
@@ -302,6 +310,77 @@ function stubFetch(): typeof fetch {
     if (p.includes("/v1/commands")) return json({ commands: [] });
     return json({});
   }) as unknown as typeof fetch;
+}
+
+/**
+ * Assistant (Pixie) HTTP state for the suites below: the workspace cwd, the
+ * server-resolved LATEST binding, the workspace's own conversation rows and the
+ * ids the exact `?sessionId=` selector accepts (anything else = the Host's
+ * fixed 404, never a latest fallback).
+ */
+let assistantStub: {
+  latest: string | null;
+  sessions: SessionHeader[];
+  selectable: string[];
+  /** Force the exact selector to fail with this status (default: 404 for unknown ids). */
+  selectorError?: number;
+  /** Force every history page request to fail with this status (C1 error honesty). */
+  pageError?: number;
+} = {
+  latest: null,
+  sessions: [],
+  selectable: [],
+};
+/** Every exact-selector id the client asked about (in order). */
+let assistantSelectorCalls: string[] = [];
+/** Every assistant history page request URL (invalidation evidence). */
+let assistantPageCalls: string[] = [];
+
+function resetAssistantStub(): void {
+  assistantStub = { latest: null, sessions: [], selectable: [] };
+  assistantSelectorCalls = [];
+  assistantPageCalls = [];
+}
+
+/** Assistant endpoints for the Host stub (page = true numbered page, DTO identical to /v1/sessions). */
+function assistantResponse(path: string): Response | null {
+  if (path.includes("/v1/assistant/sessions")) {
+    assistantPageCalls.push(path);
+    if (assistantStub.pageError !== undefined) {
+      return jsonStatus({ code: "SESSIONS_UNAVAILABLE", message: "Session history is unavailable" }, assistantStub.pageError);
+    }
+    const url = new URL(path, "http://pix.local");
+    const page = Number(url.searchParams.get("page") ?? 1);
+    const pageSize = Number(url.searchParams.get("pageSize") ?? 50);
+    const offset = (page - 1) * pageSize;
+    return json({
+      sessions: assistantStub.sessions.slice(offset, offset + pageSize),
+      page,
+      pageSize,
+      total: assistantStub.sessions.length,
+      totalPages: assistantStub.sessions.length === 0 ? 0 : Math.ceil(assistantStub.sessions.length / pageSize),
+      catalogRevision: 1,
+    });
+  }
+  if (path.includes("/v1/assistant")) {
+    const url = new URL(path, "http://pix.local");
+    const sessionId = url.searchParams.get("sessionId");
+    if (sessionId === null) return json({ cwd: ASSISTANT_CWD, sessionId: assistantStub.latest });
+    assistantSelectorCalls.push(sessionId);
+    if (assistantStub.selectorError !== undefined) {
+      return jsonStatus(
+        assistantStub.selectorError === 404
+          ? { code: "ASSISTANT_SESSION_NOT_FOUND", message: "Assistant session not found" }
+          : { code: "SESSIONS_UNAVAILABLE", message: "Session history is unavailable" },
+        assistantStub.selectorError,
+      );
+    }
+    if (!assistantStub.selectable.includes(sessionId)) {
+      return jsonStatus({ code: "ASSISTANT_SESSION_NOT_FOUND", message: "Assistant session not found" }, 404);
+    }
+    return json({ cwd: ASSISTANT_CWD, sessionId });
+  }
+  return null;
 }
 
 /** Configurable /v1/models response (reset by suites that exercise Composer controls). */
@@ -320,10 +399,12 @@ let previousFetch: typeof fetch;
 beforeEach(() => {
   // jsdom has no scrollIntoView — the ⌘K palette keyboard navigation uses it.
   Element.prototype.scrollIntoView = vi.fn();
+  resetAssistantStub();
   window.localStorage.removeItem("pi-sidebar-item-state");
   window.localStorage.removeItem("pi-sidebar-projects-open");
   window.localStorage.removeItem("pi-sidebar-sessions-open");
   window.localStorage.removeItem("pi-sidebar-pinned-open");
+  window.localStorage.removeItem("pi-sidebar-assistant-open");
   window.localStorage.removeItem(WORKSPACE_SESSION_TABS_STORAGE_KEY);
   window.localStorage.removeItem(WORKSPACE_LAST_SESSION_STORAGE_KEY);
   // The send outbox is durable too: an earlier test's undelivered send must not
@@ -1460,6 +1541,113 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     const recovered = lastFrame<{ type: "attach"; payload: { sessionId: string; attachMode?: string } }>(ws, "attach");
     expect(recovered?.payload).toEqual({ sessionId: "A", attachMode: "existing_only" });
     expect(countType(ws, "stop")).toBe(0);
+  });
+
+  it("recovers a failed observation when the selected live session begins waiting for an Ask answer", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: ["A"], waitingSessionIds: [] } });
+      await flush();
+    });
+    const first = lastFrame<{ type: "attach"; id: string }>(ws, "attach")!;
+    await act(async () => {
+      ws.serverSend({ type: "response", id: first.id, payload: { ok: false, error: { code: "unavailable", message: "temporary attach failure", retryable: true } } });
+      await flush();
+    });
+    expect(countType(ws, "attach")).toBe(1);
+    // Another session's waiting status must not retry A or steal its lease.
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 2, sessionIds: ["A", "B"], busySessionIds: ["A"], waitingSessionIds: ["B"] } });
+      await flush();
+    });
+    expect(countType(ws, "attach")).toBe(1);
+    // A remains live throughout: its new pending user input is the recovery signal.
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 3, sessionIds: ["A", "B"], busySessionIds: ["A"], waitingSessionIds: ["A", "B"] } });
+      await flush();
+    });
+    expect(countType(ws, "attach")).toBe(2);
+    const recovered = lastFrame<{ type: "attach"; id: string; payload: { sessionId: string; attachMode: string } }>(ws, "attach")!;
+    expect(recovered.payload).toEqual({ sessionId: "A", attachMode: "existing_only" });
+    const request = {
+      id: "ask-recovery", method: "questionnaire" as const,
+      questions: [{ header: "Choice", question: "Recovered question?", multiSelect: false, options: [
+        { label: "Alpha", description: "First choice" }, { label: "Beta", description: "Second choice" },
+      ] }],
+    };
+    const payload = snapshotPayload({ sessionId: "A", capabilities: ["runtime.prompt", "runtime.extension_ui"] });
+    const snapshot = payload.snapshot as RuntimeSnapshot;
+    await act(async () => {
+      ws.serverSend({ type: "snapshot", id: recovered.id, payload: { ...payload, snapshot: { ...snapshot, state: { ...snapshot.state, pendingExtensionUi: [request] } } } });
+      await flush();
+    });
+    expect(screen.getByText("Recovered question?")).toBeTruthy();
+    expect(screen.queryByTestId("observation-error")).toBeNull();
+    await act(async () => {
+      ws.serverSend({ type: "event", payload: { type: "extension_ui_request", sessionId: "A", epoch: "e1", eventId: 1, request: { ...request, closed: true } } });
+      await flush();
+      ws.serverSend({ type: "event", payload: { type: "extension_ui_request", sessionId: "A", epoch: "e1", eventId: 2, request: { ...request, id: "ask-live", questions: [{ ...request.questions[0], question: "Live question?" }] } } });
+      await flush();
+    });
+    expect(screen.queryByText("Recovered question?")).toBeNull();
+    expect(screen.getByText("Live question?")).toBeTruthy();
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 4, sessionIds: ["A", "B"], busySessionIds: ["A"], waitingSessionIds: ["A", "B"] } });
+      await flush();
+    });
+    expect(countType(ws, "attach")).toBe(2);
+    for (const type of ["create", "activate", "submit_turn", "stop"]) expect(countType(ws, type)).toBe(0);
+  });
+
+  it.each([true, false])("retries an already-waiting Ask observation only once for retryable=%s", async (retryable) => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: ["A"], waitingSessionIds: ["A"] } });
+      await flush();
+    });
+    const first = lastFrame<{ type: "attach"; id: string }>(ws, "attach")!;
+    await act(async () => {
+      ws.serverSend({ type: "response", id: first.id, payload: { ok: false, error: { code: retryable ? "unavailable" : "forbidden", message: "attach failed", retryable } } });
+      await flush();
+      vi.advanceTimersByTime(1_000);
+      await flush();
+    });
+    expect(countType(ws, "attach")).toBe(retryable ? 2 : 1);
+    if (retryable) {
+      const second = lastFrame<{ type: "attach"; id: string }>(ws, "attach")!;
+      await act(async () => {
+        ws.serverSend({ type: "response", id: second.id, payload: { ok: false, error: { code: "unavailable", message: "still unavailable", retryable: true } } });
+        await flush();
+        vi.advanceTimersByTime(10_000);
+        await flush();
+      });
+      expect(countType(ws, "attach")).toBe(2);
+    }
+    expect(screen.getByTestId("observation-error")).toBeTruthy();
+    for (const type of ["activate", "create", "submit_turn", "stop"]) expect(countType(ws, type)).toBe(0);
+  });
+
+  it("cancels an already-waiting Ask observation retry when the user selects another session", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
+    const { rerender } = mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: ["A"], waitingSessionIds: ["A"] } });
+      await flush();
+    });
+    const first = lastFrame<{ type: "attach"; id: string }>(ws, "attach")!;
+    await act(async () => {
+      ws.serverSend({ type: "response", id: first.id, payload: { ok: false, error: { code: "unavailable", message: "attach failed", retryable: true } } });
+      await flush();
+    });
+    rerender({ cwd: "/x", session: "B" });
+    await act(async () => { await flush(); vi.advanceTimersByTime(1_000); await flush(); });
+    expect(countType(ws, "attach")).toBe(1);
+    expect(screen.queryByTestId("observation-error")).toBeNull();
   });
 
   it("observe-feature true→false releases once; a later send on a connection without submit_turn stays queued", async () => {
@@ -3426,11 +3614,22 @@ describe("AppShell — source-like sidebar rail", () => {
   // Round 5: pin/archive writes ride the session.write seam (PATCH flags).
   const catalogWriteCaps: HostInfo["capabilities"] = [...catalogCaps, "session.write"];
 
-  it("renders the source hierarchy: Pix, New Session, Projects, Settings + pinned right pane (no Recent section)", async () => {
+  it("renders the source hierarchy: Pix + search + compact new chat, Projects, Settings + pinned right pane (no Recent section)", async () => {
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
     expect(screen.getByTestId("sidebar-brand").textContent).toBe("Pix");
-    expect(screen.getByTestId("sidebar-new-session").textContent).toContain("New Session");
+    // The big "New Session" nav row is gone: it is a compact icon-only button
+    // in the header, next to search (same testid / aria / title / action).
+    const newSession = screen.getByTestId("sidebar-new-session");
+    expect(newSession.textContent).toBe("");
+    expect(newSession.getAttribute("aria-label")).toBe("New Session");
+    expect(newSession.getAttribute("title")).toBe("New Session");
+    expect(newSession.className).toContain("sidebar-icon-btn");
+    expect(newSession.closest("[data-testid=\"sidebar-home-header\"]")).toBeTruthy();
+    const headerActions = newSession.parentElement!;
+    expect(headerActions.contains(screen.getByTestId("sidebar-search"))).toBe(true);
+    // No second full-width New Session row in the primary nav.
+    expect(document.querySelectorAll("[data-testid=\"sidebar-new-session\"]").length).toBe(1);
     // The Plugins / Resources nav entries were removed; the Settings modal
     // tabs remain reachable from the footer Settings button.
     expect(screen.queryByTestId("sidebar-nav-plugins")).toBeNull();
@@ -5789,7 +5988,10 @@ function assistantStubFetch(binding: { cwd: string; sessionId: string | null } |
       : input instanceof URL
         ? `${input.pathname}${input.search}`
         : input.url;
-    if (String(path).includes("/v1/assistant")) {
+    // The binding stub answers ONLY `GET /v1/assistant`; the conversation
+    // HISTORY page (`/v1/assistant/sessions`) falls through to the shell stub
+    // so it can never be decoded as a binding.
+    if (String(path).includes("/v1/assistant") && !String(path).includes("/v1/assistant/sessions")) {
       if ("error" in binding) return jsonStatus({ error: "unavailable" }, binding.status);
       return json(binding);
     }
@@ -5964,9 +6166,25 @@ describe("AppShell — assistant view (Pixie tab + shared status markers)", () =
   });
 
   it("first send from the DRAFT entry creates the session in the FIXED assistant cwd and navigates to the assistant view", async () => {
-    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    const baseline = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    let selectorReads = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/v1/assistant?sessionId=")) {
+        selectorReads += 1;
+        // create was acknowledged but the SDK has not appended JSONL yet.
+        return jsonStatus({ error: "not_found" }, 404);
+      }
+      if (/\/v1\/sessions\/assist-1(?:$|\?)/.test(String(input))) {
+        return jsonStatus({ error: "not_found" }, 404);
+      }
+      return baseline(input, init);
+    });
     const qc = authenticatedQueryClient();
-    mountApp({ assistantDraft: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    const app = mountApp({ assistantDraft: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    navigateMock.mockImplementation(async (options: { search: WorkspaceSearch }) => {
+      app.rerender(options.search);
+      await flush();
+    });
     const ws = await acceptAutomaticConnection(submitTurnAck());
     await act(async () => { await flush(10); });
 
@@ -5988,12 +6206,22 @@ describe("AppShell — assistant view (Pixie tab + shared status markers)", () =
 
     const submit = lastSubmitTurn(ws);
     expect(submit.payload.sessionId).toBe("assist-1");
+    // Exactly ONE create for the first send (never a click-time worker).
+    expect(countType(ws, "create")).toBe(1);
     // The draft-originated create navigates to the assistant conversation URL
     // (the same selector the sidebar uses) and publishes the binding — never
-    // a /?session=assist-1 URL.
-    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistant: true } }));
+    // a /?session=assist-1 URL. The created conversation is named explicitly
+    // so a later latest-binding refresh can never move off it.
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", search: { assistant: true, assistantSession: "assist-1" } });
     expect(navigateMock).not.toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ session: "assist-1" }) }));
     expect(qc.getQueryData(queryKeys.assistant.info())).toEqual({ cwd: ASSISTANT_CWD, sessionId: "assist-1" });
+    // The catalog is still empty: only the acknowledged exact-selection row
+    // may appear, without claiming it was persisted or changing page totals.
+    await settleQueryNotifications();
+    expect(selectorReads).toBe(0);
+    expect(screen.queryByTestId("assistant-selection-missing")).toBeNull();
+    expect(document.querySelector("textarea")).not.toBeNull();
+    expect(screen.getByTestId("session-select-assist-1").getAttribute("aria-current")).toBe("true");
     await acceptSubmitTurn(ws, { sessionId: "assist-1", epoch: "eA" });
     // No session tab ever materializes for the assistant conversation.
     expect((window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "{}")).not.toContain("assist-1");
@@ -6156,5 +6384,360 @@ describe("AppShell — assistant view (Pixie tab + shared status markers)", () =
 
     await act(async () => { fireEvent.click(screen.getByTestId("sidebar-new-session")); await flush(4); });
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: {} }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pixie conversation list, exact selection and new-chat draft
+// ---------------------------------------------------------------------------
+
+function assistantConversation(sessionId: string, updatedAt: number): SessionHeader {
+  return {
+    sessionId,
+    cwd: ASSISTANT_CWD,
+    projectRoot: ASSISTANT_CWD,
+    title: `Pixie ${sessionId}`,
+    createdAt: updatedAt - 1,
+    updatedAt,
+    messageCount: 2,
+    workspaceAccess: AUTHORIZED,
+  };
+}
+
+const ASSISTANT_CAPABILITIES: HostInfo["capabilities"] = ["agent", "sessions", "session.write", "files", "models", "assistant"];
+
+describe("AppShell — Pixie conversation history + exact selection", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateMock.mockReset();
+    previousFetch = globalThis.fetch;
+    globalThis.fetch = stubFetch();
+  });
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = previousFetch;
+    window.localStorage.removeItem("pi-title-model");
+    window.localStorage.removeItem(WORKSPACE_SESSION_TABS_STORAGE_KEY);
+    window.localStorage.removeItem(WORKSPACE_LAST_SESSION_STORAGE_KEY);
+    vi.useRealTimers();
+  });
+
+  it("an older Pixie conversation stays selected while the latest binding changes (no jump)", async () => {
+    assistantStub = {
+      latest: "newest",
+      selectable: ["old-1"],
+      sessions: [assistantConversation("newest", 3_000), assistantConversation("old-1", 1_000)],
+    };
+    mountApp({ assistant: true, assistantSession: "old-1" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    const ws = await connectReady();
+    await act(async () => { await flush(8); });
+    // The exact selector ran and the URL selection was never rewritten to the
+    // workspace's latest conversation.
+    expect(assistantSelectorCalls).toEqual(["old-1"]);
+    expect(navigateMock).not.toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ assistantSession: "newest" }) }));
+    // A catalog change (a newer conversation appears in the workspace) must not
+    // move the open conversation: the route keeps naming old-1.
+    assistantStub = { ...assistantStub, latest: "brand-new", sessions: [assistantConversation("brand-new", 9_000), ...assistantStub.sessions] };
+    await act(async () => { ws.serverSend({ type: "sessions_changed", payload: {} }); await flush(8); });
+    expect(navigateMock).not.toHaveBeenCalled();
+    // The history list was refreshed by the catalog notice (never by polling).
+    expect(assistantPageCalls.length).toBeGreaterThan(1);
+  });
+
+  it("a stale or foreign Pixie selection shows the honest 404 state and never falls back to latest", async () => {
+    assistantStub = { latest: "newest", selectable: [], sessions: [assistantConversation("newest", 3_000)] };
+    mountApp({ assistant: true, assistantSession: "gone" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(8); });
+    expect(assistantSelectorCalls).toContain("gone");
+    expect(screen.getByTestId("assistant-selection-missing")).toBeTruthy();
+    // No composer: a send can never be dispatched into a conversation that is
+    // not an assistant-workspace root session.
+    expect(document.querySelector("textarea")).toBeNull();
+  });
+
+  it("the Pixie new-chat button opens the draft and creates nothing until the first send", async () => {
+    assistantStub = { latest: "newest", selectable: ["newest"], sessions: [assistantConversation("newest", 3_000)] };
+    mountApp({ cwd: "/x" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    const ws = await connectReady();
+    await act(async () => { await flush(8); });
+    // The independent Pixie list lives under the Pixie entry and shows the
+    // workspace's own conversations.
+    expect(screen.getByTestId("sidebar-assistant-sessions")).toBeTruthy();
+    expect(screen.getByTestId("session-select-newest")).toBeTruthy();
+    const createsBefore = ws.sent.filter((frame) => (frame as { type?: string }).type === "create").length;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("assistant-new-session"));
+      await flush(6);
+    });
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", search: { assistantDraft: true } });
+    // A click never creates: no `create` frame, no worker, no session.
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "create")).toHaveLength(createsBefore);
+    expect(createsBefore).toBe(0);
+  });
+
+  it("collapses Pixie as one nested group without navigating, creating or stopping a session", async () => {
+    assistantStub = { latest: "newest", selectable: ["newest"], sessions: [assistantConversation("newest", 30)] };
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "newest" });
+    mountApp({ cwd: "/x" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    const ws = await connectReady();
+    await settleQueryNotifications();
+    const toggle = screen.getByTestId("assistant-section-toggle");
+    const body = screen.getByTestId("assistant-session-disclosure");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(body.getAttribute("data-open")).toBe("true");
+    expect(screen.getByTestId("sidebar-assistant-row").parentElement).toBe(body.parentElement);
+    navigateMock.mockClear();
+    const framesBefore = ws.sent.length;
+    await act(async () => { fireEvent.click(toggle); await flush(); });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(body.getAttribute("data-open")).toBe("false");
+    expect(body.hasAttribute("inert")).toBe(true);
+    expect(window.localStorage.getItem("pi-sidebar-assistant-open")).toBe("false");
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(ws.sent.length).toBe(framesBefore);
+    await act(async () => { fireEvent.click(toggle); await flush(); });
+    expect(body.hasAttribute("inert")).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("session-select-newest")).toBeTruthy();
+  });
+
+  it("restores an explicit Pixie collapse and expands its list without activating history", async () => {
+    window.localStorage.setItem("pi-sidebar-assistant-open", "false");
+    assistantStub = { latest: "newest", selectable: ["newest"], sessions: [assistantConversation("newest", 30)] };
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "newest" });
+    mountApp({ cwd: "/x" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    const ws = await connectReady();
+    await settleQueryNotifications();
+    expect(screen.getByTestId("assistant-section-toggle").getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("session-select-newest")).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByTestId("assistant-section-toggle")); await flush(); });
+    expect(screen.getByTestId("session-select-newest")).toBeTruthy();
+    for (const type of ["attach", "activate", "create", "stop"]) expect(countType(ws, type)).toBe(0);
+  });
+
+  it("lists Pixie conversations directly under the Pixie entry: three rows by default, then More", async () => {
+    assistantStub = {
+      latest: "c1",
+      selectable: ["c1"],
+      sessions: Array.from({ length: 8 }, (_, index) => assistantConversation(`c${index + 1}`, 8_000 - index * 100)),
+    };
+    mountApp({ cwd: "/x" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(8); });
+
+    // The Pixie row itself owns the disclosure: no duplicate section heading.
+    expect(screen.getByTestId("assistant-section-toggle").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryByText("Pixie chats")).toBeNull();
+
+    // The existing new-chat "+" rides the Pixie entry row itself.
+    const pixieRow = screen.getByTestId("sidebar-assistant-row");
+    expect(pixieRow.contains(screen.getByTestId("sidebar-assistant"))).toBe(true);
+    expect(pixieRow.contains(screen.getByTestId("assistant-new-session"))).toBe(true);
+
+    const list = screen.getByTestId("sidebar-assistant-session-list");
+    expect(list.closest("[data-testid=\"sidebar-assistant-sessions\"]")).toBeTruthy();
+    // Directly under that row: first section of the scrolling rail.
+    const scroll = list.closest(".sidebar-rail-scroll");
+    expect(scroll).toBeTruthy();
+    const railOrderIds = Array.from(scroll!.children).map((el) => el.getAttribute("data-testid"));
+    expect(railOrderIds.indexOf("sidebar-assistant-sessions")).toBeGreaterThanOrEqual(0);
+    expect(railOrderIds.indexOf("sidebar-assistant-sessions")).toBeLessThan(railOrderIds.indexOf("sidebar-projects"));
+
+    const rowIds = () => Array.from(list.querySelectorAll("[data-testid^=\"session-select-\"]"))
+      .map((el) => el.getAttribute("data-testid"));
+    expect(rowIds()).toEqual(["session-select-c1", "session-select-c2", "session-select-c3"]);
+    // "More" exists only because a fourth conversation actually exists.
+    expect(screen.getByTestId("assistant-load-more").textContent).toBe("Load more");
+    // Page 1 only: the history is never fetched in full just to slice it.
+    const requestedPages = () => assistantPageCalls.map((call) => new URL(call, "http://pix.local").searchParams.get("page"));
+    expect(requestedPages()).toEqual(["1"]);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("assistant-load-more"));
+      // react-query batches its notify through a macrotask: advance fake timers
+      // so the newly loaded page reaches the render.
+      for (let round = 0; round < 3; round += 1) {
+        await flush(20);
+        vi.advanceTimersByTime(0);
+      }
+      await flush(20);
+    });
+    // The next numbered API page loaded in the same click (true pagination).
+    expect(requestedPages()).toEqual(["1", "2"]);
+    expect(rowIds()).toEqual([
+      "session-select-c1", "session-select-c2", "session-select-c3", "session-select-c4", "session-select-c5",
+      "session-select-c6", "session-select-c7", "session-select-c8",
+    ]);
+    // Nothing left: "More" disappears instead of dangling.
+    expect(screen.queryByTestId("assistant-load-more")).toBeNull();
+  });
+
+  it("shows no More control when three or fewer Pixie conversations exist", async () => {
+    assistantStub = {
+      latest: "c1",
+      selectable: ["c1"],
+      sessions: [assistantConversation("c1", 3_000), assistantConversation("c2", 2_000), assistantConversation("c3", 1_000)],
+    };
+    mountApp({ cwd: "/x" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(8); });
+    const list = screen.getByTestId("sidebar-assistant-session-list");
+    expect(list.querySelectorAll("[data-testid^=\"session-select-\"]").length).toBe(3);
+    expect(screen.queryByTestId("assistant-load-more")).toBeNull();
+    // No extra page was requested for a one-page history.
+    expect(assistantPageCalls.map((call) => new URL(call, "http://pix.local").searchParams.get("page"))).toEqual(["1"]);
+  });
+
+  it("counts the out-of-band selected conversation inside the three rows", async () => {
+    assistantStub = {
+      latest: "c1",
+      selectable: ["c7"],
+      sessions: Array.from({ length: 8 }, (_, index) => assistantConversation(`c${index + 1}`, 8_000 - index * 100)),
+    };
+    mountApp({ assistant: true, assistantSession: "c7" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(10); });
+    const list = screen.getByTestId("sidebar-assistant-session-list");
+    // c7 lives on page 2: it leads the list out-of-band and consumes one of the
+    // three default slots (so only two page-1 rows follow it).
+    const rowIds = Array.from(list.querySelectorAll("[data-testid^=\"session-select-\"]"))
+      .map((el) => el.getAttribute("data-testid"));
+    expect(rowIds).toEqual(["session-select-c7", "session-select-c1", "session-select-c2"]);
+    expect(screen.getByTestId("session-select-c7").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("assistant-load-more")).toBeTruthy();
+  });
+
+  it("keeps the history error honest next to an out-of-band selection (never swallowed)", async () => {
+    assistantStub = {
+      latest: "c1",
+      selectable: ["c1"],
+      sessions: [assistantConversation("c1", 3_000)],
+      pageError: 503,
+    };
+    mountApp({ assistant: true, assistantSession: "c1" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(10); });
+    const list = screen.getByTestId("sidebar-assistant-session-list");
+    // The out-of-band row is still shown...
+    expect(list.querySelector("[data-testid=\"session-select-c1\"]")).toBeTruthy();
+    // ...and the failed history page is never hidden behind it.
+    expect(within(list).getByText("Pixie chats are unavailable")).toBeTruthy();
+    expect(within(list).queryByText("No Pixie chats yet")).toBeNull();
+    // Retry rides the same More control.
+    expect(screen.getByTestId("assistant-load-more")).toBeTruthy();
+  });
+
+  it("selecting a Pixie conversation from the list pins its exact id in the route", async () => {
+    assistantStub = {
+      latest: "newest",
+      selectable: ["newest", "old-1"],
+      sessions: [assistantConversation("newest", 3_000), assistantConversation("old-1", 1_000)],
+    };
+    mountApp({ cwd: "/x" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(8); });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("session-select-old-1"));
+      await flush(4);
+    });
+    // Read-only selection: navigate only, never an attach/create.
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", search: { assistant: true, assistantSession: "old-1" } });
+    expect(navigateMock).not.toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ session: "old-1" }) }));
+  });
+
+  it("switching away and back restores the Pixie tab's selected conversation", async () => {
+    assistantStub = {
+      latest: "newest",
+      selectable: ["newest", "old-1"],
+      sessions: [assistantConversation("newest", 3_000), assistantConversation("old-1", 1_000)],
+    };
+    const view = mountApp({ assistant: true, assistantSession: "old-1" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(8); });
+    navigateMock.mockReset();
+    // Leave for an ordinary session tab (the Pixie tab stays in the strip).
+    view.rerender({ cwd: "/x", session: "A" });
+    await act(async () => { await flush(8); });
+    const assistantTab = document.querySelector('[data-tab-id="assistant"]');
+    expect(assistantTab).not.toBeNull();
+    await act(async () => {
+      fireEvent.click(assistantTab as HTMLElement);
+      await flush(4);
+    });
+    // The remembered conversation rides along instead of jumping to latest.
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", search: { assistant: true, assistantSession: "old-1" } });
+  });
+
+  it("a failed selection lookup reads as unavailable (never 'this chat is gone'), and loading stays loading", async () => {
+    assistantStub = { latest: "newest", selectable: [], sessions: [assistantConversation("newest", 3_000)], selectorError: 503 };
+    mountApp({ assistant: true, assistantSession: "old-1" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(8); });
+    // A 503 (sessiond down / schema / transport) is the SAME fixed unavailable
+    // copy the binding uses; it is never reported as a deleted conversation.
+    expect(assistantSelectorCalls).toContain("old-1");
+    expect(screen.getByTestId("assistant-selection-unavailable")).toBeTruthy();
+    expect(screen.queryByTestId("assistant-selection-missing")).toBeNull();
+    expect(document.querySelector("textarea")).toBeNull();
+  });
+
+  it("a 404 selection is the missing-conversation state (not unavailable)", async () => {
+    assistantStub = { latest: "newest", selectable: [], sessions: [assistantConversation("newest", 3_000)], selectorError: 404 };
+    mountApp({ assistant: true, assistantSession: "gone" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(8); });
+    expect(screen.getByTestId("assistant-selection-missing")).toBeTruthy();
+    expect(screen.queryByTestId("assistant-selection-unavailable")).toBeNull();
+  });
+
+  it("Pixie conversation rows expose no pin/archive (normal session rows still do)", async () => {
+    assistantStub = { latest: "newest", selectable: ["newest"], sessions: [assistantConversation("newest", 3_000)] };
+    globalThis.fetch = controllableStubFetch({
+      sessions: [{
+        sessionId: "N",
+        cwd: "/x",
+        projectRoot: "/x",
+        title: "Normal session",
+        createdAt: Date.now() - 1_000,
+        updatedAt: Date.now(),
+        messageCount: 1,
+        workspaceAccess: AUTHORIZED,
+      }],
+    });
+    mountApp({ cwd: "/x", session: "N" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(10); });
+    // The Pixie row is selectable and has the normal "more" menu, but the
+    // organization actions stay part of the ordinary session sections only.
+    expect(screen.getByTestId("session-select-newest")).toBeTruthy();
+    expect(screen.getByTestId("session-more-newest")).toBeTruthy();
+    expect(screen.queryByTestId("session-pin-newest")).toBeNull();
+    expect(screen.queryByTestId("session-archive-newest")).toBeNull();
+    // Explicitly reveal the ordinary project: section expansion is a
+    // device-local preference and may be collapsed by an earlier test.
+    const projectsToggle = screen.getByTestId("projects-section-toggle");
+    if (projectsToggle.getAttribute("aria-expanded") === "false") {
+      await act(async () => { fireEvent.click(projectsToggle); await flush(8); });
+    }
+    const projectRow = screen.getByTestId("sidebar-project-row");
+    if (projectRow.closest('[data-testid="sidebar-project-card"]')?.getAttribute("data-expanded") === "false") {
+      await act(async () => { fireEvent.click(projectRow); await flush(8); });
+    }
+    // An ordinary session row of the same sidebar keeps them untouched.
+    await settleQueryNotifications();
+    expect(screen.getByTestId("session-pin-N")).toBeTruthy();
+    expect(screen.getByTestId("session-archive-N")).toBeTruthy();
+  });
+
+  it("a plain session URL never materializes the Pixie tab or queries the assistant history", async () => {
+    assistantStub = { latest: "newest", selectable: ["newest"], sessions: [assistantConversation("newest", 3_000)] };
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient(), capabilities: ASSISTANT_CAPABILITIES });
+    await connectReady();
+    await act(async () => { await flush(8); });
+    expect(document.querySelector('[data-tab-id="assistant"]')).toBeNull();
+    expect(assistantSelectorCalls).toEqual([]);
   });
 });

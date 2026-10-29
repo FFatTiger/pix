@@ -458,6 +458,8 @@ test("a read-only session catalog object exposes no renameSession", () => {
 // legacy full-list/delete compatibility. No rename/runtime lifecycle rides along.
 // `findLatestSessionByCwd` is the optional exact-cwd assistant lookup (absent
 // on minimal catalogs; callers fail closed with `unavailable`).
+// `listAssistantSessionPage` is the optional exact-cwd assistant HISTORY page
+// (same exact identity, zero workers, root-only, paged before totals).
 // `noteSessionCreated` is the optional create hint: notify the catalog of a
 // just-created session id so its missing JSONL is not cached as a negative hit.
 const _catalogExact: IsExact<
@@ -471,6 +473,7 @@ const _catalogExact: IsExact<
   | "readSessionTree"
   | "deleteSession"
   | "findLatestSessionByCwd"
+  | "listAssistantSessionPage"
   | "noteSessionCreated"
 > = true;
 

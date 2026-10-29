@@ -146,6 +146,7 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
     registerAssistantRoutes(app, {
       cwd: deps.assistant.cwd,
       client: deps.assistant.client,
+      ...(deps.assistant.roots === undefined ? {} : { roots: deps.assistant.roots }),
     });
   }
   if (deps.catalogs) {

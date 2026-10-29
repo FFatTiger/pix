@@ -77,8 +77,13 @@ export const PIX_PRODUCT_VERSION = "0.3.21" as const;
  * aggregate. AUTH/non-image control stay 2 MiB. Mixed dist must fail closed.
  * v12 (actual child model): snapshot and `subagents_changed` task rows may
  * carry optional bounded `model`. A v11 peer's strict schemas reject it.
+ * v13 (assistant conversation history): new read-only `sessions.listAssistant`
+ * RPC returns one true numbered `SessionPage` of the assistant workspace's own
+ * conversations (sessiond derives the canonical directory; the params carry no
+ * cwd). A v12 daemon's method enum rejects it, so Host/daemon reuse must fail
+ * closed at the fence.
  */
-export const SESSIOND_CONTRACT_VERSION = 12 as const;
+export const SESSIOND_CONTRACT_VERSION = 13 as const;
 
 /**
  * sessiond ↔ Worker IPC contract generation. Bumped on every change to the

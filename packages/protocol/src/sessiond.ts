@@ -369,6 +369,28 @@ export const SessionsFindLatestResultSchema = z.strictObject({
 export type SessionsFindLatestResult = z.infer<typeof SessionsFindLatestResultSchema>;
 
 /**
+ * Assistant conversation HISTORY page (`sessions.listAssistant`).
+ *
+ * True numbered page of the assistant workspace's OWN conversations. The
+ * caller never supplies a cwd: sessiond derives the single canonical assistant
+ * directory from the shared runtime-core derivation (the same identity the
+ * worker tools/adapter know), validates it, and asks the catalog for that exact
+ * root-only page. Like `sessions.findLatest` this is an exact-identity read
+ * that deliberately bypasses browse visibility (the assistant workspace is
+ * `hidden` from every list page), and it can never widen to another workspace,
+ * a child session or a keyword search. Zero workers.
+ */
+export const SessionsListAssistantParamsSchema = z.strictObject({
+  page: z.number().int().positive().safe(),
+  pageSize: z.number().int().positive().max(100).safe(),
+});
+export type SessionsListAssistantParams = z.infer<typeof SessionsListAssistantParamsSchema>;
+
+/** Same canonical SessionPage DTO as `sessions.list` (no new wire shape). */
+export const SessionsListAssistantResultSchema = SessionPageSchema;
+export type SessionsListAssistantResult = z.infer<typeof SessionsListAssistantResultSchema>;
+
+/**
  * Idle reclamation configuration. `0` disables idle reclamation entirely.
  */
 export const ConfigGetSessionIdleTimeoutMsParamsSchema = EmptyObjectSchema;
@@ -771,6 +793,11 @@ export const SessiondRpcRequestSchema = z.discriminatedUnion("method", [
   }),
   z.strictObject({
     ...rpcEnvelope,
+    method: z.literal("sessions.listAssistant"),
+    params: SessionsListAssistantParamsSchema,
+  }),
+  z.strictObject({
+    ...rpcEnvelope,
     method: z.literal("config.getSessionIdleTimeoutMs"),
     params: ConfigGetSessionIdleTimeoutMsParamsSchema.default({}),
   }),
@@ -813,6 +840,7 @@ export const SESSIOND_RPC_METHODS = [
   "workspace.flags.get",
   "sessions.delete",
   "sessions.findLatest",
+  "sessions.listAssistant",
   "config.getSessionIdleTimeoutMs",
   "config.setSessionIdleTimeoutMs",
 ] as const;
@@ -850,6 +878,7 @@ export type SessiondMethodParams = {
   "workspace.flags.get": WorkspaceFlagsGetParams;
   "sessions.delete": SessionsDeleteParams;
   "sessions.findLatest": SessionsFindLatestParams;
+  "sessions.listAssistant": SessionsListAssistantParams;
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsParams;
   "config.setSessionIdleTimeoutMs": ConfigSetSessionIdleTimeoutMsParams;
 };
@@ -884,6 +913,7 @@ export type SessiondMethodResult = {
   "workspace.flags.get": WorkspaceFlagsGetResult;
   "sessions.delete": SessionsDeleteResult;
   "sessions.findLatest": SessionsFindLatestResult;
+  "sessions.listAssistant": SessionsListAssistantResult;
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsResult;
   "config.setSessionIdleTimeoutMs": ConfigSetSessionIdleTimeoutMsResult;
 };
@@ -918,6 +948,7 @@ export const SessiondMethodResultSchemas = {
   "workspace.flags.get": WorkspaceFlagsGetResultSchema,
   "sessions.delete": SessionsDeleteResultSchema,
   "sessions.findLatest": SessionsFindLatestResultSchema,
+  "sessions.listAssistant": SessionsListAssistantResultSchema,
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsResultSchema,
   "config.setSessionIdleTimeoutMs": ConfigSetSessionIdleTimeoutMsResultSchema,
 } as const;
@@ -952,6 +983,7 @@ export const SessiondRpcSuccessSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("workspace.flags.get"), result: WorkspaceFlagsGetResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.delete"), result: SessionsDeleteResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.findLatest"), result: SessionsFindLatestResultSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.listAssistant"), result: SessionsListAssistantResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("config.getSessionIdleTimeoutMs"), result: ConfigGetSessionIdleTimeoutMsResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("config.setSessionIdleTimeoutMs"), result: ConfigSetSessionIdleTimeoutMsResultSchema }),
 ]);
@@ -986,6 +1018,7 @@ export const SessiondRpcFailureSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("workspace.flags.get"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.delete"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.findLatest"), error: ProtocolErrorSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.listAssistant"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("config.getSessionIdleTimeoutMs"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("config.setSessionIdleTimeoutMs"), error: ProtocolErrorSchema }),
 ]);

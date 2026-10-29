@@ -84,6 +84,13 @@ export interface PiSdkSessionStore {
    */
   findLatestSessionByCwd?(cwd: string): Promise<SessionHeader | null>;
   /**
+   * One true page of the assistant conversation history: root sessions whose
+   * cwd is exactly `cwd` (browse-visibility bypassing for that one directory,
+   * zero workers). Child sessions and every other cwd are excluded before
+   * totals/slicing.
+   */
+  listAssistantSessionPage?(cwd: string, request: CatalogPageRequest): Promise<SessionPage>;
+  /**
    * Creation hint (SessionCatalogPort.noteSessionCreated): the id was minted
    * by a successful runtime.create, so exact-id misses are transient (the Pi
    * SDK persists the JSONL lazily) and never become sticky negatives.
@@ -143,6 +150,15 @@ class PiSdkSessionCatalog implements SessionCatalogPort {
       throw makeRuntimeError("unavailable", "session catalog cannot resolve the latest session for a directory");
     }
     return this.store.findLatestSessionByCwd(cwd);
+  }
+
+  async listAssistantSessionPage(cwd: string, request: CatalogPageRequest): Promise<SessionPage> {
+    // `async` on purpose: a Promise-returning port must REJECT (never throw
+    // synchronously) so `await`/`assert.rejects` observers see the failure.
+    if (!this.store.listAssistantSessionPage) {
+      throw makeRuntimeError("unavailable", "session catalog cannot page a directory's assistant sessions");
+    }
+    return this.store.listAssistantSessionPage(cwd, request);
   }
 
   noteSessionCreated(sessionId: string): void {

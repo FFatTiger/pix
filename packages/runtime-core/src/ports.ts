@@ -231,6 +231,24 @@ export interface SessionCatalogPort {
    */
   findLatestSessionByCwd?(cwd: string): Promise<SessionHeader | null>;
   /**
+   * One true numbered page of the ASSISTANT conversation history: the ROOT
+   * sessions whose recorded cwd is EXACTLY the string `cwd` (byte-for-byte —
+   * no case folding and no separator folding, the SAME identity rule as
+   * {@link SessionCatalogPort.findLatestSessionByCwd}; path-pattern helpers
+   * only CLASSIFY a workspace as hidden, they never grant identity).
+   *
+   * Unlike {@link listSessionPage} this deliberately ignores browse visibility
+   * for that ONE exact directory (the assistant workspace is `hidden` from
+   * every list page), and it never widens: child/subagent sessions and rows
+   * from any other cwd are excluded BEFORE totals and page slicing, so the
+   * page can never leak another workspace. Ordering is the shared catalog
+   * order (modified desc, id asc). Zero workers; the materialized index
+   * answers without any JSONL request-path scan. Optional: absent ⇒ callers
+   * fail closed with `unavailable` instead of falling back to a visible list
+   * scan that cannot see hidden assistant sessions.
+   */
+  listAssistantSessionPage?(cwd: string, request: CatalogPageRequest): Promise<SessionPage>;
+  /**
    * Creation hint from the session-lifecycle authority: sessiond calls this
    * with the id a successful `runtime.create` minted. The Pi SDK persists
    * the JSONL lazily (at the first append), so the catalog can observe a

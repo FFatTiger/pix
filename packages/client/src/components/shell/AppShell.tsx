@@ -40,7 +40,7 @@ import {
   openFileWorkspaceTab,
   assistantTabId,
   minimalAssistantTab,
-  openAssistantWorkspaceTab,
+  selectAssistantWorkspaceTab,
   openSessionWorkspaceTab,
   reconcileWorkspaceCwd,
   saveLastWorkspaceTab,
@@ -48,6 +48,7 @@ import {
   saveFileWorkspaceViewerState,
   sessionTabId,
   subscribeWorkspaceSessionTabs,
+  type AssistantWorkspaceTab,
   type WorkspaceTab,
 } from "@/features/workspace/tabs/workspace-tab-state";
 import type { FileViewerState } from "@/features/workspace/viewer/file-viewer-state";
@@ -63,6 +64,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useVisualViewportFrame } from "@/hooks/useVisualViewportHeight";
 import { useGateStatus } from "@/features/gate/useGate";
 import { useHttpClient } from "@/app/http-context";
+import { HttpError } from "@/api/http-client";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { ChatsCircleIcon, FilesIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
 import { AssistantEntryChip } from "@/components/shell/AssistantEntryChip";
@@ -138,9 +140,11 @@ export function AppShell({ search }: AppShellProps) {
   const sessionsChangedRevision = connection.sessionsChangedRevision;
   useEffect(() => {
     if (sessionsChangedRevision === 0) return;
-    // Catalog-change notice: sessions AND workspace organization flags.
+    // Catalog-change notice: sessions, the assistant (Pixie) conversation
+    // history list (its rows are sessions too) AND workspace organization flags.
     void Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.sessions.lists }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.assistant.sessionsLists }),
       queryClient.invalidateQueries({ queryKey: WORKSPACE_FLAGS_QUERY_KEY }),
     ]);
   }, [queryClient, sessionsChangedRevision]);
@@ -159,13 +163,15 @@ export function AppShell({ search }: AppShellProps) {
   }, [can, canBrowseSessions, http]);
 
   // ── Assistant view (project-less evergreen conversation) ────────────────
-  // `/?assistant=1` selects the assistant: the URL carries NO session id —
-  // the binding (fixed Host-managed cwd + the latest session in it) is
-  // server-authoritative via GET /v1/assistant. Capability-gated: without
-  // the `assistant` token the flag degrades to the ordinary home view (the
-  // sidebar entry is hidden, never a broken view). The query is read-only:
-  // it never creates or activates anything; creation rides the normal
-  // first-send transaction with the resolved cwd.
+  // `/?assistant=1` selects the assistant; an optional
+  // `&assistantSession=<id>` pins ONE exact conversation (validated through
+  // GET /v1/assistant?sessionId=). Without it the binding (fixed Host-managed
+  // cwd + the latest session in it) is server-authoritative via
+  // GET /v1/assistant. Capability-gated: without the `assistant` token the
+  // flag degrades to the ordinary home view (the sidebar entry is hidden,
+  // never a broken view). Both queries are read-only: they never create or
+  // activate anything; creation rides the normal first-send transaction with
+  // the resolved cwd.
   const canAssistant = can("assistant");
   const isAssistantView = search.assistant === true && canAssistant;
   // The binding is also needed OUTSIDE the view (the sidebar entry and the
@@ -176,11 +182,55 @@ export function AppShell({ search }: AppShellProps) {
   const assistantInfo = canAssistant ? assistantQuery.data : undefined;
   /** Fixed assistant cwd once the binding resolved (undefined while loading/errored). */
   const assistantCwd = assistantInfo?.cwd;
-  /** The assistant conversation session (null = not started yet). */
-  const assistantSessionId = assistantInfo?.sessionId ?? null;
-  // Exact runtime for the assistant's server-resolved session (the URL carries
-  // no session id, so the provider-bound selection alone cannot see it). Null
-  // outside the assistant view; `activeRuntime` below is the view-effective one.
+  /**
+   * Explicitly selected Pixie conversation from the route
+   * (`/?assistant=1&assistantSession=<id>`). Null = follow the workspace's
+   * latest binding. Once set, a binding refresh can never move the open
+   * conversation: the URL keeps naming it.
+   */
+  const assistantSelectedSessionId = isAssistantView ? search.assistantSession ?? null : null;
+  /**
+   * Exact selection validation (`GET /v1/assistant?sessionId=`): the Host
+   * answers only for an existing assistant-workspace ROOT session and a fixed
+   * 404 otherwise — never a latest fallback — so a stale/foreign id is never
+   * rendered as Pixie.
+   */
+  const assistantSelectionQuery = useQuery({
+    ...options.assistant.binding(assistantSelectedSessionId ?? ""),
+    enabled: canAssistant && isAssistantView && assistantSelectedSessionId !== null,
+  });
+  /**
+   * ONLY the Host's fixed 404 means "this conversation does not exist" (the id
+   * is not an assistant-workspace root session). Every other failure — sessiond
+   * down, schema mismatch, network — is the SAME honest "unavailable" state the
+   * binding uses; it is never reported as "no longer exists".
+   */
+  const assistantSelectionMissing = assistantSelectedSessionId !== null
+    && assistantSelectionQuery.error instanceof HttpError
+    && assistantSelectionQuery.error.status === 404;
+  const assistantSelectionFailed = assistantSelectedSessionId !== null
+    && assistantSelectionQuery.isError
+    && !assistantSelectionMissing;
+  /**
+   * While the exact selector is still validating, the conversation is NOT
+   * rendered (and its composer stays hidden): an unconfirmed id must never
+   * mount another session's transcript or accept a send.
+   */
+  const assistantSelectionPending = assistantSelectedSessionId !== null
+    && !assistantSelectionQuery.isError
+    && assistantSelectionQuery.data === undefined;
+  /**
+   * The assistant conversation this view shows: the explicit route selection
+   * when present, else the server-resolved latest binding (null = not started).
+   * Outside the view it stays the latest binding (the sidebar entry's status).
+   */
+  const assistantSessionId = isAssistantView
+    ? (assistantSelectedSessionId ?? assistantInfo?.sessionId ?? null)
+    : (assistantInfo?.sessionId ?? null);
+  // Exact runtime for the assistant conversation this view shows (the selected
+  // id or the server-resolved latest binding, so the provider-bound selection
+  // alone cannot see it). Null outside the assistant view; `activeRuntime`
+  // below is the view-effective one.
   const assistantRuntime = useRuntime(isAssistantView ? assistantSessionId : null);
   const activeRuntime = isAssistantView ? assistantRuntime : selectedRuntime;
   const selectedWorkspace = useSelectedWorkspaceAccess(
@@ -296,6 +346,7 @@ export function AppShell({ search }: AppShellProps) {
   // token captured BEFORE the call; a late A result cannot paint or clear B.
   const observeFeatureNegotiated = connection.acceptedFeatures.includes(RUNTIME_OBSERVE_EXISTING_FEATURE);
   const selectedLive = selectedSessionId !== null && connection.liveSessionIds.includes(selectedSessionId);
+  const selectedWaiting = selectedSessionId !== null && connection.waitingSessionIds.includes(selectedSessionId);
   const [observationError, setObservationError] = useState<string | null>(null);
   useEffect(() => {
     setObservationError(null);
@@ -308,8 +359,10 @@ export function AppShell({ search }: AppShellProps) {
     const sessionId = selectedSessionId;
     if (sessionId === null || !presentationAuthorized || !connection.liveSessionStateKnown) return;
     // Lease/attached are guards only — not effect deps. An error that vacates
-    // the lease while selectedLive stays true must not hammer-retry; a later
-    // live-set / generation change is the recovery trigger. Registry
+    // the lease while selectedLive stays true must not hammer-retry. A later
+    // live-set / generation change or selected-session waiting transition is
+    // the recovery trigger: Ask can arrive after an earlier attach failed,
+    // without ever removing this Worker from the live set. Registry
     // single-flight coalesces an already in-flight/held observe.
     const current = registry.leaseSnapshot;
     const observingSelected = current.holderSessionId === sessionId
@@ -323,11 +376,32 @@ export function AppShell({ search }: AppShellProps) {
     }
     if (!selectedLive) return;
     const token = registry.capturePresentation();
-    void registry.observeExisting(sessionId).then(
-      () => { applyObservationOutcome(token, null); },
-      (cause: unknown) => { applyObservationOutcome(token, cause); },
-    );
-  }, [applyObservationOutcome, connection.generation, connection.liveSessionStateKnown, observeFeatureNegotiated, presentationAuthorized, registry, selectedLive, selectedSessionId]);
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const observe = (allowRetry: boolean): void => {
+      void registry.observeExisting(sessionId).then(
+        () => { if (!cancelled) applyObservationOutcome(token, null); },
+        (cause: unknown) => {
+          if (cancelled || !registry.isPresentationCurrent(token)) return;
+          applyObservationOutcome(token, cause);
+          // A questionnaire may already be pending when the first attach
+          // fails, so no further waiting edge is guaranteed. Retry once for
+          // this selected waiting state, never poll or retry a permanent deny.
+          if (allowRetry && selectedWaiting && typeof cause === "object" && cause !== null
+            && "retryable" in cause && cause.retryable === true) {
+            retryTimer = setTimeout(() => {
+              if (!cancelled && registry.isPresentationCurrent(token)) observe(false);
+            }, 1_000);
+          }
+        },
+      );
+    };
+    observe(true);
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+    };
+  }, [applyObservationOutcome, connection.generation, connection.liveSessionStateKnown, observeFeatureNegotiated, presentationAuthorized, registry, selectedLive, selectedSessionId, selectedWaiting]);
 
   // Workspace revoke is exact-selected. Global gate/agent revoke (and a genuine
   // observe-feature true→false edge) releases ANY held/pending browser observer,
@@ -456,9 +530,9 @@ export function AppShell({ search }: AppShellProps) {
     if (inList) return inList;
     if (search.file !== undefined && search.cwd !== undefined) return minimalFileTab(search.cwd, search.file);
     if (search.session !== undefined) return minimalSessionTab(search.session, search.cwd);
-    if (isAssistantView) return minimalAssistantTab();
+    if (isAssistantView) return minimalAssistantTab(assistantSelectedSessionId ?? undefined);
     return null;
-  }, [activeTabId, isAssistantView, tabs, search.file, search.cwd, search.session]);
+  }, [activeTabId, assistantSelectedSessionId, isAssistantView, tabs, search.file, search.cwd, search.session]);
   const activeSessionId = activeTab?.kind === "session" ? activeTab.sessionId : null;
   // View-effective session: the assistant conversation when the assistant view
   // is selected (the URL carries no session id), else the URL-selected tab.
@@ -483,12 +557,14 @@ export function AppShell({ search }: AppShellProps) {
         });
       } else if (search.session !== undefined) {
         next = openSessionWorkspaceTab(next, search.session, search.cwd);
-      } else if (isAssistantView && assistantSessionId !== null) {
-        next = openAssistantWorkspaceTab(next);
+      } else if (isAssistantView && (assistantSelectedSessionId !== null || assistantSessionId !== null)) {
+        // The Pixie tab keeps its singleton identity; its CURRENT selection is
+        // synced from the route (undefined = follow the latest binding).
+        next = selectAssistantWorkspaceTab(next, assistantSelectedSessionId ?? undefined);
       }
       return next;
     });
-  }, [assistantSessionId, isAssistantView, search.cwd, search.session, search.file]);
+  }, [assistantSelectedSessionId, assistantSessionId, isAssistantView, search.cwd, search.session, search.file]);
   useEffect(() => {
     saveWorkspaceSessionTabs(tabs);
   }, [tabs]);
@@ -634,12 +710,23 @@ export function AppShell({ search }: AppShellProps) {
     if (isMobile) setSidebarOpen(false);
     if (liveSearchRef.current.assistant === true) return;
     if (liveSearchRef.current.assistantDraft === true) return;
-    void navigate(
-      assistantInfo !== undefined && assistantInfo.sessionId === null
-        ? { to: "/", search: { assistantDraft: true } }
-        : { to: "/", search: { assistant: true } },
-    );
-  }, [assistantInfo, isMobile, navigate]);
+    if (assistantInfo !== undefined && assistantInfo.sessionId === null) {
+      // No assistant conversation yet: the new-chat draft entry (a click never
+      // creates a session; the first send does).
+      void navigate({ to: "/", search: { assistantDraft: true } });
+      return;
+    }
+    // Re-entering an already-open Pixie tab restores ITS current conversation
+    // (the tab remembers the last explicit selection) instead of jumping to
+    // the workspace's latest session.
+    const openAssistantTab = tabs.find((tab): tab is AssistantWorkspaceTab => tab.kind === "assistant");
+    void navigate({
+      to: "/",
+      search: openAssistantTab?.sessionId === undefined
+        ? { assistant: true }
+        : { assistant: true, assistantSession: openAssistantTab.sessionId },
+    });
+  }, [assistantInfo, isMobile, navigate, tabs]);
 
   // The assistant chip on the new-session page: with an existing assistant
   // conversation the draft text travels along (filled into the assistant
@@ -660,6 +747,26 @@ export function AppShell({ search }: AppShellProps) {
     void navigate({ to: "/", search: {} });
   }, [navigate]);
 
+  // Sidebar Pixie section: a NEW chat is the existing assistant draft — no
+  // session is created by the click; the first send in the draft performs the
+  // one create transaction (assistant workspace cwd, server-resolved).
+  const handleNewAssistantSession = useCallback(() => {
+    if (isMobile) setSidebarOpen(false);
+    if (liveSearchRef.current.assistantDraft === true) return;
+    void navigate({ to: "/", search: { assistantDraft: true } });
+  }, [isMobile, navigate]);
+
+  // Selecting an OLDER Pixie conversation pins its exact id in the route, so
+  // the view stays on it even when the assistant workspace's latest binding
+  // changes. The id was listed by the assistant history endpoint; the binding
+  // endpoint re-validates existence + root + exact workspace identity.
+  const handleSelectAssistantSession = useCallback((sessionId: string) => {
+    if (isMobile) setSidebarOpen(false);
+    const current = liveSearchRef.current;
+    if (current.assistant === true && current.assistantSession === sessionId) return;
+    void navigate({ to: "/", search: { assistant: true, assistantSession: sessionId } });
+  }, [isMobile, navigate]);
+
   // The assistant view renders the conversation branch even with no session
   // tab. The assistant DRAFT (`/?draft=assistant`) lives on the home stack:
   // the first assistant message is composed with the project picker hidden.
@@ -674,8 +781,11 @@ export function AppShell({ search }: AppShellProps) {
   useEffect(() => {
     if (!isAssistantView || assistantInfo === undefined) return;
     if (assistantInfo.sessionId !== null) return;
+    // An explicitly selected conversation is never replaced by the draft entry
+    // (the selection endpoint owns validation/404 for it).
+    if (assistantSelectedSessionId !== null) return;
     void navigate({ to: "/", search: { assistantDraft: true } });
-  }, [assistantInfo, isAssistantView, navigate]);
+  }, [assistantInfo, assistantSelectedSessionId, isAssistantView, navigate]);
 
   // ── Project trust ─────────────────────────────────────────────────────────
   // Read and write stay independently capability-gated. The dialog only shows
@@ -1001,19 +1111,25 @@ export function AppShell({ search }: AppShellProps) {
     // its own controller).
     if (registry.promoteCreatedPresentation(created.sessionId)) {
       if (isAssistantView || isAssistantDraft) {
-        // The assistant URL carries no session id: publish the binding so the
-        // view switches from the draft/loading state to the conversation. A
-        // draft-originated create also navigates from the home page to the
-        // assistant conversation (the sidebar's assistant URL).
+        // Publish the server-resolved binding so the view switches out of the
+        // draft/loading state, and name the new conversation explicitly in the
+        // route: the created session becomes the user's selection, so a later
+        // binding refresh can never move the open conversation off it.
         queryClient.setQueryData(queryKeys.assistant.info(), { cwd: created.cwd, sessionId: created.sessionId });
+        // The create acknowledgement already proves this exact assistant
+        // identity. Do not ask the persisted catalog to prove it again before
+        // the first JSONL append; an arbitrary route id never gets this seed.
+        if (created.cwd === assistantCwd) {
+          queryClient.setQueryData(queryKeys.assistant.binding(created.sessionId), { cwd: created.cwd, sessionId: created.sessionId });
+        }
         if (isAssistantDraft) {
-          void navigate({ to: "/", search: { assistant: true } });
+          void navigate({ to: "/", search: { assistant: true, assistantSession: created.sessionId } });
         }
       } else {
         void navigate({ to: "/", search: { cwd: created.cwd, session: created.sessionId } });
       }
     }
-  }, [isAssistantDraft, isAssistantView, navigate, primeMissingSession, queryClient, registry]);
+  }, [assistantCwd, isAssistantDraft, isAssistantView, navigate, primeMissingSession, queryClient, registry]);
 
   // runtime.create may return before Pi has persisted the JSONL catalog entry.
   // The prompt command settlement is the persistence boundary; refresh the HTTP
@@ -1029,7 +1145,11 @@ export function AppShell({ search }: AppShellProps) {
         // persisted JSONL before the broad list refetch runs.
         await queryClient.fetchQuery(createQueryOptions(http).sessions.detail(activity.sessionId));
         await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.assistant.binding(activity.sessionId) }),
           queryClient.invalidateQueries({ queryKey: queryKeys.sessions.lists }),
+          // The Pixie history list is a session page too: the first persisted
+          // assistant turn must appear there without a reload.
+          queryClient.invalidateQueries({ queryKey: queryKeys.assistant.sessionsLists }),
           queryClient.invalidateQueries({ queryKey: queryKeys.projects.all }),
         ]);
       } catch {
@@ -1073,7 +1193,12 @@ export function AppShell({ search }: AppShellProps) {
   // recreates the matching tab.
   const navigateToTab = useCallback((tab: WorkspaceTab): void => {
     if (tab.kind === "assistant") {
-      void navigate({ to: "/", search: { assistant: true } });
+      void navigate({
+        to: "/",
+        search: tab.sessionId === undefined
+          ? { assistant: true }
+          : { assistant: true, assistantSession: tab.sessionId },
+      });
       return;
     }
     if (tab.kind === "file") {
@@ -1525,6 +1650,12 @@ export function AppShell({ search }: AppShellProps) {
           assistantActive={isAssistantView}
           canAssistant={canAssistant}
           assistantStatus={assistantStatus}
+          assistantSessionId={isAssistantView ? assistantSessionId : null}
+          assistantSelectedHeader={isAssistantView && !assistantSelectionMissing && !assistantSelectionFailed && !assistantSelectionPending
+            && selectedWorkspace.header?.cwd === assistantCwd && selectedWorkspace.header?.parentSessionId === undefined
+            ? selectedWorkspace.header : undefined}
+          onSelectAssistantSession={handleSelectAssistantSession}
+          onNewAssistantSession={handleNewAssistantSession}
         />
       </div> : null}
       {sidebarOpen && (
@@ -1625,10 +1756,34 @@ export function AppShell({ search }: AppShellProps) {
                     {observationError}
                   </div>
                 ) : null}
-                {isAssistantView && assistantInfo === undefined ? (
-                  // First entry before the binding resolves: an honest loading
-                  // state, or the fixed degraded copy when the Host cannot
-                  // answer (the capability retracted mid-view / sessiond down).
+                {isAssistantView && assistantSelectionMissing ? (
+                  // The explicitly selected conversation is not an assistant
+                  // workspace root session (deleted/stale/foreign id): the Host
+                  // answered its fixed 404 and the view NEVER falls back to the
+                  // latest binding. Honest, fixed copy — no fake conversation.
+                  <div
+                    className="transcript-empty"
+                    role="alert"
+                    data-testid="assistant-selection-missing"
+                  >
+                    {t("desktop.assistantSessionMissing")}
+                  </div>
+                ) : isAssistantView && assistantSelectionFailed ? (
+                  // The selector could not be answered (sessiond down,
+                  // transport/schema failure): the SAME fixed unavailable copy
+                  // as the binding — never "this conversation is gone".
+                  <div
+                    className="transcript-empty"
+                    role="alert"
+                    data-testid="assistant-selection-unavailable"
+                  >
+                    {t("desktop.assistantUnavailable")}
+                  </div>
+                ) : isAssistantView && (assistantInfo === undefined || assistantSelectionPending) ? (
+                  // First entry before the binding (or the exact selector)
+                  // resolves: an honest loading state, or the fixed degraded
+                  // copy when the Host cannot answer (the capability retracted
+                  // mid-view / sessiond down).
                   <div
                     className="transcript-empty"
                     role={assistantQuery.isError ? "alert" : "status"}
@@ -1649,7 +1804,7 @@ export function AppShell({ search }: AppShellProps) {
                 {selectionMatchesLive ? (
                   <ExtensionRequests live runtime={activeRuntime} composerTextareaRef={composerTextareaRef} />
                 ) : null}
-                {viewSessionId === null ? null : (
+                {viewSessionId === null || (isAssistantView && (assistantSelectionMissing || assistantSelectionFailed || assistantSelectionPending)) ? null : (
                   <SubagentActivityCard
                     key={`status:${viewSessionId}`}
                     activities={capsuleActivities}
@@ -1660,7 +1815,7 @@ export function AppShell({ search }: AppShellProps) {
                     onOpenActivity={handleOpenSubagentActivity}
                   />
                 )}
-                {isAssistantView && assistantInfo === undefined ? null : (
+                {isAssistantView && (assistantInfo === undefined || assistantSelectionMissing || assistantSelectionFailed || assistantSelectionPending) ? null : (
                   <Composer
                     ref={composerRef}
                     live={selectionMatchesLive}

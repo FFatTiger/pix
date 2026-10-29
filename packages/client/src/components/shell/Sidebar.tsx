@@ -38,7 +38,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useContextMenu, type ContextMenuEntry } from "@/components/ContextMenu";
 import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state";
 import { downloadVisibleBranch } from "@/lib/visible-branch-export";
-import { loadPinnedSectionOpen, loadProjectsSectionOpen, savePinnedSectionOpen, saveProjectsSectionOpen } from "@/lib/sidebar-section-state";
+import { loadAssistantSectionOpen, loadPinnedSectionOpen, loadProjectsSectionOpen, saveAssistantSectionOpen, savePinnedSectionOpen, saveProjectsSectionOpen } from "@/lib/sidebar-section-state";
 import { useSidebarItemState } from "@/lib/sidebar-item-state";
 import { projectDisplayName, sessionActivityMs, sessionRowTitle } from "@/lib/session-row";
 import { formatCompactActivity } from "@/lib/i18n/format";
@@ -52,6 +52,11 @@ const SESSION_LONG_PRESS_MOVE_PX = 10;
 const RECENT_PROJECT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 /** Expanded projects reveal this many root sessions before "Load more". */
 const PROJECT_SESSIONS_INITIAL = 3;
+/**
+ * Pixie conversations shown under the Pixie entry before "More". The exact
+ * selected conversation counts toward this number (it is always row 1).
+ */
+const ASSISTANT_SESSIONS_INITIAL = 3;
 /** Each "Load more" click inside a project reveals this many more roots. */
 const PROJECT_SESSIONS_STEP = 5;
 /** Sessions younger than this animate their sidebar row in on mount. */
@@ -114,6 +119,21 @@ export interface SidebarProps {
    * always-on by design; no online/starting dot exists).
    */
   assistantStatus?: SessionDisplayStatus | undefined;
+  /**
+   * The Pixie conversation the assistant view currently shows (explicit
+   * route selection or the resolved latest binding), otherwise null. Drives
+   * the selected-row highlight of the independent Pixie conversation list.
+   */
+  assistantSessionId?: string | null;
+  /** Exact validated/created selection, displayed out-of-band until its catalog page includes it. */
+  assistantSelectedHeader?: SessionHeader | undefined;
+  /** Open one older Pixie conversation (read-only selection; 0 workers). */
+  onSelectAssistantSession?: (sessionId: string) => void;
+  /**
+   * Open the assistant NEW-chat draft. A click never creates a session: the
+   * first send in the draft performs the single create transaction.
+   */
+  onNewAssistantSession?: () => void;
 }
 
 /**
@@ -308,6 +328,10 @@ export function Sidebar({
   assistantActive,
   canAssistant,
   assistantStatus,
+  assistantSessionId = null,
+  assistantSelectedHeader,
+  onSelectAssistantSession,
+  onNewAssistantSession,
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -378,6 +402,19 @@ export function Sidebar({
       return !open;
     });
   }, []);
+  // Independent Pixie conversation list (its own numbered pages — the
+  // assistant workspace is `hidden` from every ordinary session page, so these
+  // rows exist only here and in the Pixie view itself). It has no section
+  // heading: the Pixie row owns the same disclosure as a project row.
+  const [assistantOpen, setAssistantOpen] = useState(loadAssistantSectionOpen);
+  const toggleAssistant = useCallback(() => {
+    setAssistantOpen((open) => {
+      saveAssistantSectionOpen(!open);
+      return !open;
+    });
+  }, []);
+  const [assistantPagesLoaded, setAssistantPagesLoaded] = useState(1);
+  const [assistantSessionsShown, setAssistantSessionsShown] = useState(ASSISTANT_SESSIONS_INITIAL);
   const [projectsOpen, setProjectsOpen] = useState<boolean>(() => loadProjectsSectionOpen());
   const toggleProjects = useCallback(() => {
     setProjectsOpen((open) => {
@@ -385,6 +422,17 @@ export function Sidebar({
       return !open;
     });
   }, []);
+  // Pixie conversation pages. Identity-gated by the Host `assistant` token; no
+  // polling (a catalog change arrives as `sessions_changed`, which invalidates
+  // these keys). Pages are true numbered API pages — the display limit below
+  // never pre-fetches everything just to slice it.
+  const assistantSessionQueries = useQueries({
+    queries: Array.from({ length: assistantPagesLoaded }, (_, index) => options.assistant.sessions(
+      index + 1,
+      SESSION_PAGE_SIZE,
+      canAssistant === true,
+    )),
+  });
   const {
     state: itemState,
     pinSession,
@@ -530,6 +578,46 @@ export function Sidebar({
     bucket.sessions = dedupeSessions(bucket.sessions);
   }
 
+  // Pixie conversation pages: one continuous rail list over true numbered
+  // pages (same "Load more" idiom as projects). Rows are ordinary session rows
+  // rendered by the shared component; only the scope (this exact server-owned
+  // workspace) differs.
+  const assistantPageSessions = dedupeSessions(assistantSessionQueries.flatMap((query) => query.data?.sessions ?? []));
+  // Keep a newly acknowledged conversation selectable while its first append
+  // is still reaching the catalog. This exact-selection row never changes the
+  // authoritative page totals or order, and disappears once the page owns it.
+  const assistantSessions = assistantSelectedHeader?.sessionId === assistantSessionId
+    && !assistantPageSessions.some((session) => session.sessionId === assistantSessionId)
+    ? [assistantSelectedHeader, ...assistantPageSessions]
+    : assistantPageSessions;
+  const lastAssistantSessionQuery = assistantSessionQueries[assistantSessionQueries.length - 1];
+  const assistantSessionsShowLoading = canAssistant === true && assistantSessionQueries[0]?.isLoading === true;
+  const assistantSessionsShowError = canAssistant === true && assistantSessionQueries[0]?.isError === true;
+  const assistantTotalPages = lastDefinedTotalPages(assistantSessionQueries);
+  const assistantMorePagesAvailable = assistantPagesLoaded < assistantTotalPages;
+  // Default 3 rows (the out-of-band selection is row 1, so it is counted);
+  // "More" reveals STEP more and pulls the next numbered page in the same
+  // click when the display limit outreaches the loaded rows.
+  const assistantVisibleSessions = assistantSessions.slice(0, assistantSessionsShown);
+  const assistantHasHiddenSessions = assistantSessions.length > assistantVisibleSessions.length;
+  const canLoadMoreAssistantSessions = canAssistant === true && (
+    lastAssistantSessionQuery?.isError === true
+    || (assistantPagesLoaded > 1 && lastAssistantSessionQuery?.isFetching === true)
+    || assistantHasHiddenSessions
+    || assistantMorePagesAvailable
+  );
+  const loadMoreAssistantSessions = () => {
+    if (lastAssistantSessionQuery?.isError) {
+      void lastAssistantSessionQuery.refetch();
+      return;
+    }
+    const nextShown = assistantSessionsShown + PROJECT_SESSIONS_STEP;
+    setAssistantSessionsShown(nextShown);
+    if (nextShown > assistantSessions.length && assistantMorePagesAvailable) {
+      setAssistantPagesLoaded((count) => count + 1);
+    }
+  };
+
   const archivedSessionIds = new Set(itemState.archivedSessions);
   const archivedProjectRoots = new Set(itemState.archivedProjects);
   const pinnedSessionIds = new Set(itemState.pinnedSessions);
@@ -580,6 +668,44 @@ export function Sidebar({
       onSessionDeleted={onSessionDeleted}
       onSelectSession={onSelectSession}
       depth={0}
+    />
+  );
+
+  /**
+   * One Pixie conversation row: the SAME shared row component/status markers
+   * as ordinary sessions (no bespoke list styling). Selecting it is a
+   * read-only route change; the row's own mutations (rename/delete/export)
+   * ride the existing session endpoints by exact id.
+   *
+   * Pin/archive are HIDDEN here (`showOrganizationActions={false}`): this list
+   * is an independent Pixie history, not part of the ordinary organization
+   * surface, so a Pixie conversation must never be pinnable into (or archived
+   * out of) the normal sidebar sections. Normal session rows keep them.
+   */
+  const renderAssistantSessionRow = (session: SessionHeader) => (
+    <SessionItem
+      key={session.sessionId}
+      session={session}
+      isSelected={assistantActive === true && assistantSessionId === session.sessionId}
+      isRunning={runningSessionIds.has(session.sessionId)}
+      isWaiting={waitingSessionIds.has(session.sessionId)}
+      liveSessionId={liveSessionIds.has(session.sessionId) ? session.sessionId : liveSessionId}
+      isDead={liveKnown && !liveSessionIds.has(session.sessionId)}
+      canRename={canWriteSessions}
+      canDelete={canDeleteSessions}
+      canExport={canBrowseSessions}
+      onGenerateSessionTitle={generateSessionTitle}
+      pinned={false}
+      archived={false}
+      // Unreachable while organization actions are hidden; no-ops keep the
+      // shared row contract instead of forking a second component.
+      onPin={() => {}}
+      onArchive={() => {}}
+      showOrganizationActions={false}
+      renameMutation={renameMutation}
+      removeMutation={removeMutation}
+      onSessionDeleted={onSessionDeleted}
+      onSelectSession={(sessionId) => onSelectAssistantSession?.(sessionId)}
     />
   );
 
@@ -677,6 +803,19 @@ export function Sidebar({
             >
               <MagnifyingGlass size={16} weight="regular" aria-hidden="true" />
             </button>
+            {/* Compact, icon-only new chat (same action, testid, aria and
+                title as the former full-width nav row). */}
+            <button
+              type="button"
+              className="sidebar-icon-btn"
+              data-testid="sidebar-new-session"
+              disabled={!canNewSession}
+              title={t("desktop.newSession")}
+              aria-label={t("desktop.newSession")}
+              onClick={onNewSession}
+            >
+              <NotePencil size={16} weight="regular" aria-hidden="true" />
+            </button>
             {onCollapseSidebar ? (
               <button
                 type="button"
@@ -692,48 +831,87 @@ export function Sidebar({
           </div>
         </div>
 
-        <nav className="sidebar-primary-nav" aria-label={t("desktop.primaryNav")}>
-          {canAssistant && onOpenAssistant ? (
-            <button
-              type="button"
-              className="sidebar-nav-item"
-              data-testid="sidebar-assistant"
-              data-active={assistantActive === true ? "true" : undefined}
-              title={t("desktop.assistantNav")}
-              aria-label={t("desktop.assistantNav")}
-              aria-current={assistantActive === true ? "page" : undefined}
-              onClick={onOpenAssistant}
-            >
-              <PixieIcon size={17} />
-              <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.assistantNav")}</span>
-              {assistantStatus === "running" ? (
-                <RunningSessionIndicator />
-              ) : assistantStatus === undefined ? null : (
-                <SessionStatusDot
-                  status={assistantStatus}
-                  label={assistantStatus === "error" ? t("desktop.assistantPresence.error") : undefined}
-                />
-              )}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="sidebar-nav-item"
-            data-testid="sidebar-new-session"
-            disabled={!canNewSession}
-            title={t("desktop.newSession")}
-            aria-label={t("desktop.newSession")}
-            onClick={onNewSession}
-          >
-            <NotePencil size={17} weight="regular" aria-hidden="true" />
-            <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.newSession")}</span>
-          </button>
-        </nav>
       </div>
 
       <div className="sidebar-rail-scroll">
         {flagError !== null ? (
           <div className="sidebar-status sidebar-status--error" role="alert">{t(flagError)}</div>
+        ) : null}
+
+        {canAssistant && onOpenAssistant ? (
+          <nav className="sidebar-primary-nav" aria-label={t("desktop.primaryNav")} data-testid="sidebar-assistant-sessions">
+            <div className="sidebar-section">
+              <div className="sidebar-list-row sidebar-list-row--project" data-testid="sidebar-assistant-row">
+                <button
+                  type="button"
+                  className="sidebar-session-select"
+                  data-testid="sidebar-assistant"
+                  data-active={assistantActive === true ? "true" : undefined}
+                  title={t("desktop.assistantNav")}
+                  aria-label={t("desktop.assistantNav")}
+                  aria-current={assistantActive === true ? "page" : undefined}
+                  onClick={onOpenAssistant}
+                >
+                  <PixieIcon size={17} />
+                  <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.assistantNav")}</span>
+                  {assistantStatus === "running" ? (
+                    <RunningSessionIndicator />
+                  ) : assistantStatus === undefined ? null : (
+                    <SessionStatusDot
+                      status={assistantStatus}
+                      label={assistantStatus === "error" ? t("desktop.assistantPresence.error") : undefined}
+                    />
+                  )}
+                </button>
+                <div className="sidebar-disclosure-actions">
+                  {onNewAssistantSession === undefined ? null : (
+                    <button
+                      type="button"
+                      className="sidebar-icon-btn sidebar-disclosure-new"
+                      data-testid="assistant-new-session"
+                      title={t("desktop.assistantNewSession")}
+                      aria-label={t("desktop.assistantNewSession")}
+                      onClick={onNewAssistantSession}
+                    >
+                      <Plus size={14} aria-hidden="true" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="sidebar-icon-btn"
+                    data-testid="assistant-section-toggle"
+                    aria-expanded={assistantOpen}
+                    aria-controls="sidebar-assistant-conversations"
+                    aria-label={t(assistantOpen ? "desktop.collapseGroup" : "desktop.expandGroup")}
+                    onClick={toggleAssistant}
+                  >
+                    <CaretRight size={13} aria-hidden="true" style={{ transform: assistantOpen ? "rotate(90deg)" : "none" }} />
+                  </button>
+                </div>
+              </div>
+              {onSelectAssistantSession === undefined ? null : (
+                <ProjectSessionDisclosure expanded={assistantOpen} testId="assistant-session-disclosure" id="sidebar-assistant-conversations">
+                  <div data-testid="sidebar-assistant-session-list">
+                    {assistantSessionsShowLoading && assistantSessions.length === 0 ? (
+                      <div className="sidebar-status">{t("desktop.loading")}</div>
+                    ) : assistantSessions.length === 0 && !assistantSessionsShowError ? (
+                      <div className="sidebar-status">{t("desktop.assistantNoSessions")}</div>
+                    ) : null}
+                    {assistantSessionsShowError ? (
+                      <div className="sidebar-status sidebar-status--error">{t("desktop.assistantHistoryUnavailable")}</div>
+                    ) : null}
+                    {assistantVisibleSessions.map((session) => renderAssistantSessionRow(session))}
+                    <LoadMoreButton
+                      visible={canLoadMoreAssistantSessions}
+                      loading={lastAssistantSessionQuery?.isFetching ?? false}
+                      onLoad={loadMoreAssistantSessions}
+                      testId="assistant-load-more"
+                    />
+                  </div>
+                </ProjectSessionDisclosure>
+              )}
+            </div>
+          </nav>
         ) : null}
 
         {showPinnedSection ? (
@@ -906,9 +1084,13 @@ function LoadMoreButton({
 function ProjectSessionDisclosure({
   expanded,
   children,
+  testId = "sidebar-project-sessions",
+  id,
 }: {
   expanded: boolean;
   children: ReactNode;
+  testId?: string;
+  id?: string;
 }) {
   const initiallyExpanded = useRef(expanded).current;
   const [everExpanded, setEverExpanded] = useState(expanded);
@@ -922,7 +1104,8 @@ function ProjectSessionDisclosure({
   return (
     <div
       className="sidebar-project-sessions"
-      data-testid="sidebar-project-sessions"
+      data-testid={testId}
+      id={id}
       data-open={expanded ? "true" : "false"}
       data-motion={mountAnimation ? "open" : "rest"}
       inert={!expanded}
@@ -1220,6 +1403,7 @@ function SessionItem({
   archived,
   onPin,
   onArchive,
+  showOrganizationActions = true,
   renameMutation,
   removeMutation,
   onSessionDeleted,
@@ -1243,6 +1427,13 @@ function SessionItem({
   archived: boolean;
   onPin: (pinned: boolean) => void;
   onArchive: (archived: boolean) => void;
+  /**
+   * Organization actions (pin / archive) are part of the ordinary sidebar
+   * sections only. The independent Pixie conversation list opts out so a Pixie
+   * conversation can never be pinned into (or archived out of) them. Defaults
+   * to visible — every normal session row is unchanged.
+   */
+  showOrganizationActions?: boolean;
   renameMutation: ReturnType<typeof useMutation<unknown, unknown, { id: string; name: string }>>;
   removeMutation: ReturnType<typeof useMutation<unknown, unknown, string>>;
   onSessionDeleted?: ((sessionId: string) => void) | undefined;
@@ -1412,7 +1603,7 @@ function SessionItem({
     // Inline rename / delete-confirm / delete-in-flight take over the row:
     // don't let a menu open on top of them.
     if (confirmDelete || renaming || deleting) return;
-    const items: ContextMenuEntry[] = [
+    const items: ContextMenuEntry[] = showOrganizationActions ? [
       {
         label: pinned ? t("desktop.unpin") : t("desktop.pin"),
         icon: <PushPin size={13} weight={pinned ? "fill" : "regular"} aria-hidden="true" />,
@@ -1423,7 +1614,7 @@ function SessionItem({
         icon: <Archive size={13} weight="regular" aria-hidden="true" />,
         onSelect: () => onArchive(!archived),
       },
-    ];
+    ] : [];
     if (canRename) {
       items.push({
         label: t("desktop.rename"),
@@ -1469,7 +1660,7 @@ function SessionItem({
     }
     if (items.length === 0) return;
     openMenu(x, y, items, options);
-  }, [confirmDelete, renaming, deleting, openMenu, session.sessionId, liveSessionId, canRename, canAutoName, canDelete, canExport, titleGenerating, isRunning, isWaiting, startRename, handleSmartRename, handleDeleteClick, exportVisibleBranch, pinned, archived, onPin, onArchive, t]);
+  }, [confirmDelete, renaming, deleting, openMenu, session.sessionId, liveSessionId, canRename, canAutoName, canDelete, canExport, titleGenerating, isRunning, isWaiting, startRename, handleSmartRename, handleDeleteClick, exportVisibleBranch, pinned, archived, onPin, onArchive, showOrganizationActions, t]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -1640,12 +1831,16 @@ function SessionItem({
               >
                 <DotsThree size={14} weight="bold" aria-hidden="true" />
               </button>
-              <button type="button" className="sidebar-icon-btn" onClick={(event) => { event.stopPropagation(); onPin(!pinned); }} title={pinned ? t("desktop.unpin") : t("desktop.pin")} aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}>
-                <PushPin size={14} weight={pinned ? "fill" : "regular"} aria-hidden="true" />
-              </button>
-              <button type="button" className="sidebar-icon-btn" onClick={(event) => { event.stopPropagation(); onArchive(!archived); }} title={archived ? t("desktop.unarchive") : t("desktop.archive")} aria-label={archived ? t("desktop.unarchive") : t("desktop.archive")}>
-                <Archive size={14} weight="regular" aria-hidden="true" />
-              </button>
+              {showOrganizationActions ? (
+                <>
+                  <button type="button" className="sidebar-icon-btn" data-testid={`session-pin-${session.sessionId}`} onClick={(event) => { event.stopPropagation(); onPin(!pinned); }} title={pinned ? t("desktop.unpin") : t("desktop.pin")} aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}>
+                    <PushPin size={14} weight={pinned ? "fill" : "regular"} aria-hidden="true" />
+                  </button>
+                  <button type="button" className="sidebar-icon-btn" data-testid={`session-archive-${session.sessionId}`} onClick={(event) => { event.stopPropagation(); onArchive(!archived); }} title={archived ? t("desktop.unarchive") : t("desktop.archive")} aria-label={archived ? t("desktop.unarchive") : t("desktop.archive")}>
+                    <Archive size={14} weight="regular" aria-hidden="true" />
+                  </button>
+                </>
+              ) : null}
             </div>
           )}
         </>

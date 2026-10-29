@@ -1322,6 +1322,28 @@ html.dark .catalog-meta-item--error {
   color: var(--text);
 }
 
+/* Inline disclosure controls belong to the parent row, not a separate card. */
+.sidebar-disclosure-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.sidebar-disclosure-new {
+  opacity: 0;
+}
+
+.sidebar-list-row:hover .sidebar-disclosure-new,
+.sidebar-list-row:focus-within .sidebar-disclosure-new {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .sidebar-disclosure-new {
+    opacity: 1;
+  }
+}
+
 /* Row interaction treatment (approved harness values): 5% hover wash, 8%
    press, and a raised white card for the active row that survives hover. */
 .sidebar-list-row:hover {

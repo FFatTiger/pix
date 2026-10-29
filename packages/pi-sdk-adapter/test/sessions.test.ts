@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import type {
 } from "@fffattiger/pix-runtime-core";
 import { isRuntimeError, makeRuntimeError } from "@fffattiger/pix-runtime-core";
 import { createPiSdkSessionStore, deferHistoryEntry } from "../src/internal/session-store.js";
+import { PROJECTION_INDEX_FILENAME, SessionProjectionIndex } from "../src/internal/session-projection.js";
 import type { PiSdkSessionManager, PiSdkSessionsSurface } from "../src/internal/session-store.js";
 import {
   createPiSdkSessionCatalog,
@@ -1136,6 +1137,141 @@ describe("pi-sdk sessions cache hardening (injected SDK)", () => {
     // The very next read re-scans instead of honoring the stale negative.
     await assert.rejects(() => store.readSession("s2"), isNotFound);
     assert.equal(scans, 3);
+  });
+
+  it("listAssistantSessionPage pages exactly the assistant workspace's ROOT conversations (zero workers)", async () => {
+    let scans = 0;
+    const assistant = "/home/u/.pi/pix/assistant";
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [
+          // Older + newer assistant conversations.
+          mkInfo({ path: "/repo/sessions/a1.jsonl", id: "a1", cwd: assistant, modified: new Date(NOW - 2_000) }),
+          mkInfo({ path: "/repo/sessions/a2.jsonl", id: "a2", cwd: assistant, modified: new Date(NOW) }),
+          // A CHILD in the same directory: never a conversation.
+          mkInfo({ path: "/repo/sessions/child.jsonl", id: "child", cwd: assistant, modified: new Date(NOW + 5_000), parentSessionPath: "/repo/sessions/a2.jsonl" }),
+          // An ORPHAN child (its parent file is gone, so `listSessions()` cannot
+          // resolve a parentSessionId): the RAW parentSessionPath still proves
+          // it is not a root and must never be listed as a conversation.
+          mkInfo({ path: "/repo/sessions/orphan.jsonl", id: "orphan", cwd: assistant, modified: new Date(NOW + 6_000), parentSessionPath: "/repo/sessions/missing-parent.jsonl" }),
+          // Look-alike identities that are DIFFERENT directories: a trailing
+          // separator, a case-different name and a sibling prefix.
+          mkInfo({ path: "/repo/sessions/slashy.jsonl", id: "slashy", cwd: `${assistant}/`, modified: new Date(NOW - 500) }),
+          mkInfo({ path: "/repo/sessions/cased.jsonl", id: "cased", cwd: "/HOME/U/.pi/pix/assistant", modified: new Date(NOW - 600) }),
+          mkInfo({ path: "/repo/sessions/sibling.jsonl", id: "sibling", cwd: "/home/u/.pi/pix/assistantx", modified: new Date(NOW + 4_000) }),
+          mkInfo({ path: "/repo/sessions/project.jsonl", id: "project", cwd: "/repo", modified: new Date(NOW + 3_000) }),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    const catalog = createPiSdkSessionCatalog(store);
+
+    const first = await catalog.listAssistantSessionPage?.(assistant, { page: 1, pageSize: 2 });
+    assert.ok(first);
+    // Root-only, EXACT cwd string, modified desc + id asc.
+    assert.deepEqual(first.sessions.map((session) => session.sessionId), ["a2", "a1"]);
+    assert.equal(first.total, 2);
+    assert.equal(first.totalPages, 1);
+    assert.equal(first.page, 1);
+    assert.equal(first.pageSize, 2);
+    // The orphan child and every look-alike identity are absent from totals.
+    for (const id of ["child", "orphan", "slashy", "cased", "sibling"]) {
+      assert.ok(!first.sessions.some((session) => session.sessionId === id), id);
+    }
+
+    // The look-alike directories answer only their own (empty) pages.
+    for (const lookAlike of [`${assistant}/`, "/HOME/U/.pi/pix/assistant", "/home/u/.pi/pix/assistantx"]) {
+      const page = await catalog.listAssistantSessionPage?.(lookAlike, { page: 1, pageSize: 10 });
+      assert.equal(page?.total, 1, lookAlike);
+      assert.equal(page?.sessions[0]?.cwd, lookAlike);
+    }
+
+    // An unrelated directory answers only its own rows — never the assistant's.
+    const scoped = await catalog.listAssistantSessionPage?.("/repo", { page: 1, pageSize: 10 });
+    assert.deepEqual(scoped?.sessions.map((session) => session.sessionId), ["project"]);
+    assert.equal(scoped?.total, 1);
+
+    // Invalid page bounds fail closed before any catalog work.
+    await assert.rejects(
+      () => catalog.listAssistantSessionPage?.(assistant, { page: 0, pageSize: 2 }) as Promise<unknown>,
+      (error: unknown) => isRuntimeError(error) && error.code === "invalid_input",
+    );
+    await assert.rejects(
+      () => catalog.listAssistantSessionPage?.(assistant, { page: 1, pageSize: 101 }) as Promise<unknown>,
+      (error: unknown) => isRuntimeError(error) && error.code === "invalid_input",
+    );
+    assert.equal(scans, 1, "the warm authoritative list serves every page (no per-page JSONL scan)");
+  });
+
+  it("an empty indexed assistant page costs ZERO JSONL scans and ZERO index reloads", async () => {
+    // REAL projection over REAL JSONL: the empty answer must come from the
+    // materialized index, never from a fallback scan. Counting only
+    // `sdk.listAll` would be insufficient — the old scanOnce fallback re-read
+    // the index (`SessionProjectionIndex.load`) without touching `listAll`, so
+    // BOTH counters are asserted after the projection is warm.
+    const f = await setup();
+    let loadSpy: ReturnType<typeof mock.method> | undefined;
+    try {
+      await seedRichSession(f); // one real project conversation (NOT the assistant workspace)
+      const indexDir = join(f.root, ".pix");
+      let listAllCalls = 0;
+      const sdk: PiSdkSessionsSurface = {
+        async listAll(sessionDir) {
+          listAllCalls += 1;
+          return sessionDir === undefined ? SessionManager.listAll() : SessionManager.listAll(sessionDir);
+        },
+        open(path) { return SessionManager.open(path); },
+      };
+      const store = createPiSdkSessionStore({ sdk, sessionDir: f.sessionDir, projection: { enabled: true, dir: indexDir } });
+      try {
+        await store.prepare?.();
+        assert.ok(listAllCalls >= 1, "prepare builds the projection from one authoritative scan");
+        const scansAfterPrepare = listAllCalls;
+        // Count index re-reads from here on: only a fallback scan would load.
+        loadSpy = mock.method(SessionProjectionIndex.prototype, "load");
+        // Non-vacuous probe: the counter really intercepts the reload path.
+        new SessionProjectionIndex(join(indexDir, PROJECTION_INDEX_FILENAME)).load();
+        assert.equal(loadSpy.mock.calls.length, 1, "the load counter intercepts the index reload path");
+        loadSpy.mock.resetCalls();
+        const assistant = "/home/u/.pi/pix/assistant";
+        const first = await store.listAssistantSessionPage!(assistant, { page: 1, pageSize: 10 });
+        assert.deepEqual(first.sessions, []);
+        assert.equal(first.total, 0);
+        assert.equal(first.totalPages, 0);
+        const second = await store.listAssistantSessionPage!(assistant, { page: 1, pageSize: 10 });
+        const third = await store.listAssistantSessionPage!(assistant, { page: 2, pageSize: 10 });
+        assert.equal(second.total, 0);
+        assert.equal(third.total, 0);
+        assert.equal(loadSpy.mock.calls.length, 0, "an empty indexed page never reloads the index (no scan fallback)");
+        assert.equal(listAllCalls, scansAfterPrepare, "an empty indexed page performs no JSONL scan");
+      } finally {
+        store.close?.();
+      }
+    } finally {
+      loadSpy?.mock.restore();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("the assistant page seam fails closed (unavailable) when the store cannot page", async () => {
+    const store: PiSdkSessionStore = {
+      async listSessions() { return []; },
+      async readSession() { throw new Error("not used"); },
+      async readSessionContext() { return { sessionId: "", entries: [], pageInfo: { hasMore: false } }; },
+      async readSessionThinking() { throw new Error("not used"); },
+      async readSessionTree() { return { sessionId: "", roots: [], entryCount: 0 }; },
+      async deleteSession() {},
+      async renameSession() {},
+      async locate(sessionId) { return { sessionId, sessionFile: `/s/${sessionId}.jsonl`, exists: true }; },
+      async resolveLeafId() { return "leaf"; },
+    };
+    const catalog = createPiSdkSessionCatalog(store);
+    await assert.rejects(
+      () => catalog.listAssistantSessionPage?.("/home/u/.pi/pix/assistant", { page: 1, pageSize: 10 }) as Promise<unknown>,
+      (error: unknown) => isRuntimeError(error) && error.code === "unavailable",
+    );
   });
 
   it("findLatestSessionByCwd falls through an empty answer with a fresh scan, not the warm cache", async () => {

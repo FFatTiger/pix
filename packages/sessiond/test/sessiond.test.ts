@@ -178,13 +178,16 @@ test("attach subscribes before replay boundary and receives later events without
   const attached = service.prepareAttach({ sessionId: "s", epoch: activated.epoch, lastEventId: baseline }, () => {
     workers.workers[0]!.emitEvent({ type: "agent_end", sessionId: "s" });
   });
-  const boundary = attached.result.lastEventId;
+  // The delivered snapshot is the reconstruction AT the requested cursor, so
+  // the result reports that cursor — not the journal head (agent_start +
+  // agent_end are still owed to the client as replay).
+  assert.equal(attached.result.lastEventId, baseline);
+  assert.equal(attached.result.resumeStatus, "snapshot");
   assert.equal(attached.result.snapshot.state.isPromptRunning, false);
   await attached.flushTo(async (push) => { pushes.push(push); });
   workers.workers[0]!.emitEvent({ type: "agent_settled", sessionId: "s" });
   await wait();
-  assert.equal(boundary, baseline + 2);
-  assert.equal(pushes.length, 5);
+  assert.equal(pushes.length, 5, "two replayed events (through the captured boundary) plus three live events, each exactly once");
   assert.deepEqual(pushes.map((push) => (push as { event: { eventId: number } }).event.eventId), [baseline + 1, baseline + 2, baseline + 3, baseline + 4, baseline + 5]);
   attached.close();
   await service.shutdown();

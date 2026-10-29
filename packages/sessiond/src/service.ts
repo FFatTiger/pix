@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type {
@@ -320,6 +321,16 @@ interface TurnOperationRecord {
 interface PendingSnapshot {
   /** Own drain refresh replies must not recursively schedule another refresh. */
   reconcileQueued?: boolean;
+  /**
+   * True only for the startup prime (`worker.getSnapshot` issued by
+   * `primeProjection`). Such a reply is the authoritative initial projection
+   * for the epoch, so the journal base is established at its cursor: the
+   * replaced snapshot already *is* the state after every journaled event up to
+   * `journal.lastEventId`. Without this the base stays the pre-prime default
+   * (`eventId 0`, empty capabilities) and any same-epoch reattach rebuilds
+   * from a stale capability/tool/system-prompt surface.
+   */
+  establishesJournalBase?: true;
   isCurrent?: () => boolean;
   resolve: (snapshot: RuntimeSnapshot) => void;
   reject: (error: Error) => void;
@@ -1097,7 +1108,14 @@ export class SessiondService {
         }
         try {
           record.projection.replace(message.payload.snapshot);
-          if (record.journal.lastEventId === 0) record.journalBaseSnapshot = record.projection.snapshot();
+          // The startup prime reply establishes the journal base at its own
+          // cursor (same synchronous boundary as the replace): events that had
+          // already been journaled before `ready` are folded into the base and
+          // must never be re-applied on a later same-epoch attach.
+          if (pending?.establishesJournalBase) {
+            record.journalBaseSnapshot = record.projection.snapshot();
+            record.journalBaseEventId = record.journal.lastEventId;
+          } else if (record.journal.lastEventId === 0) record.journalBaseSnapshot = record.projection.snapshot();
           // An authoritative idle snapshot is drain evidence: it is the only
           // observation that can prove a queued message already left a runtime
           // whose terminal signal was delivered before the command ack. It is
@@ -3132,7 +3150,7 @@ export class SessiondService {
     const id = `prime:${record.epoch}:${randomUUID()}`;
     const wait = deferred<RuntimeSnapshot>();
     const timer = setTimeout(() => { record.pendingSnapshots.delete(id); wait.reject(new SessiondError("timeout", "worker startup snapshot timed out", true)); }, this.workerStartTimeoutMs);
-    record.pendingSnapshots.set(id, { resolve: wait.resolve, reject: wait.reject, timer });
+    record.pendingSnapshots.set(id, { resolve: wait.resolve, reject: wait.reject, timer, establishesJournalBase: true });
     try {
       await record.worker.send({ type: "worker.getSnapshot", id, protocolVersion: PROTOCOL_VERSION, payload: { sessionId: record.sessionId } });
       await wait.promise;
@@ -3407,6 +3425,13 @@ export class SessiondService {
     let reason: SnapshotDeliveryReason = "snapshot";
     let replay: readonly SessiondPush[] = [];
     let boundarySnapshot = currentAtBoundary;
+    // Cursor the delivered snapshot corresponds to. Full/gap/epoch-changed
+    // deliveries ship the live projection, i.e. the boundary itself; a
+    // same-epoch resume ships the reconstruction AT the requested cursor and
+    // therefore must report that cursor (the protocol has no cursor-only ack,
+    // so the response cursor is the only thing that tells the client where the
+    // snapshot ends and where replay begins).
+    let snapshotCursor = boundary;
     if ("epoch" in params) {
       if (params.epoch !== record.epoch) reason = "epoch_changed";
       else {
@@ -3414,17 +3439,21 @@ export class SessiondService {
         if (journalReplay.gap || params.lastEventId < record.journalBaseEventId) reason = "gap";
         else {
           const atCursor = new SnapshotProjection(record.journalBaseSnapshot);
-          const beforeCursor = record.journal.snapshot().filter((event) => event.eventId <= params.lastEventId);
+          // Events at or below the base event id are already folded into
+          // journalBaseSnapshot; applying them again would double-append
+          // messages (or resurrect a settled extension question).
+          const beforeCursor = record.journal.snapshot().filter((event) => event.eventId > record.journalBaseEventId && event.eventId <= params.lastEventId);
           for (const event of beforeCursor) atCursor.apply(stripCursor(event));
           boundarySnapshot = atCursor.snapshot();
           replay = journalReplay.events.filter((event) => event.eventId <= boundary).map((event) => ({ type: "event" as const, event }));
+          snapshotCursor = params.lastEventId;
         }
       }
     }
     const result: SessiondRuntimeAttachResult = {
       sessionId: record.sessionId,
       epoch: record.epoch,
-      lastEventId: boundary,
+      lastEventId: snapshotCursor,
       cwd: record.cwd,
       projectRoot: record.projectRoot,
       workerStatus: record.status,
@@ -4528,14 +4557,7 @@ export class SessiondService {
     const captured = this.titleOverlay.captureAll();
     // A transient store failure must not degrade to "no pins"
     // (fallback-as-success); the listing fails honestly instead.
-    let snapshot: import("./workspace-state.js").WorkspaceStateSnapshot | undefined;
-    if (this.deps.workspaceState !== null && this.deps.workspaceState !== undefined) {
-      try {
-        snapshot = this.deps.workspaceState.snapshot();
-      } catch (error) {
-        throw this.mapWorkspaceStateFailure(error, "session");
-      }
-    }
+    const snapshot = this.sessionOrganizationSnapshot();
     const workspace = snapshot?.sessions;
     // Keyword-search visibility parity with the sidebar: archived sessions and
     // every session of an archived project are excluded BEFORE pagination so
@@ -4554,6 +4576,80 @@ export class SessiondService {
     const page = catalog.listSessionPage
       ? await catalog.listSessionPage(catalogRequest)
       : await this.legacySessionPage(catalog, catalogRequest);
+    return this.overlaySessionPage(page, captured, workspace);
+  }
+
+  /**
+   * Assistant conversation HISTORY page (zero workers, exact identity).
+   *
+   * The client never supplies a cwd: sessiond derives the ONE canonical
+   * assistant workspace (shared runtime-core derivation, realpath-verified) and
+   * asks the catalog for that exact root-only page. The result is the same
+   * canonical SessionPage DTO with the SAME service-owned title overlay and
+   * durable pin/archive flags as `sessions.list`; the assistant workspace is
+   * never listed by the ordinary session page, so this is the only way its
+   * older conversations are reachable. A missing catalog seam (or an unusable
+   * index) fails closed with `unavailable` — never a fake empty page.
+   */
+  async listAssistantSessionPage(request: CatalogPageRequest): Promise<SessionPage> {
+    const catalog = this.sessionCatalog();
+    if (!catalog?.listAssistantSessionPage) {
+      throw new SessiondError("unavailable", "assistant session catalog is unavailable", false);
+    }
+    const captured = this.titleOverlay.captureAll();
+    const snapshot = this.sessionOrganizationSnapshot();
+    const cwd = await this.canonicalAssistantWorkspace();
+    const page = await catalog.listAssistantSessionPage(cwd, { page: request.page, pageSize: request.pageSize });
+    return this.overlaySessionPage(page, captured, snapshot?.sessions);
+  }
+
+  /**
+   * Canonical assistant workspace directory for catalog reads.
+   *
+   * Derived ONCE from the shared runtime-core rule (never a second copy of the
+   * path), then realpath-resolved while it exists so the catalog needle matches
+   * the cwd recorded at create time (the Host creates and authorizes that
+   * canonical path, so a symlinked home still resolves to the recorded cwd). A
+   * missing directory simply has no sessions, so the derived path is used; any
+   * OTHER canonicalization failure, or a result that is not an absolute path,
+   * is an honest `unavailable` rather than an empty page.
+   */
+  private async canonicalAssistantWorkspace(): Promise<string> {
+    const derived = resolveAssistantWorkspaceDir(homedir());
+    let cwd = derived;
+    try {
+      cwd = await realpath(derived);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new SessiondError("unavailable", "assistant workspace is unavailable", true);
+      }
+    }
+    if (!isAbsolute(cwd)) {
+      throw new SessiondError("unavailable", "assistant workspace is unavailable", false);
+    }
+    return cwd;
+  }
+
+  /**
+   * Durable organization-state snapshot for a catalog page overlay. A missing
+   * seam means "no flags" (undefined); a transient store failure is an honest
+   * failure, never a silent "no pins" fallback.
+   */
+  private sessionOrganizationSnapshot(): import("./workspace-state.js").WorkspaceStateSnapshot | undefined {
+    if (this.deps.workspaceState === null || this.deps.workspaceState === undefined) return undefined;
+    try {
+      return this.deps.workspaceState.snapshot();
+    } catch (error) {
+      throw this.mapWorkspaceStateFailure(error, "session");
+    }
+  }
+
+  /** Apply the service-owned title overlay + durable pin/archive flags to a page. */
+  private overlaySessionPage(
+    page: SessionPage,
+    captured: ReadonlyMap<string, number>,
+    workspace: Readonly<Record<string, { pinned?: boolean; archived?: boolean }>> | undefined,
+  ): SessionPage {
     return {
       ...page,
       sessions: page.sessions.map((item) => {

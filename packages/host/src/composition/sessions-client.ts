@@ -1,5 +1,5 @@
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
-import type { AssistantLatestClient, SessionDeleteClient, SessionHistoryReadClient, SessionRenameClient, SessionSettingsClient } from "../types.js";
+import type { AssistantSessionClient, SessionDeleteClient, SessionHistoryReadClient, SessionRenameClient, SessionSettingsClient } from "../types.js";
 
 /**
  * Narrow read-only session history client backed by the fixed sessiond RPC
@@ -67,13 +67,16 @@ export function createSessiondSessionsClient(
 }
 
 /**
- * Narrow assistant-latest client backed by the fixed sessiond RPC
- * endpoint+secret. It wraps exactly the read-only `sessions.findLatest`
- * catalog RPC (zero workers) and never the runtime lifecycle.
+ * Narrow assistant catalog client backed by the fixed sessiond RPC
+ * endpoint+secret. It wraps exactly the read-only `sessions.findLatest` /
+ * `sessions.listAssistant` / `sessions.read` catalog RPCs (zero workers) and
+ * never the runtime lifecycle (no activate/command/stop). The assistant
+ * workspace directory is NEVER taken from the client: the history page RPC
+ * carries only a page and lets sessiond derive the single canonical directory.
  */
 export function createSessiondAssistantClient(
   options: SessiondSessionsClientOptions,
-): AssistantLatestClient {
+): AssistantSessionClient {
   const client = new SessiondRpcClient({
     endpoint: options.endpoint,
     secret: options.secret,
@@ -82,6 +85,14 @@ export function createSessiondAssistantClient(
   return {
     async findLatest(cwd) {
       return client.call("sessions.findLatest", { cwd });
+    },
+    async listAssistant(params) {
+      return client.call("sessions.listAssistant", { page: params.page, pageSize: params.pageSize });
+    },
+    async read(sessionId) {
+      // Exact-id header read: the Host verifies existence + root + exact cwd
+      // itself and NEVER falls back to a latest lookup.
+      return client.call("sessions.read", { sessionId });
     },
   };
 }

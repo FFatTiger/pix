@@ -1,4 +1,4 @@
-import { RUNTIME_READ_RPC_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE, WORKER_BUILD_IDENTITY, type WorkerBuild } from "@fffattiger/pix-protocol";
+import { RUNTIME_READ_RPC_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE, WORKER_BUILD_IDENTITY, reduceRuntimeEventData, type WorkerBuild } from "@fffattiger/pix-protocol";
 import type {
   ProtocolError,
   RuntimeCommandOutcome,
@@ -39,6 +39,17 @@ export interface FakeWorkerOptions {
    * every non-exact build fail-closed.
    */
   readyBuild?: unknown;
+  /**
+   * Narrow hook: events the worker journals after `sessionDiscovered`/ready but
+   * BEFORE it answers the startup prime `worker.getSnapshot` — i.e. while the
+   * record is still not exposed as attachable. Each event is reduced into the
+   * fake's live snapshot (exactly like a real worker whose truth already
+   * advanced with the event) and emitted, so the prime response contains the
+   * effect while the journal cursor is already non-zero. `sessionId` is
+   * normalized to the requested session so callers can pass the activation id.
+   * Absent by default: existing tests keep a zero-cursor prime.
+   */
+  eventsBeforeReady?: readonly RuntimeEventData[];
   discoveredSessionId?: string;
   snapshot?: RuntimeSnapshot;
   /** Test-only malformed inner snapshot session id; outer payload remains correct. */
@@ -139,6 +150,8 @@ export class FakeWorkerConnection implements WorkerConnection {
   /** SubmitTurn admissions held behind the deterministic gate. */
   private readonly heldAdmissions: Array<() => void> = [];
   private readonly heldAdmissionWaiters = new Set<() => void>();
+  /** `eventsBeforeReady` are journaled exactly once, ahead of the prime response. */
+  private primeEventsEmitted = false;
 
   constructor(readonly input: WorkerStartInput, private readonly options: FakeWorkerOptions, pid: number) {
     this.pid = pid;
@@ -505,6 +518,14 @@ export class FakeWorkerConnection implements WorkerConnection {
       }
       case "worker.getSnapshot":
         if (this.options.ignoreSnapshot) return;
+        if (!this.primeEventsEmitted && this.options.eventsBeforeReady !== undefined) {
+          this.primeEventsEmitted = true;
+          for (const event of this.options.eventsBeforeReady) {
+            // Emitted synchronously, so sessiond journals them before the prime
+            // response microtask below is delivered.
+            this.emitApplied({ ...event, sessionId: message.payload.sessionId } as RuntimeEventData);
+          }
+        }
         this.scheduleSnapshotResponse(message.id, message.payload.sessionId);
         return;
       case "worker.rotateEpoch": {
@@ -669,6 +690,12 @@ export class FakeWorkerConnection implements WorkerConnection {
   }
   emit(message: WorkerToSessiondMessage): void { if (!this.closed) for (const listener of [...this.messageListeners]) listener(structuredClone(message)); }
   emitEvent(event: RuntimeEventData): void { this.emit({ type: "worker.event", payload: { sessionId: event.sessionId, event } }); }
+  /** Emit one runtime event AND reduce it into the fake's live snapshot (a real worker's truth advances with its events). */
+  emitEventApplied(event: RuntimeEventData): void { this.emitApplied(event); }
+  private emitApplied(event: RuntimeEventData): void {
+    this.liveSnapshot = reduceRuntimeEventData(this.liveSnapshot, event);
+    this.emitEvent(event);
+  }
   crash(error = { code: "worker_unavailable" as const, message: "fake crash", retryable: true }): void { if (this.closed) return; for (const listener of [...this.exitListeners]) listener({ code: 1, error }); }
   /** Raw process exit exactly as the real connection reports it (e.g. after a worker.fatal: code only, no error). */
   exitProcess(exit: WorkerExit): void { if (this.closed) return; for (const listener of [...this.exitListeners]) listener(exit); }

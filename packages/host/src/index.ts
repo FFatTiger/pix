@@ -250,7 +250,7 @@ export type { SessiondSessionsClientOptions } from "./composition/sessions-clien
 export { createAssistantWorkspaceResource } from "./resources/assistant-workspace.js";
 export type { AssistantWorkspaceResource, CreateAssistantWorkspaceOptions } from "./resources/assistant-workspace.js";
 export { registerAssistantRoutes } from "./routes/assistant.js";
-export type { AssistantLatestClient, AssistantRouteDeps } from "./routes/assistant.js";
+export type { AssistantRouteDeps, AssistantSessionClient } from "./routes/assistant.js";
 export type {
   ProductionResources,
   ProductionResourcesOptions,

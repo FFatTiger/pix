@@ -12,6 +12,7 @@ import {
   loadWorkspaceSessionTabs,
   normalizeFileTabPath,
   openAssistantWorkspaceTab,
+  selectAssistantWorkspaceTab,
   openFileWorkspaceTab,
   openSessionWorkspaceTab,
   reconcileWorkspaceCwd,
@@ -189,6 +190,46 @@ describe("openAssistantWorkspaceTab", () => {
   it("the assistant tab survives cwd reconciliation like session tabs", () => {
     expect(reconcileWorkspaceCwd([assistantTab, sessionA, fileA()], "/y")).toEqual([assistantTab, sessionA]);
     expect(reconcileWorkspaceCwd([assistantTab], undefined)).toEqual([assistantTab]);
+  });
+});
+
+describe("selectAssistantWorkspaceTab (current Pixie conversation)", () => {
+  it("materializes the singleton tab with the selected conversation", () => {
+    const tabs = selectAssistantWorkspaceTab([sessionA], "old-1");
+    expect(tabs).toEqual([sessionA, { kind: "assistant", id: assistantTabId(), sessionId: "old-1" }]);
+    // Still ONE assistant tab: the conversation is a selection, not an identity.
+    expect(tabs.filter((tab) => tab.kind === "assistant")).toHaveLength(1);
+  });
+
+  it("updates and clears the remembered selection (route is the source of truth)", () => {
+    const opened = selectAssistantWorkspaceTab([], "old-1");
+    expect(selectAssistantWorkspaceTab(opened, "old-2")).toEqual([
+      { kind: "assistant", id: assistantTabId(), sessionId: "old-2" },
+    ]);
+    // An omitted selector = follow the workspace's latest binding again.
+    expect(selectAssistantWorkspaceTab(opened, undefined)).toEqual([assistantTab]);
+    expect(selectAssistantWorkspaceTab(opened, "")).toEqual([assistantTab]);
+  });
+
+  it("is idempotent for an unchanged selection", () => {
+    const opened = selectAssistantWorkspaceTab([], "old-1");
+    expect(selectAssistantWorkspaceTab(opened, "old-1")).toEqual(opened);
+  });
+
+  it("never persists the selection: the durable tab stays the singleton marker", () => {
+    const tabs = selectAssistantWorkspaceTab([sessionA], "old-1");
+    saveWorkspaceSessionTabs(tabs);
+    const raw = JSON.parse(window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "{}");
+    expect(raw.sessions).toEqual([{ sessionId: "A", cwd: "/x" }, { assistant: true }]);
+    // A reload restores the singleton; the selection comes from the URL again.
+    expect(loadWorkspaceSessionTabs()).toEqual([sessionA, assistantTab]);
+  });
+
+  it("closing then reopening the Pixie tab starts from the latest binding", () => {
+    const tabs = selectAssistantWorkspaceTab([sessionA], "old-1");
+    const closed = closeWorkspaceTab(tabs, assistantTabId(), assistantTabId());
+    expect(closed.tabs).toEqual([sessionA]);
+    expect(openAssistantWorkspaceTab(closed.tabs)).toEqual([sessionA, assistantTab]);
   });
 });
 

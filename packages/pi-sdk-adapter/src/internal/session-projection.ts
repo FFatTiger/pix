@@ -516,6 +516,49 @@ export class SessionProjectionIndex {
     }
   }
 
+  /**
+   * Exact assistant-workspace conversation page: the ROOT sessions whose
+   * recorded cwd is EXACTLY the string `cwd` (byte-for-byte, the SAME identity
+   * rule as `findLatestSessionByCwd` — no case folding, no separator
+   * normalization, so a genuinely different directory is never accepted),
+   * deliberately ignoring browse visibility for that ONE directory. The
+   * predicate is applied BEFORE totals and the page slice, so child sessions
+   * and every other cwd can never appear and totals stay honest. Ordering is
+   * the shared catalog order (modified desc, id asc). Pure index access: no
+   * filesystem or JSONL scan on the request path. Returns `null` when the
+   * index is unusable (caller fails closed with `unavailable`).
+   */
+  queryAssistantSessionPage(cwd: string, request: CatalogPageRequest): SessionPage | null {
+    let db: DatabaseSync | null = null;
+    try {
+      if (cwd.length === 0) return null;
+      db = new DatabaseSync(this.indexPath);
+      const where = "s.cwd = ? AND (s.parent_session_path IS NULL OR s.parent_session_path = '')";
+      const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM session_projection s WHERE ${where}`).get(cwd) as { total: number | bigint };
+      const total = Number(totalRow.total);
+      const offset = (request.page - 1) * request.pageSize;
+      const rows = db.prepare(
+        "SELECT s.path, s.id, s.cwd, s.name, s.parent_session_path, s.created_ms, s.modified_ms, "
+        + "s.message_count, s.first_message, s.project_root, s.browse_kind, s.file_mtime_ms, "
+        + "s.file_size, s.checksum "
+        + `FROM session_projection s WHERE ${where} `
+        + "ORDER BY s.modified_ms DESC, s.id COLLATE BINARY ASC LIMIT ? OFFSET ?",
+      ).all(cwd, request.pageSize, offset) as unknown as DbRow[];
+      return {
+        sessions: rows.map((row) => projectionRowToHeader(row, null)),
+        page: request.page,
+        pageSize: request.pageSize,
+        total,
+        totalPages: total === 0 ? 0 : Math.ceil(total / request.pageSize),
+        catalogRevision: catalogRevision(db),
+      };
+    } catch {
+      return null;
+    } finally {
+      try { db?.close(); } catch { /* best-effort */ }
+    }
+  }
+
   /** Query one project-summary page; no session scan/grouping occurs in JS. */
   queryProjectPage(request: CatalogPageRequest): ProjectPage | null {
     let db: DatabaseSync | null = null;

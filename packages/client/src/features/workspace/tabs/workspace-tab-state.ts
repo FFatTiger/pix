@@ -10,11 +10,14 @@
  *    state (mode/wrap/scroll) with the same revision guards the right-panel
  *    file tabs used (`saveFileViewerState`), and keep the source session id
  *    that scopes their reads when opened from a conversation.
- *  - assistant tabs: the fixed evergreen Pixie conversation — a singleton
- *    (`assistant`) with no session identity on the tab (the URL carries no
- *    session id; the binding is server-resolved via GET /v1/assistant, so it
- *    survives rekeys/creation without the tab going stale). Selecting it
- *    navigates to `/?assistant=1`; closing it only closes the tab — the
+ *  - assistant tabs: the fixed evergreen Pixie workspace — a singleton
+ *    (`assistant`). Its IDENTITY is not a session: the tab survives rekeys and
+ *    creation. It carries only the CURRENTLY SELECTED assistant conversation
+ *    (`sessionId`, optional) so switching away and back restores the user's
+ *    choice instead of jumping to the workspace's latest session. The URL is
+ *    still the selection source of truth (`/?assistant=1&assistantSession=<id>`);
+ *    the tab merely remembers it in memory (never persisted). Selecting it
+ *    navigates to the assistant selector; closing it only closes the tab — the
  *    resident assistant worker is sessiond's business, never the tab's.
  *
  * Tab state owns NO worker lifecycle: opening/closing/activating a tab never
@@ -55,10 +58,16 @@ export interface SessionWorkspaceTab {
   readonly cwd?: string | undefined;
 }
 
-/** The fixed evergreen Pixie conversation tab (singleton identity). */
+/**
+ * The fixed evergreen Pixie workspace tab (singleton identity) plus the
+ * CURRENTLY SELECTED assistant conversation, if the user picked one. The id
+ * stays `assistant` (never a session tab), so an assistant conversation is
+ * never materialized as an ordinary session tab.
+ */
 export interface AssistantWorkspaceTab {
   readonly kind: "assistant";
   readonly id: string;
+  readonly sessionId?: string | undefined;
 }
 
 export type WorkspaceTab = FileWorkspaceTab | SessionWorkspaceTab | AssistantWorkspaceTab;
@@ -237,9 +246,13 @@ export function minimalSessionTab(sessionId: string, cwd?: string | undefined): 
   };
 }
 
-/** The bare singleton Pixie tab (URL-derived; no session identity needed). */
-export function minimalAssistantTab(): AssistantWorkspaceTab {
-  return { kind: "assistant", id: ASSISTANT_TAB_ID };
+/** The bare singleton Pixie tab, optionally carrying the selected conversation. */
+export function minimalAssistantTab(sessionId?: string | undefined): AssistantWorkspaceTab {
+  return {
+    kind: "assistant",
+    id: ASSISTANT_TAB_ID,
+    ...(sessionId === undefined || sessionId.length === 0 ? {} : { sessionId }),
+  };
 }
 
 export interface OpenFileTabInput {
@@ -334,11 +347,33 @@ export function openSessionWorkspaceTab(
 
 /**
  * Open (or re-focus) the singleton Pixie tab. Deduped by the fixed identity;
- * idempotent for an already-open tab (same array contents, new reference).
+ * idempotent for an already-open tab (same array contents, new reference). The
+ * remembered selected conversation is left untouched — use
+ * {@link selectAssistantWorkspaceTab} to sync it from the route.
  */
 export function openAssistantWorkspaceTab(tabs: readonly WorkspaceTab[]): WorkspaceTab[] {
   if (tabs.some((tab) => tab.kind === "assistant")) return [...tabs];
   return [...tabs, minimalAssistantTab()];
+}
+
+/**
+ * Sync the singleton Pixie tab's CURRENTLY SELECTED assistant conversation with
+ * the route (the selection source of truth). `sessionId` is the exact selected
+ * conversation, or undefined when the view follows the workspace's latest
+ * binding. The tab is materialized when missing; an unchanged selection is
+ * idempotent (same array contents, new reference).
+ */
+export function selectAssistantWorkspaceTab(
+  tabs: readonly WorkspaceTab[],
+  sessionId: string | undefined,
+): WorkspaceTab[] {
+  const explicit = sessionId === undefined || sessionId.length === 0 ? undefined : sessionId;
+  const existing = tabs.find((tab): tab is AssistantWorkspaceTab => tab.kind === "assistant");
+  if (existing === undefined) return [...tabs, minimalAssistantTab(explicit)];
+  if (existing.sessionId === explicit) return [...tabs];
+  return tabs.map((tab) => tab === existing ? (explicit === undefined
+    ? { kind: "assistant" as const, id: ASSISTANT_TAB_ID }
+    : { ...existing, sessionId: explicit }) : tab);
 }
 
 /**

@@ -217,6 +217,18 @@ export class SessiondApplication implements SessiondRpcHandler {
         const latest = await catalog.findLatestSessionByCwd(input.cwd);
         return { cwd: input.cwd, sessionId: latest?.sessionId ?? null };
       }
+      case "sessions.listAssistant": {
+        // Assistant conversation history (read-only, zero workers). sessiond
+        // derives the ONE canonical assistant workspace itself — the wire
+        // params carry no cwd, so a client can never widen this read to another
+        // workspace, a child session or a keyword search. The service applies
+        // the same title/flags overlay as `sessions.list`.
+        const input = params as SessiondMethodParams["sessions.listAssistant"];
+        return SessionPageSchema.parse(await this.service.listAssistantSessionPage({
+          page: input.page,
+          pageSize: input.pageSize,
+        }));
+      }
       case "config.getSessionIdleTimeoutMs": {
         return { idleTimeoutMs: this.service.getIdleTimeoutMs() };
       }
