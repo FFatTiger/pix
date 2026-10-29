@@ -1,19 +1,38 @@
 {
   "name": "@fffattiger/pix-sessiond",
-  "version": "0.3.21",
+  "version": "0.3.22",
   "description": "Authoritative local runtime daemon for pix sessions",
   "type": "module",
-  "engines": { "node": ">=22.19.0" },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./client": { "types": "./dist/client.d.ts", "import": "./dist/client.js" },
-    "./testing": { "types": "./dist/testing/index.d.ts", "import": "./dist/testing/index.js" },
-    "./daemon": { "types": "./dist/composition/index.d.ts", "import": "./dist/composition/index.js" },
-    "./control": { "types": "./dist/control.d.ts", "import": "./dist/control.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./daemon": {
+      "types": "./dist/composition/index.d.ts",
+      "import": "./dist/composition/index.js"
+    },
+    "./control": {
+      "types": "./dist/control.d.ts",
+      "import": "./dist/control.js"
+    }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "clean": "node ../../scripts/remove-paths.mjs dist dist-test",
     "build:deps": "node ./scripts/build-deps.mjs",
@@ -28,11 +47,11 @@
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "dependencies": {
-    "@fffattiger/pix-agent-worker": "0.3.21",
-    "@fffattiger/pix-local-authority": "0.3.21",
-    "@fffattiger/pix-pi-sdk-adapter": "0.3.21",
-    "@fffattiger/pix-protocol": "0.3.21",
-    "@fffattiger/pix-runtime-core": "0.3.21"
+    "@fffattiger/pix-agent-worker": "0.3.22",
+    "@fffattiger/pix-local-authority": "0.3.22",
+    "@fffattiger/pix-pi-sdk-adapter": "0.3.22",
+    "@fffattiger/pix-protocol": "0.3.22",
+    "@fffattiger/pix-runtime-core": "0.3.22"
   },
   "devDependencies": {
     "@types/node": "^22",
